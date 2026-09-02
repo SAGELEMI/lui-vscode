@@ -1,17 +1,17 @@
 import * as vscode from "vscode";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  ASCII_REFERENCE, displayNameOf, editAttribute, editTag, formatLui, namespaceImports, parseLui,
+  ASCII_REFERENCE, displayNameOf, editAttribute, editTag, formatLui, namespaceImports, normalizeLuiAttributes, parseLui,
   type LuiDiagnostic, type LuiDocument, type LuiNode
 } from "../packages/spec/src/index.js";
-import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, TAG_TO_CANONICAL, canonicalAttribute, canonicalTag, sourceAttribute } from "../packages/spec/src/vocabulary.js";
+import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, attributeDefinition, canonicalAttribute, canonicalTag, enumOptions, sourceAttribute } from "../packages/spec/src/vocabulary.js";
 import { decideSourceEdit, type VersionedSource } from "./webview/sourceSync.js";
 
 const RUNTIME_DIRECTORY = ["scripts", "LUI"] as const;
 const CONFIG_FILE = "lui.project.json";
 const MANIFEST_FILE = "runtime-manifest.json";
 const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" };
-const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name]) => /[^\x00-\x7f]/.test(name)).map(([name]) => name)));
+const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 
 interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; message: string; }
 interface WebviewMessage { type: "ready" | "setAttribute" | "setTag" | "sourceEdit" | "deploy"; start?: number; source?: string; name?: string; value?: string; version?: number; text?: string; }
@@ -234,12 +234,17 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
     diagnostics.set(document.uri, issues);
   };
   context.subscriptions.push(diagnostics, vscode.workspace.onDidOpenTextDocument(refresh), vscode.workspace.onDidChangeTextDocument((event) => void refresh(event.document)), vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
+  context.subscriptions.push(vscode.workspace.onWillSaveTextDocument((event) => {
+    if (event.document.languageId !== "lui") return;
+    const normalized = normalizeLuiAttributes(event.document.getText());
+    if (normalized !== event.document.getText()) event.waitUntil(Promise.resolve([vscode.TextEdit.replace(new vscode.Range(event.document.positionAt(0), event.document.positionAt(event.document.getText().length)), normalized)]));
+  }));
   vscode.workspace.textDocuments.forEach((document) => void refresh(document));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
     async provideCompletionItems(document) {
       return [...BUILTIN_TAGS, ...await importedTags(document)].map((tag) => {
         const item = new vscode.CompletionItem(tag, vscode.CompletionItemKind.Class);
-        item.insertText = new vscode.SnippetString("<" + tag + ' 名称="${1:设计名称}"${2: 引用="LuaRef"}${3: />}');
+        item.insertText = new vscode.SnippetString("<" + tag + ' 名称="${1:设计名称}"${2: />}');
         item.detail = tag.includes(":") ? "已导入目录中的组件" : "内置 LUI 积木";
         return item;
       });
@@ -251,6 +256,24 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
       return attributes.map((name) => { const canonical = canonicalAttribute(name); const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Property); item.insertText = name === "目录:积木" ? '目录:积木="Presentation/Components"' : name + '="' + (canonical === "x:Ref" ? "${1:LuaRef}" : "${1}") + '"'; return item; });
     }
   }, " "));
+  context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
+    provideCompletionItems(document, position) {
+      const before = document.getText(new vscode.Range(new vscode.Position(position.line, 0), position));
+      const match = /([^\s=]+)\s*=\s*["']([^"']*)$/.exec(before);
+      if (!match) return undefined;
+      const canonical = canonicalAttribute(match[1]!);
+      const options = enumOptions(canonical) ?? (attributeDefinition(canonical)?.kind === "tracks" ? ["自动", "填充", "2填充"] : undefined);
+      if (!options) return undefined;
+      const start = position.translate(0, -match[2]!.length);
+      return options.map((value) => {
+        const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.EnumMember);
+        item.range = new vscode.Range(start, position);
+        item.insertText = value;
+        item.detail = `${sourceAttribute(canonical)} 可选值`;
+        return item;
+      });
+    }
+  }, "\"", "'"));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
     provideCompletionItems() {
       return [["绑定", "{绑定 ${1:view.path}}"], ["动作", "{动作 ${1:ActionKey}}"]].map(([label, snippet]) => { const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Snippet); item.insertText = new vscode.SnippetString(snippet); return item; });

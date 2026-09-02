@@ -5,7 +5,7 @@ import { linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
-import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, TAG_TO_CANONICAL, bindingPath, canonicalAttribute, canonicalTag, directoryAlias, isBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
+import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, directoryAlias, enumOptions, isBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
 
 interface DiagnosticInfo { message: string; severity: "error" | "warning"; range: { start: number; end: number }; }
 interface SerializableNode {
@@ -33,12 +33,11 @@ interface PickedNode { start: number; end: number; source: string; }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 const vscode = acquireVsCodeApi();
-const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name]) => /[^\x00-\x7f]/.test(name)).map(([name]) => name)));
+const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
   ["LUI 名称", ["x:Name", "x:DisplayName"]],
-  ["Lua 引用", ["x:Ref"]],
-  ["布局", ["Margin", "Padding", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Anchor", "Left", "Top", "Right", "Bottom", "Gap", "FlexGrow", "FlexBasis", "Align", "Justify"]],
+  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"]],
   ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant"]],
   ["文本与交互", ["Text", "Title", "FontSize", "Click", "Change", "Close", "Disabled", "Value", "Min", "Max"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
@@ -55,6 +54,8 @@ let activeSource: SourcePayload | undefined;
 let sourceTimer: ReturnType<typeof setTimeout> | undefined;
 let writingSource = false;
 let inFlight: { source: string; version: number; text: string } | undefined;
+interface LayoutData { x: number; y: number; width: number; height: number; parentX: number; parentY: number; contentWidth: number; contentHeight: number; margin: string; padding: string; }
+const layouts = new Map<string, LayoutData>();
 
 const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const text = (value: unknown): string => String(value ?? "");
@@ -169,8 +170,25 @@ function visualChildren(node: SerializableNode): SerializableNode[] {
   return (node.children ?? []).filter((child) => !canonicalTag(child.tag)?.startsWith(owner) && canonicalTag(child.tag) !== "lui:Preview" && canonicalTag(child.tag) !== "lui:Set");
 }
 
-function cssSize(value: unknown): string { return /^\d+(?:\.\d+)?$/.test(text(value)) ? `${text(value)}px` : text(value); }
-function bool(value: unknown): boolean { return value !== false && value !== undefined && value !== null && value !== "" && value !== "false" && value !== 0; }
+function cssSize(value: unknown): string {
+  const source = text(value);
+  if (source === "自动") return "auto";
+  return /^-?\d+(?:\.\d+)?$/.test(source) ? `${source}px` : source;
+}
+function cssThickness(value: unknown): string {
+  const parts = text(value).split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 4) return `${cssSize(parts[1])} ${cssSize(parts[2])} ${cssSize(parts[3])} ${cssSize(parts[0])}`;
+  return cssSize(parts[0] ?? "0");
+}
+function cssTracks(value: unknown): string {
+  return text(value).split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+    if (part === "自动") return "auto";
+    if (part === "填充") return "1fr";
+    const fill = /^(\d+(?:\.\d+)?)填充$/.exec(part);
+    return fill ? `${fill[1]}fr` : cssSize(part);
+  }).join(" ");
+}
+function bool(value: unknown): boolean { return value !== false && value !== undefined && value !== null && value !== "" && value !== "false" && value !== "否" && value !== 0; }
 
 function decorate(element: HTMLElement, node: SerializableNode): void {
   element.dataset.start = String(node.start);
@@ -181,13 +199,32 @@ function decorate(element: HTMLElement, node: SerializableNode): void {
   element.onclick = (event) => { event.stopPropagation(); pick(node); };
 }
 
-function applyLayout(element: HTMLElement, attrs: Record<string, string | undefined>): void {
-  const styles: Record<string, string> = { Width: "width", Height: "height", MinWidth: "minWidth", MinHeight: "minHeight", MaxWidth: "maxWidth", MaxHeight: "maxHeight", Margin: "margin", Padding: "padding", Gap: "gap", Background: "background", Color: "color", Opacity: "opacity", Left: "left", Top: "top", Right: "right", Bottom: "bottom", FlexBasis: "flexBasis" };
-  for (const [attribute, style] of Object.entries(styles)) if (attrs[attribute] !== undefined) (element.style as unknown as Record<string, string>)[style] = cssSize(attrs[attribute]);
-  if (attrs.FlexGrow !== undefined) element.style.flexGrow = text(attrs.FlexGrow);
-  if (attrs.Left !== undefined || attrs.Top !== undefined || attrs.Right !== undefined || attrs.Bottom !== undefined) element.style.position = "absolute";
-  if (attrs.Align) element.style.alignItems = attrs.Align;
-  if (attrs.Justify) element.style.justifyContent = attrs.Justify;
+function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, string | undefined>): void {
+  const sizes: Record<string, string> = { Width: "width", Height: "height", MinWidth: "minWidth", MinHeight: "minHeight", MaxWidth: "maxWidth", MaxHeight: "maxHeight" };
+  for (const [attribute, style] of Object.entries(sizes)) if (attrs[attribute] !== undefined) (element.style as unknown as Record<string, string>)[style] = cssSize(attrs[attribute]);
+  if (attrs.Background !== undefined) element.style.background = attrs.Background;
+  if (attrs.Color !== undefined) element.style.color = attrs.Color;
+  if (attrs.Opacity !== undefined) element.style.opacity = attrs.Opacity;
+  if (attrs.BorderRadius !== undefined) element.style.borderRadius = cssSize(attrs.BorderRadius);
+  if (attrs.Margin !== undefined) element.style.margin = cssThickness(attrs.Margin);
+  if (attrs.Padding !== undefined) element.style.padding = cssThickness(attrs.Padding);
+  if (tag === "Grid") {
+    element.style.display = "grid";
+    element.style.gridTemplateRows = cssTracks(attrs.RowDefinitions ?? "填充");
+    element.style.gridTemplateColumns = cssTracks(attrs.ColumnDefinitions ?? "填充");
+    element.style.rowGap = cssSize(attrs.RowSpacing ?? "0");
+    element.style.columnGap = cssSize(attrs.ColumnSpacing ?? "0");
+  }
+  if (tag === "Canvas") element.style.position = "relative";
+  if (attrs["Grid.Row"] !== undefined) element.style.gridRow = `${Number(attrs["Grid.Row"]) + 1} / span ${attrs["Grid.RowSpan"] ?? "1"}`;
+  if (attrs["Grid.Column"] !== undefined) element.style.gridColumn = `${Number(attrs["Grid.Column"]) + 1} / span ${attrs["Grid.ColumnSpan"] ?? "1"}`;
+  if (attrs["Canvas.Left"] !== undefined || attrs["Canvas.Top"] !== undefined || attrs["Canvas.Right"] !== undefined || attrs["Canvas.Bottom"] !== undefined) {
+    element.style.position = "absolute";
+    if (attrs["Canvas.Left"] !== undefined) element.style.left = cssSize(attrs["Canvas.Left"]);
+    if (attrs["Canvas.Top"] !== undefined) element.style.top = cssSize(attrs["Canvas.Top"]);
+    if (attrs["Canvas.Right"] !== undefined) element.style.right = cssSize(attrs["Canvas.Right"]);
+    if (attrs["Canvas.Bottom"] !== undefined) element.style.bottom = cssSize(attrs["Canvas.Bottom"]);
+  }
 }
 
 function fragmentChildren(nodes: SerializableNode[], scope: Record<string, unknown>, trace: string[]): DocumentFragment {
@@ -213,6 +250,9 @@ function renderComponent(node: SerializableNode, scope: Record<string, unknown>,
   const wrapper = document.createElement("div");
   wrapper.className = "lui-component-instance";
   decorate(wrapper, node);
+  // The component instance is the direct Grid/Canvas child. Its internals stay
+  // folded in the page inspector, while its declared layout remains effective.
+  applyLayout(wrapper, "Component", effective(node, scope));
   const props = { ...(scope.props as Record<string, unknown> | undefined) };
   for (const [property, value] of Object.entries(effective(node, scope))) props[property] = value;
   wrapper.append(fragmentChildren(visualChildren(template), { ...scope, props, slots: { Content: visualChildren(node) } }, [...trace, key]));
@@ -238,9 +278,9 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   decorate(element, node);
   const attrs = effective(node, scope);
   element.classList.add(`tag-${tag.replace(/[^A-Za-z0-9_-]/g, "-")}`);
-  applyLayout(element, attrs);
-  if (tag === "Row") element.classList.add("row"); else element.classList.add("panel");
-  if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
+  applyLayout(element, tag, attrs);
+  if (tag === "Grid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Row") element.classList.add("row"); else element.classList.add("panel");
+  if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
   else if (tag === "Text") { element.classList.add("text"); element.style.fontSize = attrs.FontSize ? cssSize(attrs.FontSize) : ""; element.textContent = text(attrs.Text); }
   else if (tag === "Card") element.classList.add("card");
   else if (tag === "Scroll") element.classList.add("scroll");
@@ -271,21 +311,62 @@ function outline(node: SerializableNode, host: HTMLElement, depth = 0): void {
 }
 
 function sourceValue(node: SerializableNode, canonical: string): string | undefined {
-  return Object.entries(node.attrs ?? {}).find(([name]) => canonicalAttribute(name) === canonical)?.[1];
+  return Object.entries(node.attrs ?? {}).reverse().find(([name]) => canonicalAttribute(name) === canonical)?.[1];
+}
+
+function parentOf(target: SerializableNode): SerializableNode | undefined {
+  const find = (node: SerializableNode): SerializableNode | undefined => {
+    for (const child of node.children ?? []) {
+      if (child.start === target.start && child.source === target.source) return node;
+      const nested = find(child); if (nested) return nested;
+    }
+    return undefined;
+  };
+  for (const root of allRoots()) { const parent = find(root); if (parent) return parent; }
+  return undefined;
+}
+
+function writeAttribute(node: SerializableNode, key: string, value: string): void {
+  vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(key), value });
+}
+
+function thicknessParts(value: string | undefined): string[] {
+  const parts = (value ?? "0").split(",").map((part) => part.trim());
+  return parts.length === 4 ? parts : [parts[0] ?? "0", parts[0] ?? "0", parts[0] ?? "0", parts[0] ?? "0"];
 }
 
 function propertyInput(host: HTMLElement, node: SerializableNode, key: string): void {
   const label = document.createElement("label");
   label.textContent = ATTRIBUTE_LABELS[key] ?? key;
-  const input = document.createElement("input");
-  input.value = sourceValue(node, key) ?? "";
-  input.placeholder = ATTRIBUTE_LABELS[key] ?? key;
-  input.onchange = () => vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(key), value: input.value });
+  const definition = attributeDefinition(key);
+  const value = sourceValue(node, key) ?? "";
+  let input: HTMLInputElement | HTMLSelectElement;
+  if (definition?.kind === "enum") {
+    const select = document.createElement("select");
+    const empty = document.createElement("option"); empty.value = ""; empty.textContent = "未设置"; select.append(empty);
+    for (const optionValue of enumOptions(key) ?? []) { const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; select.append(option); }
+    select.value = value; select.onchange = () => writeAttribute(node, key, select.value); input = select;
+  } else if (definition?.kind === "thickness") {
+    const grid = document.createElement("div"); grid.className = "property-grid";
+    const parts = thicknessParts(value); const names = ["左", "上", "右", "下"];
+    for (let index = 0; index < 4; index += 1) {
+      const side = document.createElement("label"); side.textContent = names[index]!;
+      const field = document.createElement("input"); field.type = "number"; field.step = "any"; field.value = parts[index]!;
+      field.onchange = () => { parts[index] = field.value || "0"; writeAttribute(node, key, parts.join(",")); };
+      side.append(field); grid.append(side);
+    }
+    label.append(grid); host.append(label); return;
+  } else {
+    const field = document.createElement("input");
+    field.type = definition?.kind === "integer" || definition?.kind === "length" ? "text" : "text";
+    field.value = value; field.placeholder = ATTRIBUTE_LABELS[key] ?? key;
+    field.onchange = () => writeAttribute(node, key, field.value); input = field;
+  }
   label.append(input); host.append(label);
-  if (isBinding(input.value)) {
+  if (isBinding(value)) {
     const preview = document.createElement("label"); preview.textContent = "预览值";
     const previewInput = document.createElement("input"); previewInput.value = sourceValue(node, `Preview.${key}`) ?? ""; previewInput.placeholder = "仅设计预览使用";
-    previewInput.onchange = () => vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(`Preview.${key}`), value: previewInput.value });
+    previewInput.onchange = () => writeAttribute(node, `Preview.${key}`, previewInput.value);
     preview.append(previewInput); host.append(preview);
   }
 }
@@ -299,11 +380,32 @@ function tagChoices(): string[] {
 
 function attributesFor(node: SerializableNode): string[] {
   const tag = canonicalTag(node.tag);
-  const common = ["x:Name", "x:DisplayName", "x:Ref", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "Gap", "Anchor", "Left", "Top", "Right", "Bottom", "FlexGrow", "FlexBasis", "Align", "Justify", "Background", "Color", "Opacity", "BorderRadius", "Variant"];
+  let parent = parentOf(node);
+  while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
+  const parentTag = canonicalTag(parent?.tag);
+  const common = ["x:Name", "x:DisplayName", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "Background", "Color", "Opacity", "BorderRadius", "Variant"];
   const specific: Record<string, string[]> = {
-    Text: ["Text", "FontSize"], Button: ["Text", "Click", "Disabled"], Progress: ["Value", "Max"], Toggle: ["Value", "Change"], Slider: ["Value", "Min", "Max", "Change"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["x:Name"], "lui:Set": ["Path", "Value"]
+    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize"], Button: ["Text", "Click", "Disabled"], Progress: ["Value", "Max"], Toggle: ["Value", "Change"], Slider: ["Value", "Min", "Max", "Change"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["x:Name"], "lui:Set": ["Path", "Value"]
   };
-  return [...new Set([...common, ...(specific[tag ?? ""] ?? []), ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview."))])];
+  const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"] : [];
+  return [...new Set([...common, ...(specific[tag ?? ""] ?? []), ...attached, ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview.") && key !== "x:Ref" && !directoryAlias(key))])];
+}
+
+function layoutResult(host: HTMLElement, node: SerializableNode): void {
+  const result = layouts.get(`${node.source}:${node.start}`);
+  const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "布局结果"; section.append(heading);
+  if (!result) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = "等待预览完成布局计算。"; section.append(note); host.append(section); return; }
+  const note = document.createElement("p"); note.className = "property-note"; note.textContent = `父级 ${result.parentX}, ${result.parentY} · 坐标 ${result.x}, ${result.y} · 尺寸 ${result.width} × ${result.height} · 内容 ${result.contentWidth} × ${result.contentHeight}`; section.append(note);
+  const box = document.createElement("p"); box.className = "property-note"; box.textContent = `外边距 ${result.margin} · 内边距 ${result.padding}`; section.append(box);
+  if (node.source === rootSource && model?.root?.start === node.start) {
+    const table = document.createElement("div"); table.className = "layout-table";
+    for (const [key, data] of [...layouts].filter(([entry]) => entry.startsWith(`${rootSource}:`)).sort(([left], [right]) => left.localeCompare(right))) {
+      const target = getNode(Number(key.slice(key.lastIndexOf(":") + 1)), rootSource); if (!target) continue;
+      const row = document.createElement("button"); row.textContent = `${target.displayName || target.tag} · ${data.x},${data.y} · ${data.width}×${data.height}`; row.onclick = () => pick(target); table.append(row);
+    }
+    section.append(table);
+  }
+  host.append(section);
 }
 
 function properties(node: SerializableNode | undefined): void {
@@ -319,8 +421,9 @@ function properties(node: SerializableNode | undefined): void {
     for (const key of keys) if (available.has(key)) { propertyInput(section, node, key); used.add(key); }
     host.append(section);
   }
-  const rest = Object.keys(attrs).map(canonicalAttribute).filter((key) => !used.has(key) && !key.startsWith("Preview.") && !directoryAlias(key));
+  const rest = [...new Set(Object.keys(attrs).map(canonicalAttribute))].filter((key) => !used.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
   if (rest.length) { const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "其他属性"; section.append(heading); for (const key of rest) propertyInput(section, node, key); host.append(section); }
+  layoutResult(host, node);
 }
 
 function applyHighlights(): void {
@@ -347,6 +450,12 @@ function sendSourceEdit(): void {
 
 function sourceCompletions(context: CompletionContext) {
   const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos);
+  const value = /([^\s=]+)\s*=\s*["']([^"']*)$/.exec(before);
+  if (value) {
+    const canonical = canonicalAttribute(value[1]!);
+    const options = enumOptions(canonical) ?? (attributeDefinition(canonical)?.kind === "tracks" ? ["自动", "填充", "2填充"] : undefined);
+    if (options) return { from: context.pos - value[2]!.length, options: options.map((label) => ({ label, type: "enum", apply: label, detail: `${sourceAttribute(canonical)} 可选值` })) };
+  }
   const tag = context.matchBefore(/<[\w:\-\u0080-\uffff]*/);
   if (tag) {
     const imported = Object.keys((model?.root?.attrs ?? {})).filter((key) => directoryAlias(key)).flatMap((key) => {
@@ -428,6 +537,27 @@ function reconcileSource(payload: SourcePayload): void {
   }
 }
 
+function collectLayoutData(): void {
+  layouts.clear();
+  const canvas = byId("canvas"); const canvasRect = canvas.getBoundingClientRect();
+  for (const element of canvas.querySelectorAll<HTMLElement>("[data-start][data-source]")) {
+    const start = Number(element.dataset.start); const source = element.dataset.source ?? "";
+    if (!Number.isFinite(start) || !source) continue;
+    const rect = element.getBoundingClientRect(); const parent = element.parentElement?.getBoundingClientRect() ?? canvasRect; const style = getComputedStyle(element);
+    const pixel = (value: string) => Number.isFinite(Number.parseFloat(value)) ? Number.parseFloat(value) : 0;
+    const paddingX = pixel(style.paddingLeft) + pixel(style.paddingRight);
+    const paddingY = pixel(style.paddingTop) + pixel(style.paddingBottom);
+    layouts.set(`${source}:${start}`, {
+      x: Math.round((rect.left - canvasRect.left) * 10) / 10, y: Math.round((rect.top - canvasRect.top) * 10) / 10,
+      width: Math.round(rect.width * 10) / 10, height: Math.round(rect.height * 10) / 10,
+      parentX: Math.round((parent.left - canvasRect.left) * 10) / 10, parentY: Math.round((parent.top - canvasRect.top) * 10) / 10,
+      contentWidth: Math.max(0, Math.round((rect.width - paddingX) * 10) / 10), contentHeight: Math.max(0, Math.round((rect.height - paddingY) * 10) / 10),
+      margin: `${style.marginLeft},${style.marginTop},${style.marginRight},${style.marginBottom}`,
+      padding: `${style.paddingLeft},${style.paddingTop},${style.paddingRight},${style.paddingBottom}`
+    });
+  }
+}
+
 function draw(): void {
   const canvas = byId("canvas"); const tree = byId("outline"); canvas.innerHTML = ""; tree.innerHTML = "";
   if (!model?.root) return;
@@ -440,6 +570,7 @@ function draw(): void {
   const diagnostics = byId("diagnostics"); diagnostics.innerHTML = "";
   for (const issue of model.diagnostics ?? []) { const item = document.createElement("p"); item.textContent = `⚠ ${issue.message}`; diagnostics.append(item); }
   applyHighlights();
+  requestAnimationFrame(() => { collectLayoutData(); properties(selected ? getNode(selected.start, selected.source) : undefined); });
 }
 
 function pick(node: SerializableNode): void {

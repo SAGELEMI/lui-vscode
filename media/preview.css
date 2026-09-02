@@ -40,6 +40,8 @@ h3 { margin: 15px 0 7px; color: #c6b0e4; font-size: 12px; }
 .property-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
 .property-grid label { min-width: 0; }
 .property-note { color: #9f8ab8; font-size: 11px; margin: 4px 0; }
+.layout-table { display: grid; gap: 4px; max-height: 220px; overflow: auto; }
+.layout-table button { padding: 5px; font-size: 11px; text-align: left; }
 button { padding: 7px 9px; border: 1px solid #7855aa; border-radius: 6px; background: #382452; color: #f4ecff; cursor: pointer; }
 
 main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -59,6 +61,8 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 .lui-node { position: relative; min-width: 0; color: #f4ecff; cursor: pointer; }
 .lui-node.row { display: flex; flex-direction: row; min-height: 32px; }
 .lui-node.panel, .lui-node.page, .lui-node.component, .lui-component-instance { display: flex; flex-direction: column; min-height: 0; }
+.lui-node.grid { display: grid; min-width: 0; min-height: 0; align-content: stretch; justify-content: stretch; }
+.lui-node.canvas { min-width: 0; min-height: 0; position: relative; }
 .lui-node.component, .lui-node.page { width: 100%; }
 .lui-component-instance { min-width: 0; position: relative; }
 .lui-node.text { align-self: flex-start; color: #f6f0ff; white-space: pre-wrap; }

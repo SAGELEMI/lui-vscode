@@ -1,4 +1,4 @@
-import { canonicalAttribute, canonicalTag, directoryAlias, isLegacyToken, sourceTag as chineseTag } from "./vocabulary.js";
+import { attributeDefinition, canonicalAttribute, canonicalTag, DEPRECATED_CANONICAL_ATTRIBUTES, DEPRECATED_CANONICAL_TAGS, directoryAlias, enumOptions, isLegacyToken, legacyEnumValue, normalizedEnumValue, sourceAttribute, sourceTag as chineseTag } from "./vocabulary.js";
 
 /**
  * LUI's portable syntax model. UTF-8 is valid everywhere in the design
@@ -147,7 +147,9 @@ export function parseLui(source: string): LuiDocument {
 }
 
 export function getAttribute(node: LuiNode, name: string): LuiAttribute | undefined {
-  return node.attrs.find((attribute) => canonicalAttribute(attribute.name) === name);
+  const canonical = canonicalAttribute(name);
+  for (let index = node.attrs.length - 1; index >= 0; index -= 1) if (canonicalAttribute(node.attrs[index]!.name) === canonical) return node.attrs[index];
+  return undefined;
 }
 
 export interface LuiImport { alias: string; directory: string; attribute: LuiAttribute; }
@@ -164,6 +166,26 @@ export function namespaceImports(document: LuiDocument): LuiImport[] {
 
 function isDesignName(value: string): boolean { return value.trim().length > 0 && !/[<>]/.test(value); }
 function isDirectory(value: string): boolean { return value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => part === "" || part === "." || part === ".."); }
+function isInteger(value: string): boolean { return /^\d+$/.test(value); }
+function isBinding(value: string): boolean { return /^\{(?:绑定|Binding)\s+[A-Za-z][A-Za-z0-9_.-]*\}$/.test(value.trim()); }
+function isLength(value: string): boolean { return isBinding(value) || /^-?\d+(?:\.\d+)?%?$/.test(value) || value === "自动"; }
+function isThickness(value: string): boolean {
+  const parts = value.split(",").map((part) => part.trim());
+  return (parts.length === 1 || parts.length === 4) && parts.every((part) => /^-?\d+(?:\.\d+)?$/.test(part));
+}
+function isTrack(value: string): boolean { return value === "自动" || value === "填充" || /^\d+(?:\.\d+)?(?:%|填充)?$/.test(value); }
+function isTrackList(value: string): boolean { return value.split(",").map((part) => part.trim()).length > 0 && value.split(",").map((part) => part.trim()).every(isTrack); }
+function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
+  const canonical = canonicalAttribute(attribute.name);
+  const definition = attributeDefinition(canonical);
+  if (definition?.kind === "integer" && !isInteger(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是从 0 开始的整数。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "length" && !isLength(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是像素数、百分比或“自动”。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "thickness" && !isThickness(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是单值，或“左,上,右,下”四个数值。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”、“填充”或“2填充”。`, attribute.valueRange.start, attribute.valueRange.end);
+  const options = enumOptions(canonical);
+  if (options && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
+  else if (options && legacyEnumValue(canonical, attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 请改用中文值“${normalizedEnumValue(canonical, attribute.value)}”。`, attribute.valueRange.start, attribute.valueRange.end, "warning");
+}
 
 /** Validates LUI identities and the boundary between design-only and Lua-visible values. */
 export function validateLui(document: LuiDocument): LuiDiagnostic[] {
@@ -184,8 +206,22 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     if (imports.has(alias)) fail(diagnostics, `目录别名重复：${alias}。`, attribute.range.start, attribute.range.end);
     imports.set(alias, attribute);
   }
-  const visit = (node: LuiNode) => {
+  const visit = (node: LuiNode, parentTag?: string) => {
     if (node.kind !== "element") return;
+    const seenAttributes = new Map<string, LuiAttribute>();
+    for (const attribute of node.attrs) {
+      const canonicalAttributeName = canonicalAttribute(attribute.name);
+      if (seenAttributes.has(canonicalAttributeName)) fail(diagnostics, `属性重复：${sourceAttribute(canonicalAttributeName)}；保存会保留最后一个值。`, attribute.range.start, attribute.range.end);
+      seenAttributes.set(canonicalAttributeName, attribute);
+      validateValue(diagnostics, attribute);
+      if (DEPRECATED_CANONICAL_ATTRIBUTES.has(canonicalAttributeName)) fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 已移除；请改用网格或画布布局。`, attribute.range.start, attribute.range.end, "warning");
+      const definition = attributeDefinition(canonicalAttributeName);
+      if (definition?.tags && !definition.tags.includes(canonicalTag(node.tag) ?? "") && !canonicalAttributeName.startsWith("Grid.") && !canonicalAttributeName.startsWith("Canvas.")) fail(diagnostics, `${chineseTag(canonicalAttributeName)} 只适用于 <${definition.tags.map(chineseTag).join(">、<")}>。`, attribute.range.start, attribute.range.end);
+      if (canonicalAttributeName.startsWith("Grid.") && parentTag !== "Grid") fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 只可用于 <网格> 的直接子项。`, attribute.range.start, attribute.range.end);
+      if (canonicalAttributeName.startsWith("Canvas.") && parentTag !== "Canvas") fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 只可用于 <画布> 的直接子项。`, attribute.range.start, attribute.range.end);
+    }
+    const has = (name: string) => seenAttributes.has(name);
+    if (parentTag === "Canvas" && ((has("Canvas.Left") && has("Canvas.Right")) || (has("Canvas.Top") && has("Canvas.Bottom")))) fail(diagnostics, "画布同一轴只能指定一侧定位。", node.range.start, node.openTagEnd);
     const primary = getAttribute(node, "x:Name");
     const display = getAttribute(node, "x:DisplayName");
     const ref = getAttribute(node, "x:Ref");
@@ -210,6 +246,7 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const sourceTag = node.tag;
     const canonical = canonicalTag(sourceTag);
+    if (canonical && DEPRECATED_CANONICAL_TAGS.has(canonical)) fail(diagnostics, `<${sourceTag}> 已移除；请使用 <网格> 或 <画布>。`, node.range.start, node.openTagEnd, "warning");
     if (sourceTag && canonical && chineseTag(canonical) !== sourceTag && isLegacyToken(sourceTag)) fail(diagnostics, `标签 <${sourceTag}> 已过时；请改为 <${chineseTag(canonical)}>。`, node.range.start, node.openTagEnd, "warning");
     for (const attribute of node.attrs) if (isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
     const separator = sourceTag?.indexOf(":") ?? -1;
@@ -217,7 +254,10 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
       const alias = sourceTag!.slice(0, separator);
       if (!imports.has(alias)) fail(diagnostics, `组件 <${sourceTag}> 未导入目录别名 ${alias}。`, node.range.start, node.openTagEnd);
     }
-    for (const child of node.children) visit(child);
+    // 条件、循环和插槽只控制是否/如何产生子项，不是布局容器；其子项
+    // 仍视为最近网格或画布的直接可定位子项。
+    const childParent = canonical === "lui:If" || canonical === "lui:For" || canonical === "lui:Slot" ? parentTag : canonical;
+    for (const child of node.children) visit(child, childParent);
   };
   visit(root);
   return diagnostics;
@@ -225,9 +265,51 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
 
 function escapeAttribute(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("\"", "&quot;"); }
 
+function rewrittenOpenTag(source: string, node: LuiNode, override?: { name: string; value: string }): string {
+  const openEnd = node.openTagEnd ?? node.range.end;
+  const opening = source.slice(node.range.start, openEnd);
+  const prefix = /^(<\s*[^\s/>]+)/.exec(opening)?.[1];
+  if (!prefix) return opening;
+  const attrs = node.attrs.map((attribute) => ({ ...attribute, canonical: canonicalAttribute(attribute.name) }));
+  const target = override ? canonicalAttribute(override.name) : undefined;
+  const last = new Map<string, number>();
+  attrs.forEach((attribute, index) => last.set(attribute.canonical, index));
+  const values = attrs.filter((attribute, index) => last.get(attribute.canonical) === index).map((attribute) => ({ name: sourceAttribute(attribute.canonical), value: attribute.value }));
+  if (target) {
+    const existing = values.find((attribute) => canonicalAttribute(attribute.name) === target);
+    if (existing) { existing.name = sourceAttribute(target); existing.value = override!.value; }
+    else values.push({ name: sourceAttribute(target), value: override!.value });
+  }
+  const tail = /\/\>\s*$/.test(opening) ? " />" : ">";
+  return `${prefix}${values.map((attribute) => ` ${attribute.name}="${escapeAttribute(attribute.value)}"`).join("")}${tail}`;
+}
+
+/** Collapses semantic duplicate attributes without changing node order or children. */
+export function normalizeLuiAttributes(source: string): string {
+  let normalized = source;
+  for (;;) {
+    const document = parseLui(normalized);
+    let duplicateNode: LuiNode | undefined;
+    const find = (node: LuiNode | undefined) => {
+      if (!node || duplicateNode) return;
+      for (const child of node.children) find(child);
+      const seen = new Set<string>();
+      if (node.attrs.some((attribute) => {
+        const canonical = canonicalAttribute(attribute.name);
+        if (seen.has(canonical)) return true;
+        seen.add(canonical); return false;
+      })) duplicateNode = node;
+    };
+    find(document.root);
+    if (!duplicateNode) return normalized;
+    const end = duplicateNode.openTagEnd ?? duplicateNode.range.end;
+    normalized = normalized.slice(0, duplicateNode.range.start) + rewrittenOpenTag(normalized, duplicateNode) + normalized.slice(end);
+  }
+}
+
 /** Canonical two-space formatting. It is only applied to documents without diagnostics. */
 export function formatLui(source: string): string | undefined {
-  const document = parseLui(source);
+  const document = parseLui(normalizeLuiAttributes(source));
   if (!document.root || document.diagnostics.some((item) => item.severity === "error")) return undefined;
   const write = (node: LuiNode, depth: number): string => {
     const indentation = "  ".repeat(depth);
@@ -244,10 +326,8 @@ export function formatLui(source: string): string | undefined {
 }
 
 export function editAttribute(source: string, node: LuiNode, name: string, value: string): string {
-  const existing = getAttribute(node, name);
-  if (existing) return source.slice(0, existing.valueRange.start) + value + source.slice(existing.valueRange.end);
-  const insertAt = (node.openTagEnd ?? node.range.end) - (source.slice(0, node.openTagEnd).endsWith("/>") ? 2 : 1);
-  return source.slice(0, insertAt) + ` ${name}="${escapeAttribute(value)}"` + source.slice(insertAt);
+  const end = node.openTagEnd ?? node.range.end;
+  return source.slice(0, node.range.start) + rewrittenOpenTag(source, node, { name, value }) + source.slice(end);
 }
 
 /** Replaces the selected element's paired source tags without touching its attributes or children. */

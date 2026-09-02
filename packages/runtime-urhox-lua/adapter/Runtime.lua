@@ -70,20 +70,165 @@ local function color(value)
     return { tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16), tonumber(hex:sub(7, 8), 16) }
 end
 
+local function enumValue(name, value)
+    local chinese = {
+        Variant = { ["主要"] = "primary", ["次要"] = "secondary" },
+        Disabled = { ["是"] = "true", ["否"] = "false" },
+        CloseOnOverlay = { ["是"] = "true", ["否"] = "false" },
+        ShowCloseButton = { ["是"] = "true", ["否"] = "false" },
+    }
+    return (chinese[name] and chinese[name][value]) or value
+end
+
+local function layoutValue(value)
+    if value == "自动" then return "auto" end
+    return tonumber(value) or value
+end
+
+-- LUI Thickness uses XAML order: left,top,right,bottom. UrhoX receives top,right,bottom,left.
+local function thickness(value)
+    if type(value) == "table" then return value end
+    local parts = {}
+    for part in tostring(value or "0"):gmatch("[^,]+") do parts[#parts + 1] = tonumber(part:match("^%s*(.-)%s*$")) or 0 end
+    if #parts == 0 then parts[1] = 0 end
+    if #parts == 1 then parts[2], parts[3], parts[4] = parts[1], parts[1], parts[1] end
+    return { parts[2] or 0, parts[3] or 0, parts[4] or 0, parts[1] or 0 }
+end
+
+local function thicknessParts(value)
+    local values = thickness(value)
+    return values[4] or 0, values[1] or 0, values[2] or 0, values[3] or 0
+end
+
 local function propsFor(attrs, context)
     local props = {}
-    local numeric = { Width = "width", Height = "height", MinHeight = "minHeight", MaxWidth = "maxWidth", Gap = "gap", Padding = "padding", FontSize = "fontSize", FlexGrow = "flexGrow", FlexBasis = "flexBasis", ZIndex = "zIndex" }
+    local numeric = { Width = "width", Height = "height", MinWidth = "minWidth", MinHeight = "minHeight", MaxWidth = "maxWidth", MaxHeight = "maxHeight", FontSize = "fontSize", Opacity = "opacity", BorderRadius = "borderRadius", ZIndex = "zIndex" }
     for source, target in pairs(numeric) do
         local value = resolve(attrs[source], context)
-        if value ~= nil then props[target] = tonumber(value) or value end
+        if value ~= nil then props[target] = layoutValue(value) end
     end
+    if attrs.Margin ~= nil then props.margin = thickness(resolve(attrs.Margin, context)) end
+    if attrs.Padding ~= nil then props.padding = thickness(resolve(attrs.Padding, context)) end
     if attrs.Background then props.backgroundColor = color(resolve(attrs.Background, context)) end
     if attrs.Color then props.fontColor = color(resolve(attrs.Color, context)) end
-    if attrs.Variant then props.variant = resolve(attrs.Variant, context) end
-    if attrs.Disabled then props.disabled = resolve(attrs.Disabled, context) == true or attrs.Disabled == "true" end
-    if attrs.Align then props.alignItems = resolve(attrs.Align, context) end
-    if attrs.Justify then props.justifyContent = resolve(attrs.Justify, context) end
+    if attrs.Variant then props.variant = enumValue("Variant", resolve(attrs.Variant, context)) end
+    if attrs.Disabled then local value = enumValue("Disabled", resolve(attrs.Disabled, context)); props.disabled = value == true or value == "true" end
     return props
+end
+
+local function numberOrPercent(value, total)
+    if value == nil or value == "自动" then return nil end
+    local text = tostring(value)
+    local percent = text:match("^(-?[%d%.]+)%%$")
+    if percent then return total * (tonumber(percent) or 0) / 100 end
+    return tonumber(text)
+end
+
+local function tracks(value)
+    local result = {}
+    for part in tostring(value or "填充"):gmatch("[^,]+") do
+        local text = part:match("^%s*(.-)%s*$")
+        if text == "自动" then result[#result + 1] = { kind = "auto", value = 0 }
+        elseif text == "填充" then result[#result + 1] = { kind = "fill", value = 1 }
+        else
+            local fill = text:match("^(%d+%.?%d*)填充$")
+            local percent = text:match("^(%d+%.?%d*)%%$")
+            if fill then result[#result + 1] = { kind = "fill", value = tonumber(fill) or 1 }
+            elseif percent then result[#result + 1] = { kind = "percent", value = (tonumber(percent) or 0) / 100 }
+            else result[#result + 1] = { kind = "fixed", value = tonumber(text) or 0 } end
+        end
+    end
+    if #result == 0 then result[1] = { kind = "fill", value = 1 } end
+    return result
+end
+
+local function trackSizes(definitions, total, gap, entries, axis)
+    local size = {}
+    local occupied = math.max(0, (#definitions - 1) * gap)
+    local weight = 0
+    for index, definition in ipairs(definitions) do
+        if definition.kind == "fixed" then size[index] = definition.value; occupied = occupied + size[index]
+        elseif definition.kind == "percent" then size[index] = total * definition.value; occupied = occupied + size[index]
+        elseif definition.kind == "auto" then size[index] = 0
+        else size[index] = 0; weight = weight + definition.value end
+    end
+    -- Auto tracks derive their natural size from unspanned direct children.
+    for _, entry in ipairs(entries) do
+        local start = axis == "row" and entry.row or entry.column
+        local span = axis == "row" and entry.rowSpan or entry.columnSpan
+        local layout = entry.widget:GetLayout()
+        local desired = axis == "row" and layout.h or layout.w
+        if span == 1 and definitions[start] and definitions[start].kind == "auto" then size[start] = math.max(size[start], desired or 0) end
+    end
+    for index, definition in ipairs(definitions) do if definition.kind == "auto" then occupied = occupied + size[index] end end
+    local remaining = math.max(0, total - occupied)
+    if weight > 0 then for index, definition in ipairs(definitions) do if definition.kind == "fill" then size[index] = remaining * definition.value / weight end end end
+    return size
+end
+
+local function positions(sizes, gap)
+    local result, cursor = {}, 0
+    for index, size in ipairs(sizes) do result[index] = cursor; cursor = cursor + size + gap end
+    return result
+end
+
+local function spanSize(sizes, start, span, gap)
+    local result = 0
+    for index = start, math.min(#sizes, start + span - 1) do result = result + (sizes[index] or 0) end
+    return result + math.max(0, span - 1) * gap
+end
+
+local function applyFrame(widget, x, y, width, height)
+    widget.renderOffsetX_, widget.renderOffsetY_ = x, y
+    widget.renderWidth_, widget.renderHeight_ = width, height
+    if widget._luiFrameWidth_ ~= width or widget._luiFrameHeight_ ~= height then
+        widget._luiFrameWidth_, widget._luiFrameHeight_ = width, height
+        widget:SetStyle({ width = width, height = height })
+    end
+end
+
+local function layoutPanel(props, entries, mode, attrs, context)
+    props.children = {}
+    local panel = UI.Panel(props)
+    for _, entry in ipairs(entries) do panel:AddChild(entry.widget) end
+    local baseRender = panel.Render
+    function panel:Render(nvg)
+        local rect = self:GetAbsoluteLayout()
+        local left, top, right, bottom = thicknessParts(resolve(attrs.Padding, context))
+        local contentX, contentY = rect.x + left, rect.y + top
+        local contentW, contentH = math.max(0, rect.w - left - right), math.max(0, rect.h - top - bottom)
+        if mode == "Canvas" then
+            for _, entry in ipairs(entries) do
+                local child = entry.widget; local layout = child:GetLayout()
+                local childW, childH = layout.w, layout.h
+                local x = numberOrPercent(resolve(entry.attrs["Canvas.Left"], context), contentW)
+                local y = numberOrPercent(resolve(entry.attrs["Canvas.Top"], context), contentH)
+                local rightOffset = numberOrPercent(resolve(entry.attrs["Canvas.Right"], context), contentW)
+                local bottomOffset = numberOrPercent(resolve(entry.attrs["Canvas.Bottom"], context), contentH)
+                -- XAML's paired edges stretch a child when no explicit size wins.
+                if x ~= nil and rightOffset ~= nil and entry.attrs.Width == nil then childW = math.max(0, contentW - x - rightOffset) end
+                if y ~= nil and bottomOffset ~= nil and entry.attrs.Height == nil then childH = math.max(0, contentH - y - bottomOffset) end
+                if x == nil then x = rightOffset ~= nil and contentW - rightOffset - childW or 0 end
+                if y == nil then y = bottomOffset ~= nil and contentH - bottomOffset - childH or 0 end
+                applyFrame(child, contentX + x, contentY + y, childW, childH)
+            end
+        else
+            local rowGap = numberOrPercent(resolve(attrs.RowSpacing, context), contentH) or 0
+            local columnGap = numberOrPercent(resolve(attrs.ColumnSpacing, context), contentW) or 0
+            local rowSizes = trackSizes(tracks(resolve(attrs.RowDefinitions, context)), contentH, rowGap, entries, "row")
+            local columnSizes = trackSizes(tracks(resolve(attrs.ColumnDefinitions, context)), contentW, columnGap, entries, "column")
+            local rowPositions, columnPositions = positions(rowSizes, rowGap), positions(columnSizes, columnGap)
+            for _, entry in ipairs(entries) do
+                local x = contentX + (columnPositions[entry.column] or 0)
+                local y = contentY + (rowPositions[entry.row] or 0)
+                local width = spanSize(columnSizes, entry.column, entry.columnSpan, columnGap)
+                local height = spanSize(rowSizes, entry.row, entry.rowSpan, rowGap)
+                applyFrame(entry.widget, x, y, width, height)
+            end
+        end
+        baseRender(self, nvg)
+    end
+    return panel
 end
 
 local function propertyText(node)
@@ -199,6 +344,56 @@ function Runtime:BuildChildren(nodes, context)
     return built
 end
 
+-- Grid/Canvas own their children's placement. This keeps the layout declaration in
+-- .lui while preserving the regular builder for controls and imported components.
+function Runtime:BuildLayoutEntries(nodes, context)
+    local entries = {}
+    local function appendNode(node, activeContext)
+        if not node or node.kind == "Text" then return end
+        local attrs, visualChildren = resolvedNodeParts(node)
+        if node.tag == "lui:If" then
+            local test = resolve(attrs.Test, activeContext)
+            if test ~= nil and test ~= false then
+                for _, child in ipairs(visualChildren) do appendNode(child, activeContext) end
+            end
+            return
+        end
+        if node.tag == "lui:For" then
+            local path = bindingPath(attrs.In) or ""
+            local values = resolvePath(activeContext, path) or {}
+            local name = attrs.Each or "item"
+            for index, value in ipairs(values) do
+                local nextContext = setmetatable({ [name] = value, item = value, index = index }, { __index = activeContext })
+                for _, child in ipairs(visualChildren) do appendNode(child, nextContext) end
+            end
+            return
+        end
+        if node.tag == "lui:Slot" then
+            for _, child in ipairs((activeContext.slots or {})[attrs.Name] or {}) do appendNode(child, activeContext) end
+            return
+        end
+        local built = self:BuildNode(node, activeContext)
+        local function add(widget)
+            if not widget then return end
+            if type(widget) == "table" and widget.__luiList then
+                for _, item in ipairs(widget.items or {}) do add(item) end
+                return
+            end
+            entries[#entries + 1] = {
+                widget = widget,
+                attrs = attrs,
+                row = math.max(1, (tonumber(resolve(attrs["Grid.Row"], activeContext)) or 0) + 1),
+                column = math.max(1, (tonumber(resolve(attrs["Grid.Column"], activeContext)) or 0) + 1),
+                rowSpan = math.max(1, tonumber(resolve(attrs["Grid.RowSpan"], activeContext)) or 1),
+                columnSpan = math.max(1, tonumber(resolve(attrs["Grid.ColumnSpan"], activeContext)) or 1),
+            }
+        end
+        add(built)
+    end
+    for _, child in ipairs(nodes or {}) do appendNode(child, context) end
+    return entries
+end
+
 function Runtime:BuildNode(node, context)
     if node.kind == "Text" then
         if not node.text or not node.text:match("%S") then return nil end
@@ -265,10 +460,13 @@ function Runtime:BuildNode(node, context)
         return rendered
     end
     local props = propsFor(attrs, context)
-    local children = self:BuildChildren(visualChildren, context)
     local text = resolve(attrs.Text, context)
     local widget = nil
-    if tag == "Text" then
+    if tag == "Grid" or tag == "Canvas" then
+        widget = layoutPanel(props, self:BuildLayoutEntries(visualChildren, context), tag, attrs, context)
+    else
+        local children = self:BuildChildren(visualChildren, context)
+        if tag == "Text" then
         props.text = tostring(text or "")
         widget = UI.Label(props)
     elseif tag == "Button" then
@@ -308,8 +506,8 @@ function Runtime:BuildNode(node, context)
         props.children = children; widget = UI.SafeAreaView(props)
     elseif tag == "Modal" then
         props.title = resolve(attrs.Title, context) or "设置"
-        props.closeOnOverlay = attrs.CloseOnOverlay ~= "false"
-        props.showCloseButton = attrs.ShowCloseButton ~= "false"
+        props.closeOnOverlay = enumValue("CloseOnOverlay", resolve(attrs.CloseOnOverlay, context)) ~= "false"
+        props.showCloseButton = enumValue("ShowCloseButton", resolve(attrs.ShowCloseButton, context)) ~= "false"
         local closeAction = actionName(resolve(attrs.Close, context))
         if closeAction then props.onClose = function()
             local callback = context.actions and context.actions[closeAction]
@@ -326,10 +524,11 @@ function Runtime:BuildNode(node, context)
         widget = Components.Screen(nil, children, props)
     elseif tag == "FixedScreen" then
         widget = Components.FixedScreen(nil, UI.Panel { width = "100%", height = "100%", children = children }, props)
-    end
-    if not widget then
+        end
+        if not widget then
         props.flexDirection = props.flexDirection or "column"; props.children = children
         widget = UI.Panel(props)
+        end
     end
     local ref = attrs["x:Ref"]
     if not ref and not self.isV2_ then ref = attrs["x:Name"] end

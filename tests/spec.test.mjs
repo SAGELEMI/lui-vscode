@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import spec from "../dist/spec.cjs";
-const { parseLui, editAttribute, editTag, displayNameOf, formatLui, namespaceImports } = spec;
+const { parseLui, editAttribute, editTag, displayNameOf, formatLui, namespaceImports, normalizeLuiAttributes } = spec;
 
 test("LUI accepts UTF-8 design names and keeps the Lua boundary on ASCII x:Ref", () => {
   const doc = parseLui('<页面 目录:积木="Presentation/Components" 名称="塔内"><积木:页眉 名称="塔内页眉" /><进度条 名称="敌人血量" 引用="EnemyHp" /></页面>');
@@ -15,10 +15,32 @@ test("LUI rejects duplicate design and secondary names in a document", () => {
   assert.ok(doc.diagnostics.some((item) => item.message.includes("重复")));
 });
 
-test("property edits change only the selected attribute value", () => {
-  const source = '<面板 名称="Root" 副名称="根" 子项间距="8" />';
+test("property edits use canonical Chinese attributes and keep the selected value", () => {
+  const source = '<网格 名称="Root" 副名称="根" 内边距="8" />';
   const document = parseLui(source);
-  assert.equal(editAttribute(source, document.root, "Gap", "10"), '<面板 名称="Root" 副名称="根" 子项间距="10" />');
+  assert.equal(editAttribute(source, document.root, "Padding", "10"), '<网格 名称="Root" 副名称="根" 内边距="10" />');
+});
+
+test("duplicate semantic attributes collapse to the last Chinese value", () => {
+  const source = '<网格 名称="Root" 内边距="8" Padding="10" />';
+  const document = parseLui(source);
+  assert.ok(document.diagnostics.some((item) => item.message.includes("属性重复")));
+  assert.equal(normalizeLuiAttributes(source), '<网格 名称="Root" 内边距="10" />');
+});
+
+test("Grid and Canvas validate their dedicated layout attributes", () => {
+  const valid = parseLui('<页面 名称="Layout"><网格 名称="Grid" 行定义="自动,2填充" 列定义="30%,填充"><文本 名称="Title" 网格.行="0" 网格.列="1" /></网格><画布 名称="Canvas"><按钮 名称="Close" 画布.左="8" 画布.上="12" /></画布></页面>');
+  assert.equal(valid.diagnostics.filter((item) => item.severity === "error").length, 0);
+  const invalid = parseLui('<页面 名称="Layout"><画布 名称="Canvas"><文本 名称="Bad" 画布.左="0" 画布.右="0" 宽度="20" /></画布><文本 名称="Wrong" 网格.行="0" /></页面>');
+  assert.ok(invalid.diagnostics.some((item) => item.message.includes("画布")));
+  assert.ok(invalid.diagnostics.some((item) => item.message.includes("网格")));
+});
+
+test("Chinese enum values are accepted and legacy values receive migration diagnostics", () => {
+  const current = parseLui('<页面 名称="Layout"><按钮 名称="Confirm" 样式="主要" /></页面>');
+  assert.equal(current.diagnostics.filter((item) => item.severity === "error").length, 0);
+  const legacy = parseLui('<页面 名称="Layout"><按钮 名称="Confirm" 样式="primary" /></页面>');
+  assert.ok(legacy.diagnostics.some((item) => item.severity === "warning" && item.message.includes("主要")));
 });
 
 test("LUI parses comments and property-element syntax without weakening Lua reference validation", () => {
