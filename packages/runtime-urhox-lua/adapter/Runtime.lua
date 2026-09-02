@@ -205,10 +205,10 @@ function Runtime:BuildNode(node, context)
     local text = resolve(attrs.Text, context)
     local widget = nil
     if tag == "Text" then
-        props.text = tostring(text or attrs["x:DisplayName"] or "")
+        props.text = tostring(text or "")
         widget = UI.Label(props)
     elseif tag == "Button" then
-        props.text = tostring(text or attrs["x:DisplayName"] or attrs["x:Name"] or "按钮")
+        props.text = tostring(text or attrs["x:Name"] or "按钮")
         local action = actionName(resolve(attrs.Click, context))
         if action then props.onClick = function(_, event)
             local callback = context.actions and context.actions[action]
@@ -243,7 +243,7 @@ function Runtime:BuildNode(node, context)
     elseif tag == "SafeArea" then
         props.children = children; widget = UI.SafeAreaView(props)
     elseif tag == "Modal" then
-        props.title = resolve(attrs.Title, context) or attrs["x:DisplayName"] or "设置"
+        props.title = resolve(attrs.Title, context) or "设置"
         props.closeOnOverlay = attrs.CloseOnOverlay ~= "false"
         props.showCloseButton = attrs.ShowCloseButton ~= "false"
         local closeAction = actionName(resolve(attrs.Close, context))

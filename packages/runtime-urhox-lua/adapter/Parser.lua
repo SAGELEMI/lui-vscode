@@ -63,7 +63,11 @@ function Parser.Parse(text, path)
             local attrs = parseAttributes(rawAttrs or "")
             local valid, message = validatePrimary(attrs, path, openStart)
             if not valid then return nil, message end
+            -- 副名称只给编辑器和文档使用，解析后立即丢弃，绝不参与游戏逻辑或绑定。
+            local primaryName = attrs["x:Name"]
+            attrs["x:DisplayName"] = nil
             local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = attrs, attrSymbols = {}, children = {}, sourcePath = path }
+            if primaryName then node.nameSymbol = pool:Intern(primaryName) end
             for name in pairs(attrs) do node.attrSymbols[pool:Intern(name)] = true end
             if not root then root = node elseif #stack == 0 then return nil, string.format("%s:%d LUI 只能有一个根元素。", path, openStart) end
             if #stack > 0 then
