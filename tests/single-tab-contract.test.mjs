@@ -15,3 +15,16 @@ test("the LUI custom editor has one tag and does not create a native editor grou
   assert.match(designer, /for \(const child of visualChildren\(node\)\) outline\(child, host, depth \+ 1\);/);
   assert.doesNotMatch(designer, /outline\(child, host, depth \+ 1, \[\.\.\.trace/);
 });
+
+test("the inspector exposes only applicable Chinese controls and preserves the Lua boundary", async () => {
+  const designer = await readFile("src/webview/designer.ts", "utf8");
+  const vocabulary = await readFile("packages/spec/src/vocabulary.ts", "utf8");
+  assert.match(designer, /key !== "x:Ref"/);
+  assert.match(designer, /definition\?\.kind === "enum"/);
+  assert.match(designer, /function layoutResult/);
+  assert.match(designer, /parentTag === "Grid"/);
+  assert.match(designer, /parentTag === "Canvas"/);
+  assert.match(vocabulary, /"网格": "Grid"/);
+  assert.match(vocabulary, /"画布": "Canvas"/);
+  assert.match(vocabulary, /"插槽名": "Name"/);
+});

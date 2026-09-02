@@ -383,12 +383,14 @@ function attributesFor(node: SerializableNode): string[] {
   let parent = parentOf(node);
   while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
   const parentTag = canonicalTag(parent?.tag);
-  const common = ["x:Name", "x:DisplayName", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "Background", "Color", "Opacity", "BorderRadius", "Variant"];
+  const structural = ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"];
+  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding"];
+  const surface = ["Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag ?? "") ? ["Background", "Opacity", "BorderRadius"] : [];
   const specific: Record<string, string[]> = {
-    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize"], Button: ["Text", "Click", "Disabled"], Progress: ["Value", "Max"], Toggle: ["Value", "Change"], Slider: ["Value", "Min", "Max", "Change"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["x:Name"], "lui:Set": ["Path", "Value"]
+    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["Name"], "lui:Set": ["Path", "Value"]
   };
   const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"] : [];
-  return [...new Set([...common, ...(specific[tag ?? ""] ?? []), ...attached, ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview.") && key !== "x:Ref" && !directoryAlias(key))])];
+  return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached, ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview.") && key !== "x:Ref" && !directoryAlias(key))])];
 }
 
 function layoutResult(host: HTMLElement, node: SerializableNode): void {
