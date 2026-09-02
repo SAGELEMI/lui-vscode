@@ -1,0 +1,14 @@
+{
+  "$schema": "vscode://schemas/icon-theme",
+  "iconDefinitions": {
+    "_lui": {
+      "iconPath": "./lui-file.svg"
+    }
+  },
+  "fileExtensions": {
+    "lui": "_lui"
+  },
+  "languageIds": {
+    "lui": "_lui"
+  }
+}

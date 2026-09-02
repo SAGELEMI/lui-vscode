@@ -28,6 +28,7 @@
     "urhox"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:lui",
     "onCommand:lui.deployUrhoXLuaRuntime",
     "onCommand:lui.openPreview",
@@ -70,6 +71,17 @@
       {
         "command": "lui.generateActionStub",
         "title": "LUI: 生成带副名称注释的动作桩"
+      },
+      {
+        "command": "lui.selectFileIconTheme",
+        "title": "LUI: 启用 LUI 文件图标主题"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "lui-studio-file-icons",
+        "label": "LUI Studio 文件图标",
+        "path": "./icons/lui-icon-theme.json"
       }
     ],
     "customEditors": [
@@ -103,6 +115,7 @@
   "files": [
     "dist/**",
     "media/**",
+    "icons/**",
     "syntaxes/**",
     "language-configuration.json",
     "runtime/**",

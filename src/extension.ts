@@ -25,6 +25,16 @@ const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" 
 const PRIMARY_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const TAGS = ["Panel", "Row", "Text", "Button", "Card", "Scroll", "Progress", "Toggle", "Slider", "SafeArea", "Modal", "Header", "EquipmentSlots", "lui:If", "lui:For", "lui:Slot", "lui:Preview"];
 
+/** Explorer decorations never replace the user's selected icon theme; they mark LUI files immediately. */
+function registerExplorerDecorations(context: vscode.ExtensionContext): void {
+  const luiDecoration = new vscode.FileDecoration("LU", "LUI 设计文件", new vscode.ThemeColor("terminal.ansiMagenta"));
+  context.subscriptions.push(vscode.window.registerFileDecorationProvider({
+    provideFileDecoration(uri) {
+      return uri.scheme === "file" && uri.path.toLowerCase().endsWith(".lui") ? luiDecoration : undefined;
+    }
+  }));
+}
+
 function nodeAt(node: LuiNode | undefined, offset: number): LuiNode | undefined {
   if (!node || offset < node.range.start || offset > node.range.end) return undefined;
   for (const child of node.children) {
@@ -314,6 +324,7 @@ window.addEventListener('message',e=>{if(e.data.type==='model'){model=e.data.mod
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  registerExplorerDecorations(context);
   registerLanguageServices(context);
   context.subscriptions.push(vscode.window.registerCustomEditorProvider(LuiPreviewProvider.viewType, new LuiPreviewProvider(context), { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: true }));
   context.subscriptions.push(vscode.commands.registerCommand("lui.openPreview", async () => {
@@ -335,6 +346,10 @@ export function activate(context: vscode.ExtensionContext): void {
     const stub = `${primary} = function()\n    -- 在此转发受控动作。\nend, -- LUI：${display}`;
     await vscode.env.clipboard.writeText(stub);
     vscode.window.showInformationMessage(`已复制 ${primary} 动作桩；将其粘贴到同名 .lui.lua 的 actions 表。`);
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("lui.selectFileIconTheme", async () => {
+    await vscode.workspace.getConfiguration("workbench").update("iconTheme", "lui-studio-file-icons", vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage("已启用 LUI Studio 文件图标主题。可随时在“文件图标主题”中切回原主题。");
   }));
   void runtimeStatus().then(async (status) => {
     if (!status || status.installed) return;
