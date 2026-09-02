@@ -1,0 +1,17 @@
+{
+  "scopeName": "text.lui",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#tag" },
+    { "include": "#binding" }
+  ],
+  "repository": {
+    "comment": { "name": "comment.block.lui", "begin": "<!--", "end": "-->" },
+    "tag": { "begin": "</?", "end": ">", "name": "meta.tag.lui", "patterns": [
+      { "match": "[A-Za-z_][A-Za-z0-9_.:-]*", "name": "entity.name.tag.lui" },
+      { "match": "[A-Za-z_][A-Za-z0-9_.:-]*(?=\\s*=)", "name": "entity.other.attribute-name.lui" },
+      { "begin": "\"", "end": "\"", "name": "string.quoted.double.lui" }
+    ] },
+    "binding": { "match": "\\{(?:Binding|Action)\\s+[^}]+\\}", "name": "variable.other.binding.lui" }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "adapter": "urhox-lua",
+  "version": "0.1.0",
+  "description": "LUI runtime adapter for UrhoX Lua projects."
+}

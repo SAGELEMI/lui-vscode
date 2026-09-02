@@ -1,0 +1,133 @@
+{
+  "name": "lui-vscode",
+  "displayName": "LUI Studio",
+  "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
+  "version": "0.1.0",
+  "publisher": "SAGELEMI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SAGELEMI/lui-vscode.git"
+  },
+  "private": false,
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "lui",
+    "xaml",
+    "ui",
+    "game",
+    "urhox"
+  ],
+  "activationEvents": [
+    "onLanguage:lui",
+    "onCommand:lui.deployUrhoXLuaRuntime",
+    "onCommand:lui.openPreview",
+    "onCommand:lui.generateActionStub"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lui",
+        "aliases": [
+          "LUI",
+          "LUI XAML"
+        ],
+        "extensions": [
+          ".LUI"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lui",
+        "scopeName": "text.lui",
+        "path": "./syntaxes/lui.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "lui.openPreview",
+        "title": "LUI: 打开设计预览"
+      },
+      {
+        "command": "lui.deployUrhoXLuaRuntime",
+        "title": "LUI: 部署 UrhoX/Lua 运行时"
+      },
+      {
+        "command": "lui.checkWorkspace",
+        "title": "LUI: 检查运行时部署"
+      },
+      {
+        "command": "lui.generateActionStub",
+        "title": "LUI: 生成带副名称注释的动作桩"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "lui.preview",
+        "displayName": "LUI 设计预览",
+        "selector": [
+          {
+            "filenamePattern": "*.LUI"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "configuration": {
+      "title": "LUI Studio",
+      "properties": {
+        "lui.preview.defaultDevice": {
+          "type": "string",
+          "default": "360x800",
+          "enum": [
+            "360x800",
+            "390x844",
+            "768x1024"
+          ],
+          "description": "LUI 设计预览的默认逻辑像素尺寸。"
+        }
+      }
+    }
+  },
+  "files": [
+    "dist/**",
+    "media/**",
+    "syntaxes/**",
+    "language-configuration.json",
+    "runtime/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "deploy:urhox": "node ./scripts/deploy-runtime.mjs",
+    "check:lua": "node ./scripts/check-lua.mjs",
+    "test": "npm run build && node --test ./tests/*.test.mjs",
+    "check": "npm run test",
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.1.0.vsix",
+    "watch": "node ./scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.9.2",
+    "ajv": "^8.17.1",
+    "esbuild": "^0.25.2",
+    "luaparse": "^0.3.1",
+    "typescript": "^5.8.3"
+  }
+}

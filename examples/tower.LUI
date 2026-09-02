@@ -1,0 +1,8 @@
+<lui:Page xmlns:lui="urn:lui" x:Name="Tower" x:DisplayName="无尽塔">
+  <!-- 副名称只在设计器中显示，实际文案由 Text 决定。 -->
+  <Panel x:Name="BattleArea" x:DisplayName="战斗区域" Gap="10">
+    <Text x:Name="Title" x:DisplayName="页面标题" Text="{Binding title}" FontSize="20" />
+    <Button x:Name="OpenSettings" x:DisplayName="打开设置" Text="设置" Click="{Action OpenSettings}" />
+  </Panel>
+  <lui:Preview x:Name="Battle" x:DisplayName="战斗中" />
+</lui:Page>
