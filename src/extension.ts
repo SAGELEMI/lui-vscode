@@ -176,7 +176,7 @@ class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
       const rootSource = sourcePayload(document);
       bundle.sources[rootSource.source] = rootSource;
       allowedSources = new Set(Object.keys(bundle.sources));
-      panel.webview.postMessage({ type: "model", model: { root: parsed.root ? serializeNode(parsed.root, document.uri) : undefined, diagnostics: parsed.diagnostics }, catalog: bundle.catalog, sources: bundle.sources, rootSource: rootSource.source, device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "360x800") });
+      panel.webview.postMessage({ type: "model", model: { root: parsed.root ? serializeNode(parsed.root, document.uri) : undefined, diagnostics: parsed.diagnostics }, catalog: bundle.catalog, sources: bundle.sources, rootSource: rootSource.source, device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "390x844") });
     };
     const changes = vscode.workspace.onDidChangeTextDocument((event) => {
       if (allowedSources.has(event.document.uri.toString())) void update();
@@ -302,7 +302,7 @@ function previewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
   const designer = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "designer.js"));
   const nonce = createUuid();
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
-<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label>设备 <select id="device"><option>360x800</option><option>390x844</option><option>768x1024</option></select></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
+<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label>设备 <select id="device"><option>390x844</option><option>360x800</option><option>768x1024</option></select></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
 <div id="splitter" role="separator" aria-label="调整设计预览与源码高度"></div>
 <section id="source-panel"><div id="source-editor"></div></section>
 <script nonce="${nonce}" src="${designer}"></script></body></html>`;

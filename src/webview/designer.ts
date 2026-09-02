@@ -144,9 +144,10 @@ function resolve(value: string | undefined, scope: Record<string, unknown>): str
   if (fromPreview !== undefined) return String(fromPreview);
   const samples: Record<string, string> = {
     title: "无尽塔", enemyText: "塔层守卫 · Lv.1", playerText: "冒险者 · Lv.1", logText: "战斗记录将在这里显示。",
-    weaponText: "武器槽（空）", armorText: "护甲槽（空）", detailText: "在这里查看当前选择的说明。", profileSummary: "本地进度已就绪。"
+    weaponText: "武器槽（空）", armorText: "护甲槽（空）", detailText: "在这里查看当前选择的说明。", profileSummary: "本地进度已就绪。",
+    towerText: "继续爬塔"
   };
-  return samples[path] ?? `{{${path}}}`;
+  return samples[path];
 }
 
 function effective(node: SerializableNode, scope: Record<string, unknown>): Record<string, string | undefined> {

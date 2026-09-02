@@ -50,7 +50,7 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 #diagnostics { color: #ff9db8; padding: 0 14px; }
 #diagnostics p { margin: 5px 0; }
 #stage { flex: 1; min-height: 0; padding: 20px; overflow: auto; background: radial-gradient(circle at 20% 0, #30204f, transparent 42%), #0d0717; }
-#canvas { width: 360px; min-height: 800px; margin: auto; padding: 8px; background: #0b0714; border: 1px solid #7855aa; border-radius: 20px; box-shadow: 0 16px 50px #0008; overflow: hidden; }
+#canvas { width: 390px; min-height: 844px; margin: auto; padding: 0; background: #0b0714; box-shadow: 0 16px 50px #0008; overflow: hidden; }
 
 #splitter { cursor: row-resize; background: #28183e; border-top: 1px solid #60477e; border-bottom: 1px solid #0b0714; position: relative; }
 #splitter:hover, #splitter:active { background: #7855aa; }
@@ -71,7 +71,7 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 .lui-node.card { padding: 12px; border: 1px solid #8064a8; border-radius: 12px; background: #211535; box-shadow: 0 5px 16px #0004; }
 .lui-node.scroll { min-height: 96px; max-height: 260px; overflow: auto; padding: 8px; border: 1px solid #4f396d; border-radius: 10px; background: #130b20; }
 .lui-node.modal { margin: 28px 10px; padding: 16px; border: 1px solid #d5b56d; border-radius: 14px; background: #2a1944; box-shadow: 0 18px 50px #000a; }
-.lui-node.safe-area { padding: 14px; border: 1px dashed #694f8e; border-radius: 12px; }
+.lui-node.safe-area { padding: 0; border: 0; border-radius: 0; }
 .lui-node.progress { display: flex; flex-direction: column; gap: 5px; }
 .progress-track { height: 10px; width: 100%; overflow: hidden; border-radius: 99px; background: #392750; }
 .progress-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8b5cf6, #d5b56d); }

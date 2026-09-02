@@ -27,4 +27,18 @@ test("the inspector exposes only applicable Chinese controls and preserves the L
   assert.match(vocabulary, /"网格": "Grid"/);
   assert.match(vocabulary, /"画布": "Canvas"/);
   assert.match(vocabulary, /"插槽名": "Name"/);
+  assert.match(vocabulary, /"原生菜单安全区": "NativeMenuInset"/);
+});
+
+test("the preview defaults to the Maker long-screen viewport and hides unresolved conditional branches", async () => {
+  const manifest = await readFile("package.json", "utf8");
+  const host = await readFile("src/extension.ts", "utf8");
+  const designer = await readFile("src/webview/designer.ts", "utf8");
+  const css = await readFile("media/preview.css", "utf8");
+  assert.match(manifest, /"default": "390x844"/);
+  assert.match(host, /get<string>\("preview\.defaultDevice", "390x844"\)/);
+  assert.match(designer, /return samples\[path\];/);
+  assert.match(designer, /towerText: "继续爬塔"/);
+  assert.match(css, /#canvas \{ width: 390px; min-height: 844px;[^}]*padding: 0;/);
+  assert.match(css, /\.lui-node\.safe-area \{ padding: 0; border: 0;/);
 });

@@ -95,7 +95,7 @@
       "properties": {
         "lui.preview.defaultDevice": {
           "type": "string",
-          "default": "360x800",
+          "default": "390x844",
           "enum": [
             "360x800",
             "390x844",
