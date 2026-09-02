@@ -19,6 +19,9 @@ test("runtime deployment retains exactly one current snapshot and leaves it unto
     await writeFile(join(runtime, ".backup-100", "legacy.txt"), "older", "utf8");
     await writeFile(join(runtime, ".backup-200", "legacy.txt"), "newer", "utf8");
     await writeFile(join(runtime, "Runtime.lua"), "-- current local runtime\n", "utf8");
+    await writeFile(join(runtime, "Parser.lua"), "-- current local parser\n", "utf8");
+    await writeFile(join(runtime, "init.lua"), "-- current local entry\n", "utf8");
+    await writeFile(join(runtime, "runtime-manifest.json"), "{\"version\":\"old\"}\n", "utf8");
 
     await execFile(process.execPath, [deployScript, project], { cwd: resolve(".") });
     const firstEntries = (await readdir(runtime, { withFileTypes: true }))
@@ -26,6 +29,8 @@ test("runtime deployment retains exactly one current snapshot and leaves it unto
       .map((entry) => entry.name);
     assert.deepEqual(firstEntries, [".backup-last"]);
     assert.equal(await readFile(join(runtime, ".backup-last", "Runtime.lua"), "utf8"), "-- current local runtime\n");
+    assert.equal(await readFile(join(runtime, ".backup-last", "Parser.lua"), "utf8"), "-- current local parser\n");
+    assert.equal(await readFile(join(runtime, ".backup-last", "init.lua"), "utf8"), "-- current local entry\n");
 
     await execFile(process.execPath, [deployScript, project], { cwd: resolve(".") });
     const secondEntries = (await readdir(runtime, { withFileTypes: true }))

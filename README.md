@@ -46,7 +46,7 @@ npm run check
 npm run package:vsix
 ```
 
-安装 `dist/lui-vscode-0.5.0.vsix` 后重载 VS Code。首次部署运行时时会提示确认；更新只在哈希变化时保留一份 `.backup-last`，绝不覆盖用户设计文件、`lui.project.json` 或 `.meta`。本仓库不含任何具体游戏的领域数据、资源或玩法逻辑。
+安装 `dist/lui-vscode-0.5.0.vsix` 后重载 VS Code。首次部署运行时时会提示确认；更新只在哈希变化时保留一份 `.backup-last` 完整运行时快照，绝不覆盖用户设计文件、`lui.project.json` 或 `.meta`。本仓库不含任何具体游戏的领域数据、资源或玩法逻辑。
 
 ## 网格与画布
 

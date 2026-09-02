@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve, relative, dirname, join } from "node:path";
 
 const targetArgument = process.argv[2];
@@ -30,10 +30,45 @@ async function consolidateLegacyBackups() {
   }
 }
 
+async function snapshotCurrentRuntime(directory = sourceRoot) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const source = join(directory, entry.name);
+    if (entry.isDirectory()) { await snapshotCurrentRuntime(source); continue; }
+    const rel = relative(sourceRoot, source);
+    // Project configuration belongs to the game author and is never deployed or backed up.
+    if (rel === "lui.project.json") continue;
+    const current = join(targetRoot, rel);
+    if (!(await pathExists(current))) continue;
+    const backup = join(backupRoot, rel);
+    await mkdir(dirname(backup), { recursive: true });
+    await copyFile(current, backup);
+  }
+}
+
 async function prepareBackup() {
   if (backupPrepared) return;
   await rm(backupRoot, { recursive: true, force: true });
+  await snapshotCurrentRuntime();
   backupPrepared = true;
+}
+
+// Older releases recorded only the files changed by one deploy. A missing file
+// in that snapshot is unchanged from the immediately preceding runtime, so the
+// current copy is the correct value to complete the one recoverable snapshot.
+async function completeBackup(directory = sourceRoot) {
+  if (!(await pathExists(backupRoot))) return;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const source = join(directory, entry.name);
+    if (entry.isDirectory()) { await completeBackup(source); continue; }
+    const rel = relative(sourceRoot, source);
+    if (rel === "lui.project.json") continue;
+    const current = join(targetRoot, rel);
+    const backup = join(backupRoot, rel);
+    if ((await pathExists(current)) && !(await pathExists(backup))) {
+      await mkdir(dirname(backup), { recursive: true });
+      await copyFile(current, backup);
+    }
+  }
 }
 
 async function scanMeta(directory) {
@@ -58,11 +93,8 @@ async function deployDirectory(directory) {
     let current;
     try { current = await readFile(destination); } catch { current = undefined; }
     if (rel === "lui.project.json" && current) continue;
-    if (current && !current.equals(incoming)) {
+    if (!current || !current.equals(incoming)) {
       await prepareBackup();
-      const backup = join(backupRoot, rel);
-      await mkdir(dirname(backup), { recursive: true });
-      await writeFile(backup, current);
     }
     if (!current || !current.equals(incoming)) await writeFile(destination, incoming);
     const meta = `${destination}.meta`;
@@ -89,5 +121,6 @@ async function ensureLuiMetadata(directory) {
 await scanMeta(scriptsRoot);
 await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
+if (!backupPrepared) await completeBackup();
 await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
 console.log(`已部署 LUI UrhoX/Lua 运行时：${targetRoot}`);
