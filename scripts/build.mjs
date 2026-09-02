@@ -9,8 +9,8 @@ await mkdir(outdir, { recursive: true });
 await rm(resolve("runtime"), { recursive: true, force: true });
 await cp(resolve("packages/runtime-urhox-lua/adapter"), resolve("runtime/urhox-lua"), { recursive: true });
 
-const options = {
-  entryPoints: { extension: "src/extension.ts", spec: "packages/spec/src/index.ts" },
+const hostOptions = {
+  entryPoints: { extension: "src/extension.ts", spec: "packages/spec/src/index.ts", sourceSync: "src/webview/sourceSync.ts" },
   outdir,
   bundle: true,
   platform: "node",
@@ -21,10 +21,21 @@ const options = {
   external: ["vscode"],
   logLevel: "info"
 };
+const webviewOptions = {
+  entryPoints: ["src/webview/designer.ts"],
+  outfile: resolve("media/designer.js"),
+  bundle: true,
+  platform: "browser",
+  target: "es2020",
+  format: "iife",
+  minify: true,
+  logLevel: "info"
+};
 if (watch) {
-  const buildContext = await context(options);
-  await buildContext.watch();
+  const hostContext = await context(hostOptions);
+  const webviewContext = await context(webviewOptions);
+  await Promise.all([hostContext.watch(), webviewContext.watch()]);
   console.log("LUI Studio 正在监听源码变更。");
 } else {
-  await build(options);
+  await Promise.all([build(hostOptions), build(webviewOptions)]);
 }

@@ -1,4 +1,4 @@
-# LUI 0.2 语言约定
+# LUI 0.3 语言约定
 
 LUI 使用安全 XML 子集：元素、属性、嵌套、注释、`lui:If`、`lui:For`、`lui:Preview`、`{Binding path}` 与 `{Action ActionKey}`。不支持 DTD、外部实体、内嵌脚本或任意表达式。
 
@@ -17,6 +17,10 @@ LUI 使用安全 XML 子集：元素、属性、嵌套、注释、`lui:If`、`lu
 | 条件 | `<lui:If Test="{Binding hasRun}">` | 条件在 Lua 中预先计算 |
 | 循环 | `<lui:For Each="entry" In="{Binding entries}">` | 使用数组顺序 |
 | 预览 | `<lui:Preview x:Name="Battle" x:DisplayName="战斗中"><lui:Set Path="title" Value="第 12 层" /></lui:Preview>` | 仅 VS Code 读取；`lui:Set` 只为 `{Binding title}` 提供模拟值 |
+
+## 单标签设计器
+
+`.lui` 的默认编辑器是单一 LUI Studio 标签：上半区为元素树、预览画布和中文属性，下半区为内嵌 CodeMirror 源码。树、画布、属性和源码光标按节点范围双向定位，且中间分隔条可调整比例。进入已展开的目录组件内部节点时，底部在同一标签中切换到组件设计文件，并显示“页面 / 组件路径”；不会创建 VS Code 编辑器组。源码、属性都通过带版本号的 `WorkspaceEdit` 写回宿主 `TextDocument`，旧版本写入会被宿主内容替换。
 
 `.lui.lua` 应返回：
 
