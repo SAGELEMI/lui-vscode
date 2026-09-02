@@ -1,11 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "adapter": "urhox-lua",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "sourceRoots": [
     "Presentation/Pages",
     "Presentation/Components",
     "Presentation/Modals"
   ],
-  "documents": {}
+  "componentDirectories": {}
 }

@@ -1,21 +1,34 @@
 # LUI Studio
 
-LUI 是面向游戏 UI 的 UTF-8、XAML 风格声明式语言。它把可见布局放进小写 `.lui`，把数据和交互放进同名 `.lui.lua`，并提供不执行游戏代码的 VS Code 画布预览。
+LUI 是面向游戏 UI 的 UTF-8、XAML 风格声明式语言。可见布局写在小写 `.lui`，数据和交互写在同名 `.lui.lua`；VS Code 设计器只解释 LUI 和 `<lui:Preview>`，从不执行游戏代码。
 
-## 双名称规则
+## 目录命名空间与名称
 
-每个页面、组件、动作、资源和预览场景均使用 ASCII 主名称；副名称可使用 UTF-8，供设计师阅读：
+组件目录就是命名空间。页面或组件根节点用 UTF-8 别名导入实际目录，再用限定标签引用已登记组件：
 
 ```xml
-<lui:Page xmlns:lui="urn:lui" x:Name="Tower" x:DisplayName="无尽塔">
-  <Button x:Name="OpenSettings" x:DisplayName="打开设置" Text="设置"
-          Click="{Action OpenSettings}" />
+<lui:Page xmlns:lui="urn:lui"
+          xmlns:积木="Presentation/Components"
+          x:Name="塔内">
+  <积木:Header x:Name="塔内页眉" Title="无尽塔" />
+  <Progress x:Name="敌人血量" x:Ref="EnemyHp" Value="{Binding enemyHp}" />
 </lui:Page>
 ```
 
-- `x:Name` 是唯一运行时键，也是 Lua 中唯一允许引用的名称。
-- `x:DisplayName` 是唯一的人类辅助名称；画布、树和调色板优先显示它，但不会覆盖 `Text` 等实际游戏文案。
-- 两种名称在各自 XML 命名空间内都必须唯一，且不能互相冲突。
+- `xmlns:别名="目录路径"` 是唯一的目录导入语法；`lui` 保留给系统命名空间。
+- `x:Name` 是设计名称，可用 UTF-8；`x:DisplayName` 是可选副名称。两类名称在同一文件中各自唯一且不能互相冲突。
+- `x:Ref` 是唯一会作为控件引用进入 Lua 的字段，必须是 ASCII。`Binding`、`Action`、`.lui.lua` 和页面映射同样保持 ASCII；Lua 使用实际目录路径，绝不依赖中文别名。
+- `scripts/LUI/lui.project.json` v2 的 `componentDirectories` 按实际目录登记组件。未导入目录、目录越界、未登记组件、裸全局组件调用和循环组件依赖都会报出明确错误；v1 `documents` 仍可兼容读取并给出迁移诊断。
+
+## 设计器
+
+双击 `.lui` 默认会自动组成上下编辑：上方是设计预览，下方是同一份 VS Code 原生文本编辑器（约 60% / 40%）。源码、组件树、画布、右侧中文属性检查器会互相定位；属性修改直接回写同一份源码。需要单独文本时仍可选择“重新用文本编辑器打开”。
+
+画布绘制真实的文本、按钮、卡片、进度条、滚动区和已导入组件的实际层级，不把 `x:Name` 或 `x:DisplayName` 当作游戏文案。树与画布悬停、选中时会像浏览器开发者工具一样框选同一控件。属性按“LUI 名称、Lua 引用、布局、外观、文本与交互、数据与条件”分组，包含外边距、内边距、宽高、锚点、四边定位、间距和弹性布局。
+
+有效且未修改的文件首次打开时自动采用两空格排版；输入、粘贴和“格式化文档”会继续使用该格式。无效文件只显示诊断，不自动重排。
+
+`.lui` 语言贡献自己的深浅色默认文件图标；它会让当前 Material Icon Theme 使用 LUI 文件图标，不添加右侧 `LU` 装饰，也不改动用户全局图标主题。
 
 ## 本地开发
 
@@ -25,15 +38,4 @@ npm run check
 npm run package:vsix
 ```
 
-使用 VS Code 的“从 VSIX 安装…”安装 `dist/lui-vscode-0.1.0.vsix`。首次打开 LUI 文件时，扩展会检查 `scripts/LUI/lui.project.json`，并在用户确认后部署 UrhoX/Lua 适配包；部署不依赖 TapTap Maker。
-
-## 边界
-
-- 双击 `.lui` 默认进入设计器；需要源码时，在 VS Code 中选择“重新用文本编辑器打开”。
-- 画布只绘制实际文本、按钮、卡片、进度条和布局效果，不显示 `x:Name` 或 `x:DisplayName`；组件树与画布支持悬停/选中双向框选。属性面板提供 `Margin`、`Padding`、宽高、`Anchor`、四边定位、间距和弹性布局编辑。
-- 资源管理器会自动为 `.lui` 显示紫色 `LU` 格式标记；若需要完整矢量文件图标，可运行“LUI: 启用 LUI 文件图标主题”。该命令才会改变 VS Code 的全局文件图标主题。
-- 扩展列表使用透明背景的 LUI Studio 应用图标；它与资源管理器中的 `.lui` 文件格式图标相互独立。
-- 预览只解释 `.lui` 和其中的 `<lui:Preview>` 数据，绝不执行 `.lui.lua`、读取存档或启动引擎。
-- UrhoX/Lua 适配器只加载项目配置白名单内的 `.lui.lua`。
-- 运行时更新只在内容哈希变化时保留一份 `.backup-last`；用户设计文件、配置和 `.meta` 不会被备份或覆盖。
-- 本仓库不含任何具体游戏的领域数据、资源或玩法逻辑。
+安装 `dist/lui-vscode-0.2.0.vsix` 后重载 VS Code。首次部署运行时时会提示确认；更新只在哈希变化时保留一份 `.backup-last`，绝不覆盖用户的设计文件、`lui.project.json` 或 `.meta`。本仓库不含任何具体游戏的领域数据、资源或玩法逻辑。

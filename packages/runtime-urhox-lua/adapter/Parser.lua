@@ -1,4 +1,4 @@
--- LUI 解析器：只识别 XML 形状的安全子集，UTF-8 文案按 Lua 字节串原样保留。
+-- LUI 解析器：设计层可以使用 UTF-8；只有 x:Ref、Binding、Action 会进入 Lua。
 local Parser = {}
 
 local function readResource(path)
@@ -11,9 +11,42 @@ local function readResource(path)
     return text, nil
 end
 
-local function parseAttributes(text)
+local function isSpace(byte) return byte == 32 or byte == 9 or byte == 10 or byte == 13 end
+local function isNameDelimiter(byte)
+    return not byte or isSpace(byte) or byte == 60 or byte == 62 or byte == 47 or byte == 61 or byte == 34 or byte == 39
+end
+local function skipSpace(text, index)
+    while isSpace(text:byte(index)) do index = index + 1 end
+    return index
+end
+local function readName(text, index)
+    local start = index
+    while not isNameDelimiter(text:byte(index)) do index = index + 1 end
+    if index == start then return nil, index end
+    return text:sub(start, index - 1), index
+end
+
+local function parseAttributes(text, start, finish)
     local attrs = {}
-    for name, quote, value in text:gmatch("([%w_%.:%-]+)%s*=%s*([\"'])(.-)%2") do attrs[name] = value end
+    local index = start
+    while index <= finish do
+        index = skipSpace(text, index)
+        if index > finish then break end
+        local name
+        name, index = readName(text, index)
+        if not name then return nil, "LUI 属性名无效。" end
+        index = skipSpace(text, index)
+        if text:sub(index, index) ~= "=" then return nil, "LUI 属性缺少 =：" .. name end
+        index = skipSpace(text, index + 1)
+        local quote = text:sub(index, index)
+        if quote ~= "\"" and quote ~= "'" then return nil, "LUI 属性必须使用引号：" .. name end
+        local valueStart = index + 1
+        local close = text:find(quote, valueStart, true)
+        if not close or close > finish + 1 then return nil, "LUI 属性没有结束引号：" .. name end
+        if attrs[name] ~= nil then return nil, "LUI 属性重复：" .. name end
+        attrs[name] = text:sub(valueStart, close - 1)
+        index = close + 1
+    end
     return attrs
 end
 
@@ -26,12 +59,14 @@ local function makeSymbolPool()
     end }
 end
 
--- 主名称必须是 ASCII；副名称仅保存在编辑器可见元数据中，运行时永不用于查找。
-local function validatePrimary(attrs, path, offset)
+local function validateDesignName(attrs, path, offset)
     local name = attrs["x:Name"]
-    if not name then return true end
-    if not name:match("^[A-Za-z][A-Za-z0-9_.%-]*$") then
-        return false, string.format("%s:%d x:Name 必须是 ASCII 主名称。", path, offset)
+    if name and (name:match("^%s*$") or name:find("[<>]")) then
+        return false, string.format("%s:%d x:Name 必须是非空设计名称。", path, offset)
+    end
+    local ref = attrs["x:Ref"]
+    if ref and not ref:match("^[A-Za-z][A-Za-z0-9_.%-]*$") then
+        return false, string.format("%s:%d x:Ref 必须是 ASCII Lua 引用。", path, offset)
     end
     return true
 end
@@ -41,39 +76,50 @@ function Parser.Read(path) return readResource(path) end
 function Parser.Parse(text, path)
     if type(text) ~= "string" then return nil, "LUI 源码必须是文本。" end
     if text:sub(1, 3) == "\239\187\191" then text = text:sub(4) end
-    -- 注释属于设计源信息，不进入运行控件树；先剥离以避免把 <!----> 误判成节点。
-    text = text:gsub("<!%-%-.-%-%->", "")
-    local pool = makeSymbolPool()
-    local root = nil
-    local stack = {}
+    local pool, root, stack = makeSymbolPool(), nil, {}
     local offset = 1
     while offset <= #text do
-        local openStart, openEnd, closing, tag, rawAttrs, selfClosing = text:find("<%s*(/?)%s*([%w_%.:%-]+)(.-)(/?)%s*>", offset)
-        if not openStart then break end
-        local before = text:sub(offset, openStart - 1)
-        if before:match("%S") and #stack > 0 then
-            local parent = stack[#stack]
-            parent.children[#parent.children + 1] = { kind = "Text", text = before }
+        local openStart = text:find("<", offset, true)
+        if not openStart then
+            local trailing = text:sub(offset)
+            if trailing:match("%S") and #stack > 0 then stack[#stack].children[#stack[#stack].children + 1] = { kind = "Text", text = trailing } end
+            break
         end
-        offset = openEnd + 1
-        if closing == "/" then
-            local node = table.remove(stack)
-            if not node or node.tag ~= tag then return nil, string.format("%s:%d LUI 结束标签不匹配：%s", path, openStart, tag) end
+        local before = text:sub(offset, openStart - 1)
+        if before:match("%S") and #stack > 0 then stack[#stack].children[#stack[#stack].children + 1] = { kind = "Text", text = before } end
+        if text:sub(openStart, openStart + 3) == "<!--" then
+            local commentEnd = text:find("-->", openStart + 4, true)
+            if not commentEnd then return nil, string.format("%s:%d LUI 注释未结束。", path, openStart) end
+            offset = commentEnd + 3
         else
-            local attrs = parseAttributes(rawAttrs or "")
-            local valid, message = validatePrimary(attrs, path, openStart)
-            if not valid then return nil, message end
-            -- 副名称只给编辑器和文档使用，解析后立即丢弃，绝不参与游戏逻辑或绑定。
-            local primaryName = attrs["x:Name"]
-            attrs["x:DisplayName"] = nil
-            local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = attrs, attrSymbols = {}, children = {}, sourcePath = path }
-            if primaryName then node.nameSymbol = pool:Intern(primaryName) end
-            for name in pairs(attrs) do node.attrSymbols[pool:Intern(name)] = true end
-            if not root then root = node elseif #stack == 0 then return nil, string.format("%s:%d LUI 只能有一个根元素。", path, openStart) end
-            if #stack > 0 then
-                local parent = stack[#stack]; parent.children[#parent.children + 1] = node
+            local originalClose = text:find(">", openStart + 1, true)
+            if not originalClose then return nil, string.format("%s:%d LUI 标签未结束。", path, openStart) end
+            local index = skipSpace(text, openStart + 1)
+            local closing = false
+            if text:sub(index, index) == "/" then closing = true; index = skipSpace(text, index + 1) end
+            local tag
+            tag, index = readName(text, index)
+            if not tag then return nil, string.format("%s:%d LUI 标签缺少名称。", path, openStart) end
+            index = skipSpace(text, index)
+            local attrFinish = originalClose - 1
+            local selfClosing = not closing and text:sub(attrFinish, attrFinish) == "/"
+            if selfClosing then attrFinish = attrFinish - 1 end
+            if closing then
+                if text:sub(index, originalClose - 1):match("%S") then return nil, string.format("%s:%d LUI 结束标签无效。", path, openStart) end
+                local node = table.remove(stack)
+                if not node or node.tag ~= tag then return nil, string.format("%s:%d LUI 结束标签不匹配：%s", path, openStart, tag) end
+            else
+                local attrs, attrErr = parseAttributes(text, index, attrFinish)
+                if not attrs then return nil, string.format("%s:%d %s", path, openStart, attrErr) end
+                local valid, message = validateDesignName(attrs, path, openStart)
+                if not valid then return nil, message end
+                local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = attrs, attrSymbols = {}, children = {}, sourcePath = path }
+                for name in pairs(attrs) do node.attrSymbols[pool:Intern(name)] = true end
+                if not root then root = node elseif #stack == 0 then return nil, string.format("%s:%d LUI 只能有一个根元素。", path, openStart) end
+                if #stack > 0 then stack[#stack].children[#stack[#stack].children + 1] = node end
+                if not selfClosing then stack[#stack + 1] = node end
             end
-            if selfClosing ~= "/" then stack[#stack + 1] = node end
+            offset = originalClose + 1
         end
     end
     if #stack > 0 then return nil, string.format("%s: <%s> 缺少结束标签。", path, stack[#stack].tag) end

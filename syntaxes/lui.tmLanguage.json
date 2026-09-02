@@ -8,8 +8,8 @@
   "repository": {
     "comment": { "name": "comment.block.lui", "begin": "<!--", "end": "-->" },
     "tag": { "begin": "</?", "end": ">", "name": "meta.tag.lui", "patterns": [
-      { "match": "[A-Za-z_][A-Za-z0-9_.:-]*", "name": "entity.name.tag.lui" },
-      { "match": "[A-Za-z_][A-Za-z0-9_.:-]*(?=\\s*=)", "name": "entity.other.attribute-name.lui" },
+      { "match": "[^\\s<>/=\\\"']+", "name": "entity.name.tag.lui" },
+      { "match": "[^\\s<>/=\\\"']+(?=\\s*=)", "name": "entity.other.attribute-name.lui" },
       { "begin": "\"", "end": "\"", "name": "string.quoted.double.lui" }
     ] },
     "binding": { "match": "\\{(?:Binding|Action)\\s+[^}]+\\}", "name": "variable.other.binding.lui" }

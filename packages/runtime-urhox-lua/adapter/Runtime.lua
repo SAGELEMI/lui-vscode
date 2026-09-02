@@ -20,6 +20,11 @@ local function inAllowedRoot(path, roots)
     return false
 end
 
+local function isDirectoryPath(path)
+    if type(path) ~= "string" or path == "" or path:sub(1, 1) == "/" or path:find("\\", 1, true) or path:find("..", 1, true) then return false end
+    return not path:find("//", 1, true) and not path:find("/./", 1, true)
+end
+
 local function loadLuaModule(path, roots)
     if not inAllowedRoot(path, roots) then return nil, "LUI 代码路径不在白名单内：" .. tostring(path) end
     if not path:match("%.lui%.lua$") then return nil, "LUI 仅可加载白名单内的 .lui.lua 后端：" .. tostring(path) end
@@ -121,6 +126,7 @@ function Runtime:Init()
     self.config_, self.configError_ = readProjectConfig()
     self.documents_ = {}
     self.code_ = {}
+    self.isV2_ = tonumber(self.config_.schemaVersion or 1) >= 2
 end
 
 function Runtime:LoadDocument(path)
@@ -139,12 +145,47 @@ function Runtime:LoadCode(path)
     return code, nil
 end
 
-function Runtime:LoadComponent(name)
+function Runtime:LoadLegacyComponent(name)
     local descriptor = (self.config_.documents or {})[name]
     if not descriptor then return nil, nil end
     local path = type(descriptor) == "table" and descriptor.markup or descriptor
     if type(path) ~= "string" then return nil, "LUI 组件路径无效：" .. tostring(name) end
     return self:LoadDocument(path)
+end
+
+function Runtime:ImportsFor(document)
+    local imports = {}
+    for attribute, directory in pairs(document.attrs or {}) do
+        local alias = attribute:match("^xmlns:(.+)$")
+        if alias == "lui" then
+            if directory ~= "urn:lui" then return nil, "LUI 系统命名空间必须为 xmlns:lui=\"urn:lui\"。" end
+        elseif alias then
+            if not isDirectoryPath(directory) then return nil, "LUI 目录导入无效：" .. tostring(directory) end
+            if imports[alias] then return nil, "LUI 目录别名重复：" .. tostring(alias) end
+            imports[alias] = directory
+        end
+    end
+    return imports, nil
+end
+
+function Runtime:LoadDirectoryComponent(directory, name)
+    if not isDirectoryPath(directory) then return nil, "LUI 组件目录越界：" .. tostring(directory) end
+    local directories = self.config_.componentDirectories
+    if type(directories) ~= "table" then return nil, "LUI v2 配置缺少 componentDirectories。" end
+    local registered = directories[directory]
+    if type(registered) ~= "table" then return nil, "LUI 未登记导入目录：" .. tostring(directory) end
+    local descriptor = registered[name]
+    if not descriptor then return nil, "LUI 目录 " .. directory .. " 未登记组件：" .. tostring(name) end
+    local path = type(descriptor) == "table" and descriptor.markup or descriptor
+    if type(path) ~= "string" or not inAllowedRoot(path, self.config_.sourceRoots) then return nil, "LUI 组件路径不在白名单内：" .. tostring(path) end
+    return self:LoadDocument(path)
+end
+
+function Runtime:HasRegisteredComponentName(name)
+    for _, directory in pairs(self.config_.componentDirectories or {}) do
+        if type(directory) == "table" and directory[name] then return true end
+    end
+    return false
 end
 
 function Runtime:BuildChildren(nodes, context)
@@ -190,15 +231,40 @@ function Runtime:BuildNode(node, context)
         if #items == 1 then return items[1] end
         return UI.Panel { width = "100%", height = "100%", children = items }
     end
-    local component, componentErr = self:LoadComponent(tag)
+    local component, componentErr, componentKey = nil, nil, nil
+    local alias, name = tag:match("^([^:]+):(.+)$")
+    if alias and alias ~= "lui" then
+        local directory = context.imports and context.imports[alias]
+        if not directory then error("LUI 组件 " .. tostring(tag) .. " 未在当前根节点导入目录别名 " .. tostring(alias) .. "。") end
+        component, componentErr = self:LoadDirectoryComponent(directory, name)
+        componentKey = directory .. ":" .. name
+    elseif self.isV2_ and self:HasRegisteredComponentName(tag) then
+        error("LUI v2 组件必须使用目录别名：<目录别名:" .. tostring(tag) .. ">。")
+    elseif not self.isV2_ then
+        component, componentErr = self:LoadLegacyComponent(tag)
+        componentKey = tag
+    end
     if componentErr then error(componentErr) end
     if component then
+        local componentStack = context.componentStack or {}
+        if componentStack[componentKey] then error("LUI 组件循环依赖：" .. componentKey) end
+        componentStack[componentKey] = true
+        local componentImports, importsErr = self:ImportsFor(component)
+        if not componentImports then componentStack[componentKey] = nil; error(importsErr) end
         local properties = {}
         for name, value in pairs(attrs) do properties[name] = resolve(value, context) end
         local componentContext = setmetatable({
             props = properties, actions = context.actions, slots = { Content = visualChildren }, refs = context.refs,
+            imports = componentImports, componentStack = componentStack,
         }, { __index = context })
-        return self:BuildNode(component, componentContext)
+        local rendered = self:BuildNode(component, componentContext)
+        componentStack[componentKey] = nil
+        local ref = attrs["x:Ref"]
+        if ref and context.refs then
+            if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end
+            context.refs[ref] = rendered
+        end
+        return rendered
     end
     local props = propsFor(attrs, context)
     local children = self:BuildChildren(visualChildren, context)
@@ -208,7 +274,7 @@ function Runtime:BuildNode(node, context)
         props.text = tostring(text or "")
         widget = UI.Label(props)
     elseif tag == "Button" then
-        props.text = tostring(text or attrs["x:Name"] or "按钮")
+        props.text = tostring(text or "按钮")
         local action = actionName(resolve(attrs.Click, context))
         if action then props.onClick = function(_, event)
             local callback = context.actions and context.actions[action]
@@ -267,8 +333,12 @@ function Runtime:BuildNode(node, context)
         props.flexDirection = props.flexDirection or "column"; props.children = children
         widget = UI.Panel(props)
     end
-    local ref = attrs["x:Ref"] or attrs["x:Name"]
-    if ref and context.refs then context.refs[ref] = widget end
+    local ref = attrs["x:Ref"]
+    if not ref and not self.isV2_ then ref = attrs["x:Name"] end
+    if ref and context.refs then
+        if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end
+        context.refs[ref] = widget
+    end
     return widget
 end
 
@@ -279,7 +349,9 @@ function Runtime:Render(markupPath, codePath, presentation)
     if not code then return nil, codeErr end
     local result = code.Build and code.Build(presentation) or { view = {}, actions = {} }
     if type(result) ~= "table" then return nil, "LUI Build 必须返回 table。" end
-    local context = result.view or {}; context.actions = result.actions or {}; context.refs = {}
+    local imports, importsErr = self:ImportsFor(document)
+    if not imports then return nil, importsErr end
+    local context = result.view or {}; context.actions = result.actions or {}; context.refs = {}; context.imports = imports; context.componentStack = {}
     local root = self:BuildNode(document, context)
     if result.AfterMount then result.AfterMount(root, context) end
     return root, nil

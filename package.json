@@ -3,7 +3,7 @@
   "displayName": "LUI Studio",
   "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
   "icon": "icons/lui-studio.png",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "SAGELEMI",
   "license": "MIT",
   "repository": {
@@ -46,6 +46,10 @@
         "extensions": [
           ".lui"
         ],
+        "icon": {
+          "dark": "./icons/lui-file.svg",
+          "light": "./icons/lui-file-light.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],
@@ -72,17 +76,6 @@
       {
         "command": "lui.generateActionStub",
         "title": "LUI: 生成带副名称注释的动作桩"
-      },
-      {
-        "command": "lui.selectFileIconTheme",
-        "title": "LUI: 启用 LUI 文件图标主题"
-      }
-    ],
-    "iconThemes": [
-      {
-        "id": "lui-studio-file-icons",
-        "label": "LUI Studio 文件图标",
-        "path": "./icons/lui-icon-theme.json"
       }
     ],
     "customEditors": [
@@ -111,6 +104,12 @@
           "description": "LUI 设计预览的默认逻辑像素尺寸。"
         }
       }
+    },
+    "configurationDefaults": {
+      "[lui]": {
+        "editor.formatOnPaste": true,
+        "editor.formatOnType": true
+      }
     }
   },
   "files": [
@@ -132,7 +131,7 @@
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",
-    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.1.0.vsix",
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.2.0.vsix",
     "watch": "node ./scripts/build.mjs --watch"
   },
   "devDependencies": {
