@@ -40,11 +40,11 @@ local function loadLuaModule(path, roots)
 end
 
 local function bindingPath(value)
-    return type(value) == "string" and value:match("^{Binding%s+([%w_%.%-]+)}$") or nil
+    return type(value) == "string" and (value:match("^{绑定%s+([A-Za-z][A-Za-z0-9_.%-]*)}$") or value:match("^{Binding%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")) or nil
 end
 
 local function actionName(value)
-    return type(value) == "string" and value:match("^{Action%s+([A-Za-z][A-Za-z0-9_.%-]*)}$") or nil
+    return type(value) == "string" and (value:match("^{动作%s+([A-Za-z][A-Za-z0-9_.%-]*)}$") or value:match("^{Action%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")) or nil
 end
 
 local function resolvePath(context, path)
@@ -156,10 +156,8 @@ end
 function Runtime:ImportsFor(document)
     local imports = {}
     for attribute, directory in pairs(document.attrs or {}) do
-        local alias = attribute:match("^xmlns:(.+)$")
-        if alias == "lui" then
-            if directory ~= "urn:lui" then return nil, "LUI 系统命名空间必须为 xmlns:lui=\"urn:lui\"。" end
-        elseif alias then
+        local alias = attribute:match("^目录:(.+)$")
+        if alias then
             if not isDirectoryPath(directory) then return nil, "LUI 目录导入无效：" .. tostring(directory) end
             if imports[alias] then return nil, "LUI 目录别名重复：" .. tostring(alias) end
             imports[alias] = directory
@@ -171,7 +169,7 @@ end
 function Runtime:LoadDirectoryComponent(directory, name)
     if not isDirectoryPath(directory) then return nil, "LUI 组件目录越界：" .. tostring(directory) end
     local directories = self.config_.componentDirectories
-    if type(directories) ~= "table" then return nil, "LUI v2 配置缺少 componentDirectories。" end
+    if type(directories) ~= "table" then return nil, "LUI v3 配置缺少 componentDirectories。" end
     local registered = directories[directory]
     if type(registered) ~= "table" then return nil, "LUI 未登记导入目录：" .. tostring(directory) end
     local descriptor = registered[name]
@@ -239,7 +237,7 @@ function Runtime:BuildNode(node, context)
         component, componentErr = self:LoadDirectoryComponent(directory, name)
         componentKey = directory .. ":" .. name
     elseif self.isV2_ and self:HasRegisteredComponentName(tag) then
-        error("LUI v2 组件必须使用目录别名：<目录别名:" .. tostring(tag) .. ">。")
+        error("LUI v3 组件必须使用目录别名：<目录别名:" .. tostring(tag) .. ">。")
     elseif not self.isV2_ then
         component, componentErr = self:LoadLegacyComponent(tag)
         componentKey = tag

@@ -1,24 +1,20 @@
 import * as vscode from "vscode";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  ASCII_REFERENCE, displayNameOf, editAttribute, formatLui, namespaceImports, parseLui,
+  ASCII_REFERENCE, displayNameOf, editAttribute, editTag, formatLui, namespaceImports, parseLui,
   type LuiDiagnostic, type LuiDocument, type LuiNode
 } from "../packages/spec/src/index.js";
+import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, TAG_TO_CANONICAL, canonicalAttribute, canonicalTag, sourceAttribute } from "../packages/spec/src/vocabulary.js";
 import { decideSourceEdit, type VersionedSource } from "./webview/sourceSync.js";
 
 const RUNTIME_DIRECTORY = ["scripts", "LUI"] as const;
 const CONFIG_FILE = "lui.project.json";
 const MANIFEST_FILE = "runtime-manifest.json";
 const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" };
-const BUILTIN_TAGS = ["Panel", "Row", "Text", "Button", "Card", "Scroll", "Progress", "Toggle", "Slider", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen", "lui:If", "lui:For", "lui:Slot", "lui:Preview"];
-const ATTRIBUTE_LABELS: Record<string, string> = {
-  "x:Name": "设计名称", "x:DisplayName": "副名称", "x:Ref": "Lua 引用", Width: "宽度", Height: "高度", MinWidth: "最小宽度", MinHeight: "最小高度", MaxWidth: "最大宽度", MaxHeight: "最大高度",
-  Margin: "外边距", Padding: "内边距", Gap: "子项间距", Anchor: "锚点", Left: "左侧", Top: "顶部", Right: "右侧", Bottom: "底部", FlexGrow: "弹性增长", FlexBasis: "弹性基准", Align: "交叉轴对齐", Justify: "主轴对齐",
-  Background: "背景色", Color: "文字颜色", Opacity: "透明度", BorderRadius: "圆角", Variant: "样式变体", Text: "文本", Title: "标题", FontSize: "字号", Click: "点击动作", Change: "变更动作", Disabled: "禁用", Value: "数值", Max: "最大值", Min: "最小值", Test: "条件", In: "数据集合", Each: "循环变量", Path: "绑定路径", Close: "关闭动作"
-};
+const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name]) => /[^\x00-\x7f]/.test(name)).map(([name]) => name)));
 
 interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; message: string; }
-interface WebviewMessage { type: "ready" | "setAttribute" | "sourceEdit" | "deploy"; start?: number; source?: string; name?: string; value?: string; version?: number; text?: string; }
+interface WebviewMessage { type: "ready" | "setAttribute" | "setTag" | "sourceEdit" | "deploy"; start?: number; source?: string; name?: string; value?: string; version?: number; text?: string; }
 interface SerializableNode { kind: LuiNode["kind"]; tag?: string; text?: string; start: number; end: number; source: string; displayName: string; attrs: Record<string, string>; children: SerializableNode[]; }
 interface SourcePayload extends VersionedSource { displayPath: string; diagnostics: LuiDiagnostic[]; }
 interface CatalogBundle { catalog: Record<string, Record<string, SerializableNode>>; sources: Record<string, SourcePayload>; }
@@ -118,7 +114,7 @@ async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<
   }
   const config = uriPath(destinationRoot, CONFIG_FILE);
   if (!(await exists(config))) {
-    const defaultConfig = { schemaVersion: 2, adapter: "urhox-lua", version: "0.2.0", sourceRoots: ["Presentation/Pages", "Presentation/Components", "Presentation/Modals"], componentDirectories: {} };
+    const defaultConfig = { schemaVersion: 3, adapter: "urhox-lua", version: "0.4.0", sourceRoots: ["Presentation/Pages", "Presentation/Components", "Presentation/Modals"], componentDirectories: {} };
     await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(defaultConfig, null, 2) + "\n", "utf8"));
     await writeMetaIfAbsent(config);
   }
@@ -202,11 +198,11 @@ class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
         if (await vscode.workspace.applyEdit(edit)) panel.webview.postMessage({ type: "source", source: sourcePayload(targetDocument) });
         return;
       }
-      if (message.type !== "setAttribute" || typeof message.start !== "number" || !message.name) return;
+      if ((message.type !== "setAttribute" && message.type !== "setTag") || typeof message.start !== "number" || !message.name) return;
       const parsed = parseLui(targetDocument.getText());
       const node = findNode(parsed.root, message.start);
       if (!node) return;
-      const next = editAttribute(targetDocument.getText(), node, message.name, message.value ?? "");
+      const next = message.type === "setTag" ? editTag(targetDocument.getText(), node, message.name) : editAttribute(targetDocument.getText(), node, message.name, message.value ?? "");
       const edit = new vscode.WorkspaceEdit();
       edit.replace(targetUri, new vscode.Range(targetDocument.positionAt(0), targetDocument.positionAt(targetDocument.getText().length)), next);
       await vscode.workspace.applyEdit(edit);
@@ -234,7 +230,7 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
     const issues = parseLui(document.getText()).diagnostics.map((item) => diagnosticFor(document, item));
     const root = workspaceRoot();
     const config = root ? await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE)) : undefined;
-    if (Number(config?.schemaVersion ?? 1) < 2) issues.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), "LUI 项目仍在 v1 全局组件配置；请迁移到 v2 componentDirectories 与 xmlns:目录别名。", vscode.DiagnosticSeverity.Warning));
+    if (Number(config?.schemaVersion ?? 1) < 3) issues.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), "LUI 项目仍在旧组件配置；请迁移到 v3 componentDirectories 与目录:别名。", vscode.DiagnosticSeverity.Warning));
     diagnostics.set(document.uri, issues);
   };
   context.subscriptions.push(diagnostics, vscode.workspace.onDidOpenTextDocument(refresh), vscode.workspace.onDidChangeTextDocument((event) => void refresh(event.document)), vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
@@ -243,7 +239,7 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
     async provideCompletionItems(document) {
       return [...BUILTIN_TAGS, ...await importedTags(document)].map((tag) => {
         const item = new vscode.CompletionItem(tag, vscode.CompletionItemKind.Class);
-        item.insertText = new vscode.SnippetString("<" + tag + ' x:Name="${1:设计名称}"${2: x:Ref="LuaRef"}${3: />}');
+        item.insertText = new vscode.SnippetString("<" + tag + ' 名称="${1:设计名称}"${2: 引用="LuaRef"}${3: />}');
         item.detail = tag.includes(":") ? "已导入目录中的组件" : "内置 LUI 积木";
         return item;
       });
@@ -251,22 +247,22 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
   }, "<"));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
     provideCompletionItems() {
-      const attributes = ["x:Name", "x:DisplayName", "x:Ref", "xmlns:积木", "Width", "Height", "MinWidth", "MinHeight", "Margin", "Padding", "Gap", "Anchor", "Left", "Top", "Right", "Bottom", "FlexGrow", "FlexBasis", "Align", "Justify", "Background", "Color", "Text", "Title", "FontSize", "Click", "Change", "Value", "Min", "Max", "Variant", "Disabled", "Test", "In", "Each", "Path", "Close"];
-      return attributes.map((name) => { const item = new vscode.CompletionItem(ATTRIBUTE_LABELS[name] ? `${name}（${ATTRIBUTE_LABELS[name]}）` : name, vscode.CompletionItemKind.Property); item.insertText = name === "xmlns:积木" ? 'xmlns:积木="Presentation/Components"' : name + '="' + (name === "x:Ref" ? "${1:LuaRef}" : "${1}") + '"'; return item; });
+      const attributes = [...Object.values(CANONICAL_TO_ATTRIBUTE), "目录:积木"];
+      return attributes.map((name) => { const canonical = canonicalAttribute(name); const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Property); item.insertText = name === "目录:积木" ? '目录:积木="Presentation/Components"' : name + '="' + (canonical === "x:Ref" ? "${1:LuaRef}" : "${1}") + '"'; return item; });
     }
   }, " "));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
     provideCompletionItems() {
-      return [["Binding（数据绑定）", "{Binding ${1:view.path}}"], ["Action（动作）", "{Action ${1:ActionKey}}"]].map(([label, snippet]) => { const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Snippet); item.insertText = new vscode.SnippetString(snippet); return item; });
+      return [["绑定", "{绑定 ${1:view.path}}"], ["动作", "{动作 ${1:ActionKey}}"]].map(([label, snippet]) => { const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Snippet); item.insertText = new vscode.SnippetString(snippet); return item; });
     }
   }, "{"));
   context.subscriptions.push(vscode.languages.registerHoverProvider(LUI_SELECTOR, {
     provideHover(document, position) {
       const node = nodeAt(parseLui(document.getText()).root, document.offsetAt(position));
       if (!node) return undefined;
-      const name = node.attrs.find((attribute) => attribute.name === "x:Name");
-      const ref = node.attrs.find((attribute) => attribute.name === "x:Ref");
-      if (name && document.offsetAt(position) >= name.valueRange.start && document.offsetAt(position) <= name.valueRange.end) return new vscode.Hover(new vscode.MarkdownString(`设计名称：${name.value}\n\nLua 引用：${ref?.value ? `\`${ref.value}\`` : "（未暴露给 Lua）"}`));
+      const name = node.attrs.find((attribute) => canonicalAttribute(attribute.name) === "x:Name");
+      const ref = node.attrs.find((attribute) => canonicalAttribute(attribute.name) === "x:Ref");
+      if (name && document.offsetAt(position) >= name.valueRange.start && document.offsetAt(position) <= name.valueRange.end) return new vscode.Hover(new vscode.MarkdownString(`名称：${name.value}\n\nLua 引用：${ref?.value ? `\`${ref.value}\`` : "（未暴露给 Lua）"}`));
       return undefined;
     }
   }));
@@ -283,9 +279,9 @@ function previewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
   const designer = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "designer.js"));
   const nonce = createUuid();
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
-<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><main><header><label>设备 <select id="device"><option>360x800</option><option>390x844</option><option>768x1024</option></select></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
+<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label>设备 <select id="device"><option>360x800</option><option>390x844</option><option>768x1024</option></select></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
 <div id="splitter" role="separator" aria-label="调整设计预览与源码高度"></div>
-<section id="source-panel"><header id="source-header"><div id="source-breadcrumb"></div><span id="source-status">等待源码…</span></header><div id="source-editor"></div></section>
+<section id="source-panel"><div id="source-editor"></div></section>
 <script nonce="${nonce}" src="${designer}"></script></body></html>`;
 }
 

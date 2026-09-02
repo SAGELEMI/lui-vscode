@@ -5,6 +5,7 @@ import { linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
+import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, TAG_TO_CANONICAL, bindingPath, canonicalAttribute, canonicalTag, directoryAlias, isBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
 
 interface DiagnosticInfo { message: string; severity: "error" | "warning"; range: { start: number; end: number }; }
 interface SerializableNode {
@@ -32,13 +33,8 @@ interface PickedNode { start: number; end: number; source: string; }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 const vscode = acquireVsCodeApi();
-const ATTRIBUTE_LABELS: Record<string, string> = {
-  "x:Name": "设计名称", "x:DisplayName": "副名称", "x:Ref": "Lua 引用", Width: "宽度", Height: "高度", MinWidth: "最小宽度", MinHeight: "最小高度", MaxWidth: "最大宽度", MaxHeight: "最大高度",
-  Margin: "外边距", Padding: "内边距", Gap: "子项间距", Anchor: "锚点", Left: "左侧", Top: "顶部", Right: "右侧", Bottom: "底部", FlexGrow: "弹性增长", FlexBasis: "弹性基准", Align: "交叉轴对齐", Justify: "主轴对齐",
-  Background: "背景色", Color: "文字颜色", Opacity: "透明度", BorderRadius: "圆角", Variant: "样式变体", Text: "文本", Title: "标题", FontSize: "字号", Click: "点击动作", Change: "变更动作", Disabled: "禁用", Value: "数值", Max: "最大值", Min: "最小值", Test: "条件", In: "数据集合", Each: "循环变量", Path: "绑定路径", Close: "关闭动作"
-};
-const BUILTIN_TAGS = ["Panel", "Row", "Text", "Button", "Card", "Scroll", "Progress", "Toggle", "Slider", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen", "lui:If", "lui:For", "lui:Slot", "lui:Preview"];
-const ATTRIBUTE_NAMES = Object.keys(ATTRIBUTE_LABELS).concat(["xmlns:积木"]);
+const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name]) => /[^\x00-\x7f]/.test(name)).map(([name]) => name)));
+const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
   ["LUI 名称", ["x:Name", "x:DisplayName"]],
   ["Lua 引用", ["x:Ref"]],
@@ -112,7 +108,7 @@ function sameNode(left: PickedNode | undefined, right: PickedNode | undefined): 
 
 function previews(node: SerializableNode | undefined, out: SerializableNode[] = []): SerializableNode[] {
   if (!node) return out;
-  if (node.kind === "element" && node.tag === "lui:Preview") out.push(node);
+  if (node.kind === "element" && canonicalTag(node.tag) === "lui:Preview") out.push(node);
   for (const child of node.children ?? []) previews(child, out);
   return out;
 }
@@ -121,7 +117,11 @@ function previewValues(): Record<string, string> {
   const select = byId<HTMLSelectElement>("preview");
   const state = previews(model?.root).find((item) => item.start === Number(select.value));
   const values: Record<string, string> = {};
-  for (const child of state?.children ?? []) if (child.tag === "lui:Set" && child.attrs.Path) values[child.attrs.Path] = child.attrs.Value;
+  for (const child of state?.children ?? []) {
+    if (canonicalTag(child.tag) !== "lui:Set") continue;
+    const path = sourceValue(child, "Path");
+    if (path) values[path] = sourceValue(child, "Value") ?? "";
+  }
   return values;
 }
 
@@ -135,31 +135,38 @@ function getPath(value: unknown, path: string): unknown {
 }
 
 function resolve(value: string | undefined, scope: Record<string, unknown>): string | undefined {
-  const binding = /^\{Binding\s+([A-Za-z][A-Za-z0-9_.-]*)\}$/.exec(value ?? "");
-  if (!binding) return value;
-  const fromScope = getPath(scope, binding[1]);
+  const path = bindingPath(value);
+  if (!path) return value;
+  const fromScope = getPath(scope, path);
   if (fromScope !== undefined) return String(fromScope);
-  const fromPreview = getPath(previewValues(), binding[1]);
+  const fromPreview = getPath(previewValues(), path);
   if (fromPreview !== undefined) return String(fromPreview);
   const samples: Record<string, string> = {
     title: "无尽塔", enemyText: "塔层守卫 · Lv.1", playerText: "冒险者 · Lv.1", logText: "战斗记录将在这里显示。",
     weaponText: "武器槽（空）", armorText: "护甲槽（空）", detailText: "在这里查看当前选择的说明。", profileSummary: "本地进度已就绪。"
   };
-  return samples[binding[1]] ?? `{{${binding[1]}}}`;
+  return samples[path] ?? `{{${path}}}`;
 }
 
 function effective(node: SerializableNode, scope: Record<string, unknown>): Record<string, string | undefined> {
-  const attrs: Record<string, string | undefined> = { ...node.attrs };
-  const owner = `${String(node.tag)}.`;
-  for (const child of node.children ?? []) {
-    if (child.tag?.startsWith(owner)) attrs[child.tag.slice(owner.length)] = (child.children ?? []).filter((item) => item.kind === "text").map((item) => item.text ?? "").join("").trim();
+  const attrs: Record<string, string | undefined> = {};
+  const previews: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(node.attrs ?? {})) {
+    const canonical = canonicalAttribute(name);
+    if (canonical.startsWith("Preview.")) previews[canonical.slice(8)] = value; else attrs[canonical] = value;
   }
-  for (const key of Object.keys(attrs)) attrs[key] = resolve(attrs[key], scope);
+  const owner = `${canonicalTag(node.tag) ?? String(node.tag)}.`;
+  for (const child of node.children ?? []) {
+    const propertyTag = canonicalTag(child.tag);
+    if (propertyTag?.startsWith(owner)) attrs[propertyTag.slice(owner.length)] = (child.children ?? []).filter((item) => item.kind === "text").map((item) => item.text ?? "").join("").trim();
+  }
+  for (const key of Object.keys(attrs)) attrs[key] = previews[key] ?? resolve(attrs[key], scope);
   return attrs;
 }
 
 function visualChildren(node: SerializableNode): SerializableNode[] {
-  return (node.children ?? []).filter((child) => !child.tag?.startsWith(`${String(node.tag)}.`) && child.tag !== "lui:Preview" && child.tag !== "lui:Set");
+  const owner = `${canonicalTag(node.tag) ?? String(node.tag)}.`;
+  return (node.children ?? []).filter((child) => !canonicalTag(child.tag)?.startsWith(owner) && canonicalTag(child.tag) !== "lui:Preview" && canonicalTag(child.tag) !== "lui:Set");
 }
 
 function cssSize(value: unknown): string { return /^\d+(?:\.\d+)?$/.test(text(value)) ? `${text(value)}px` : text(value); }
@@ -190,9 +197,9 @@ function fragmentChildren(nodes: SerializableNode[], scope: Record<string, unkno
 }
 
 function componentTemplate(node: SerializableNode): { directory: string; name: string; template: SerializableNode } | undefined {
-  const [alias, name] = String(node.tag).split(":");
+  const [alias, name] = String(canonicalTag(node.tag) ?? node.tag).split(":");
   const sourceRoot = allRoots().find((root) => root.source === node.source);
-  const directory = sourceRoot?.attrs[`xmlns:${alias}`];
+  const directory = sourceRoot ? Object.entries(sourceRoot.attrs).find(([attribute]) => directoryAlias(attribute)?.alias === alias)?.[1] : undefined;
   const template = directory ? catalog[directory]?.[name] : undefined;
   return directory && name && template ? { directory, name, template } : undefined;
 }
@@ -209,13 +216,15 @@ function renderComponent(node: SerializableNode, scope: Record<string, unknown>,
   const props = { ...(scope.props as Record<string, unknown> | undefined) };
   for (const [property, value] of Object.entries(effective(node, scope))) props[property] = value;
   wrapper.append(fragmentChildren(visualChildren(template), { ...scope, props, slots: { Content: visualChildren(node) } }, [...trace, key]));
+  // Imported markup is visual only in a page inspector: any click belongs to its page-side component instance.
+  wrapper.addEventListener("click", (event) => { event.stopImmediatePropagation(); pick(node); }, true);
   return wrapper;
 }
 
 function renderNode(node: SerializableNode, scope: Record<string, unknown> = {}, trace: string[] = []): Node {
   if (node.kind === "text") { const span = document.createElement("span"); span.textContent = node.text ?? ""; return span; }
   if (node.kind === "comment") return document.createComment(node.text ?? "");
-  const tag = node.tag ?? "Panel";
+  const tag = canonicalTag(node.tag) ?? "Panel";
   if (tag === "lui:Preview" || tag === "lui:Set") return document.createDocumentFragment();
   if (tag === "lui:If") return bool(effective(node, scope).Test) ? fragmentChildren(visualChildren(node), scope, trace) : document.createDocumentFragment();
   if (tag === "lui:For") {
@@ -246,8 +255,8 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   return element;
 }
 
-function outline(node: SerializableNode, host: HTMLElement, depth = 0, trace: string[] = []): void {
-  if (node.kind !== "element" || node.tag === "lui:Preview" || node.tag === "lui:Set") return;
+function outline(node: SerializableNode, host: HTMLElement, depth = 0): void {
+  if (node.kind !== "element" || canonicalTag(node.tag) === "lui:Preview" || canonicalTag(node.tag) === "lui:Set") return;
   const row = document.createElement("button");
   row.className = "outline-row";
   row.style.marginLeft = `${depth * 12}px`;
@@ -258,36 +267,60 @@ function outline(node: SerializableNode, host: HTMLElement, depth = 0, trace: st
   row.dataset.start = String(node.start);
   row.dataset.source = node.source;
   host.append(row);
-  const component = node.tag?.includes(":") && !node.tag.startsWith("lui:") ? componentTemplate(node) : undefined;
-  if (component) {
-    const key = `${component.directory}/${component.name}`;
-    if (!trace.includes(key)) for (const child of visualChildren(component.template)) outline(child, host, depth + 1, [...trace, key]);
-    return;
-  }
-  for (const child of visualChildren(node)) outline(child, host, depth + 1, trace);
+  for (const child of visualChildren(node)) outline(child, host, depth + 1);
 }
 
-function propertyInput(host: HTMLElement, node: SerializableNode, key: string, value: string | undefined): void {
+function sourceValue(node: SerializableNode, canonical: string): string | undefined {
+  return Object.entries(node.attrs ?? {}).find(([name]) => canonicalAttribute(name) === canonical)?.[1];
+}
+
+function propertyInput(host: HTMLElement, node: SerializableNode, key: string): void {
   const label = document.createElement("label");
   label.textContent = ATTRIBUTE_LABELS[key] ?? key;
   const input = document.createElement("input");
-  input.value = value ?? "";
+  input.value = sourceValue(node, key) ?? "";
   input.placeholder = ATTRIBUTE_LABELS[key] ?? key;
-  input.onchange = () => vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: key, value: input.value });
+  input.onchange = () => vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(key), value: input.value });
   label.append(input); host.append(label);
+  if (isBinding(input.value)) {
+    const preview = document.createElement("label"); preview.textContent = "预览值";
+    const previewInput = document.createElement("input"); previewInput.value = sourceValue(node, `Preview.${key}`) ?? ""; previewInput.placeholder = "仅设计预览使用";
+    previewInput.onchange = () => vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(`Preview.${key}`), value: previewInput.value });
+    preview.append(previewInput); host.append(preview);
+  }
+}
+
+function tagChoices(): string[] {
+  const imported = model?.root ? Object.entries(model.root.attrs).filter(([name]) => directoryAlias(name)).flatMap(([name]) => {
+    const alias = directoryAlias(name)?.alias ?? ""; const directory = model?.root?.attrs[name] ?? ""; return Object.keys(catalog[directory] ?? {}).map((component) => `${alias}:${component}`);
+  }) : [];
+  return [...BUILTIN_TAGS, ...imported];
+}
+
+function attributesFor(node: SerializableNode): string[] {
+  const tag = canonicalTag(node.tag);
+  const common = ["x:Name", "x:DisplayName", "x:Ref", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "Gap", "Anchor", "Left", "Top", "Right", "Bottom", "FlexGrow", "FlexBasis", "Align", "Justify", "Background", "Color", "Opacity", "BorderRadius", "Variant"];
+  const specific: Record<string, string[]> = {
+    Text: ["Text", "FontSize"], Button: ["Text", "Click", "Disabled"], Progress: ["Value", "Max"], Toggle: ["Value", "Change"], Slider: ["Value", "Min", "Max", "Change"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["x:Name"], "lui:Set": ["Path", "Value"]
+  };
+  return [...new Set([...common, ...(specific[tag ?? ""] ?? []), ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview."))])];
 }
 
 function properties(node: SerializableNode | undefined): void {
   const host = byId("properties"); host.innerHTML = "<h2>当前节点属性</h2>";
   if (!node) { const paragraph = document.createElement("p"); paragraph.textContent = "在组件树、画布或源码中选择一个节点。"; host.append(paragraph); return; }
-  const attrs = node.attrs ?? {}; const used = new Set<string>();
+  const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型";
+  const select = document.createElement("select"); const rawTag = node.tag ?? "";
+  for (const tag of tagChoices()) { const option = document.createElement("option"); option.value = tag; option.textContent = tag; option.selected = tag === rawTag; select.append(option); }
+  select.onchange = () => vscode.postMessage({ type: "setTag", start: node.start, source: node.source, name: select.value }); tagLabel.append(select); host.append(tagLabel);
+  const attrs = node.attrs ?? {}; const used = new Set<string>(); const available = new Set(attributesFor(node));
   for (const [title, keys] of CATEGORIES) {
     const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = title; section.append(heading);
-    for (const key of keys) if (attrs[key] !== undefined || ["x:Name", "x:Ref", "Width", "Height", "Margin", "Padding", "Anchor", "Left", "Top", "Right", "Bottom"].includes(key)) { propertyInput(section, node, key, attrs[key]); used.add(key); }
+    for (const key of keys) if (available.has(key)) { propertyInput(section, node, key); used.add(key); }
     host.append(section);
   }
-  const rest = Object.keys(attrs).filter((key) => !used.has(key) && !key.startsWith("xmlns:"));
-  if (rest.length) { const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "其他属性"; section.append(heading); for (const key of rest) propertyInput(section, node, key, attrs[key]); host.append(section); }
+  const rest = Object.keys(attrs).map(canonicalAttribute).filter((key) => !used.has(key) && !key.startsWith("Preview.") && !directoryAlias(key));
+  if (rest.length) { const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "其他属性"; section.append(heading); for (const key of rest) propertyInput(section, node, key); host.append(section); }
 }
 
 function applyHighlights(): void {
@@ -316,17 +349,17 @@ function sourceCompletions(context: CompletionContext) {
   const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos);
   const tag = context.matchBefore(/<[\w:\-\u0080-\uffff]*/);
   if (tag) {
-    const imported = Object.keys((model?.root?.attrs ?? {})).filter((key) => key.startsWith("xmlns:")).flatMap((key) => {
-      const alias = key.slice("xmlns:".length); const directory = model?.root?.attrs[key]; return Object.keys(catalog[directory ?? ""] ?? {}).map((name) => `${alias}:${name}`);
+    const imported = Object.keys((model?.root?.attrs ?? {})).filter((key) => directoryAlias(key)).flatMap((key) => {
+      const alias = directoryAlias(key)?.alias ?? ""; const directory = model?.root?.attrs[key]; return Object.keys(catalog[directory ?? ""] ?? {}).map((name) => `${alias}:${name}`);
     });
-    const options: Completion[] = [...BUILTIN_TAGS, ...imported].map((label) => ({ label, type: "class", apply: `${label} x:Name=\"${label.includes(":") ? "组件实例" : "设计节点"}\" />` }));
+    const options: Completion[] = [...BUILTIN_TAGS, ...imported].map((label) => ({ label, type: "class", apply: `${label} 名称=\"${label.includes(":") ? "组件实例" : "设计节点"}\" />` }));
     return { from: tag.from + 1, options };
   }
-  const binding = context.matchBefore(/\{(?:Binding|Action)?\s*[A-Za-z0-9_.-]*/);
-  if (binding) return { from: binding.from, options: [{ label: "{Binding view.path}", type: "keyword", apply: "{Binding view.path}" }, { label: "{Action ActionKey}", type: "keyword", apply: "{Action ActionKey}" }] };
+  const binding = context.matchBefore(/\{(?:绑定|动作)?\s*[A-Za-z0-9_.-]*/);
+  if (binding) return { from: binding.from, options: [{ label: "{绑定 view.path}", type: "keyword", apply: "{绑定 view.path}" }, { label: "{动作 ActionKey}", type: "keyword", apply: "{动作 ActionKey}" }] };
   if (before.lastIndexOf("<") > before.lastIndexOf(">")) {
     const attribute = context.matchBefore(/[\w:\-\u0080-\uffff]*/);
-    if (attribute) return { from: attribute.from, options: ATTRIBUTE_NAMES.map((name) => ({ label: `${name}（${ATTRIBUTE_LABELS[name] ?? "命名空间"}）`, type: "property", apply: name === "xmlns:积木" ? 'xmlns:积木="Presentation/Components"' : `${name}=\"\"` })) };
+    if (attribute) return { from: attribute.from, options: ATTRIBUTE_NAMES.map((name) => ({ label: name, type: "property", apply: name === "目录:积木" ? '目录:积木="Presentation/Components"' : `${name}=\"\"` })) };
   }
   return null;
 }
@@ -364,17 +397,10 @@ function setEditorSelection(node: PickedNode): void {
   writingSource = false;
 }
 
-function activateSource(source: string, selection?: PickedNode): void {
-  const payload = chooseSource(source);
+function activateSource(_source: string, selection?: PickedNode): void {
+  const payload = chooseSource(rootSource);
   if (!payload) return;
   activeSource = payload;
-  const breadcrumb = byId("source-breadcrumb");
-  breadcrumb.innerHTML = "";
-  const page = document.createElement("button"); page.className = "breadcrumb-root"; page.textContent = rootSource === source ? "页面" : "页面";
-  page.onclick = () => { const root = chooseSource(rootSource); if (root) activateSource(root.source); };
-  breadcrumb.append(page, document.createTextNode(" / "));
-  const location = document.createElement("span"); location.textContent = payload.displayPath; breadcrumb.append(location);
-  byId("source-status").textContent = `版本 ${payload.version}`;
   if (!editor) {
     editor = new EditorView({ state: EditorState.create({ doc: payload.text, extensions: sourceExtensions() }), parent: byId("source-editor") });
   } else if (editor.state.doc.toString() !== payload.text) {
@@ -395,7 +421,6 @@ function reconcileSource(payload: SourcePayload): void {
   if (!acknowledged) { activateSource(payload.source, selected?.source === payload.source ? selected : undefined); return; }
   inFlight = undefined;
   activeSource = { ...payload, text: currentText };
-  byId("source-status").textContent = `版本 ${payload.version}`;
   editor.dispatch(setDiagnostics(editor.state, sourceDiagnostics(payload)));
   if (currentText !== payload.text) {
     if (sourceTimer) clearTimeout(sourceTimer);
@@ -418,7 +443,7 @@ function draw(): void {
 }
 
 function pick(node: SerializableNode): void {
-  selected = nodeRef(node); draw(); activateSource(node.source, selected);
+  selected = nodeRef(node); draw(); activateSource(rootSource, selected.source === rootSource ? selected : undefined);
 }
 
 function applyModel(payload: ModelPayload): void {
@@ -446,6 +471,23 @@ function setupSplitter(): void {
   });
 }
 
+function setupOutlineDivider(): void {
+  const divider = byId("outline-divider"); const workbench = byId("design-workbench"); const button = byId<HTMLButtonElement>("outline-collapse");
+  let lastWidth = 280;
+  button.onclick = () => {
+    const collapsed = workbench.classList.toggle("outline-collapsed");
+    if (collapsed) { lastWidth = byId("outline-panel").getBoundingClientRect().width; document.documentElement.style.setProperty("--outline-width", "0px"); button.textContent = "›"; button.title = "展开结构树"; }
+    else { document.documentElement.style.setProperty("--outline-width", `${lastWidth}px`); button.textContent = "‹"; button.title = "收起结构树"; }
+  };
+  divider.addEventListener("pointerdown", (event) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.preventDefault(); workbench.classList.remove("outline-collapsed"); button.textContent = "‹"; divider.setPointerCapture(event.pointerId);
+    const move = (moveEvent: PointerEvent) => { const bounds = workbench.getBoundingClientRect(); lastWidth = Math.max(168, Math.min(460, moveEvent.clientX - bounds.left)); document.documentElement.style.setProperty("--outline-width", `${lastWidth}px`); };
+    const stop = (upEvent: PointerEvent) => { divider.releasePointerCapture(upEvent.pointerId); divider.removeEventListener("pointermove", move); divider.removeEventListener("pointerup", stop); };
+    divider.addEventListener("pointermove", move); divider.addEventListener("pointerup", stop);
+  });
+}
+
 window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceReloadPayload>) => {
   if (event.data.type === "model") applyModel(event.data);
   if (event.data.type === "source") applyReload(event.data);
@@ -457,4 +499,5 @@ byId<HTMLButtonElement>("deploy").onclick = () => vscode.postMessage({ type: "de
 byId<HTMLButtonElement>("collapse").onclick = () => { const inspector = byId("inspector"); inspector.classList.toggle("collapsed"); byId("collapse").textContent = inspector.classList.contains("collapsed") ? "展开" : "收起"; };
 byId<HTMLSelectElement>("device").dispatchEvent(new Event("change"));
 setupSplitter();
+setupOutlineDivider();
 vscode.postMessage({ type: "ready" });

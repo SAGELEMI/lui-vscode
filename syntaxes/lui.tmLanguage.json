@@ -12,6 +12,6 @@
       { "match": "[^\\s<>/=\\\"']+(?=\\s*=)", "name": "entity.other.attribute-name.lui" },
       { "begin": "\"", "end": "\"", "name": "string.quoted.double.lui" }
     ] },
-    "binding": { "match": "\\{(?:Binding|Action)\\s+[^}]+\\}", "name": "variable.other.binding.lui" }
+    "binding": { "match": "\\{(?:绑定|动作|Binding|Action)\\s+[^}]+\\}", "name": "variable.other.binding.lui" }
   }
 }

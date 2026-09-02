@@ -4,14 +4,19 @@
   color: #f4ecff;
   background: #10091c;
   --design-height: 60%;
+  --outline-width: 280px;
 }
 
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; display: grid; grid-template-rows: var(--design-height) 7px minmax(0, 1fr); min-height: 0; }
-#design-workbench { display: grid; grid-template-columns: 280px minmax(0, 1fr) 288px; min-height: 0; overflow: hidden; }
+#design-workbench { display: grid; grid-template-columns: var(--outline-width) 7px minmax(0, 1fr) 288px; min-height: 0; overflow: hidden; }
 aside { padding: 14px; background: #170f27; overflow: auto; }
 #outline-panel { border-right: 1px solid #4c3568; }
+#outline-divider { position: relative; cursor: col-resize; background: #28183e; border-left: 1px solid #4c3568; border-right: 1px solid #0b0714; }
+#outline-divider:hover { background: #7855aa; }
+#outline-collapse { position: absolute; z-index: 3; top: 10px; left: -8px; width: 21px; min-width: 21px; padding: 2px; border-radius: 50%; background: #382452; }
+#design-workbench.outline-collapsed #outline-panel { display: none; }
 #inspector { border-left: 1px solid #4c3568; position: relative; transition: width 120ms ease, padding 120ms ease; }
 #inspector.collapsed { width: 36px; min-width: 36px; padding: 8px; overflow: hidden; }
 #inspector.collapsed #properties { display: none; }
@@ -48,12 +53,7 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 #splitter { cursor: row-resize; background: #28183e; border-top: 1px solid #60477e; border-bottom: 1px solid #0b0714; position: relative; }
 #splitter:hover, #splitter:active { background: #7855aa; }
 #splitter::after { content: ""; position: absolute; width: 46px; height: 3px; border-radius: 4px; background: #a78bce; left: calc(50% - 23px); top: 1px; }
-#source-panel { min-height: 0; display: grid; grid-template-rows: 34px minmax(0, 1fr); border-top: 1px solid #4c3568; background: #10091c; }
-#source-header { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 0 12px; color: #c8b9df; border-bottom: 1px solid #4c3568; background: #170f27; }
-#source-breadcrumb { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-#source-breadcrumb span { overflow: hidden; text-overflow: ellipsis; }
-.breadcrumb-root { padding: 2px 6px; font-size: 11px; border: 0; color: #edcf82; background: transparent; }
-#source-status { margin-left: auto; color: #9984b7; font-size: 11px; white-space: nowrap; }
+#source-panel { min-height: 0; border-top: 1px solid #4c3568; background: #10091c; }
 #source-editor { min-height: 0; overflow: hidden; }
 
 .lui-node { position: relative; min-width: 0; color: #f4ecff; cursor: pointer; }
@@ -84,5 +84,5 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 .lui-node.is-selected.is-hovered::after { border-color: #f0cf7d; }
 
 @media (max-width: 900px) {
-  body { grid-template-columns: 220px minmax(0, 1fr) 240px; }
+  #design-workbench { grid-template-columns: 220px 7px minmax(0, 1fr) 240px; }
 }

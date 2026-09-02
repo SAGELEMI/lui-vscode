@@ -1,3 +1,5 @@
+import { canonicalAttribute, canonicalTag, directoryAlias, isLegacyToken, sourceTag as chineseTag } from "./vocabulary.js";
+
 /**
  * LUI's portable syntax model. UTF-8 is valid everywhere in the design
  * document except values that cross the Lua boundary (x:Ref, Binding, Action).
@@ -115,7 +117,7 @@ export function parseLui(source: string): LuiDocument {
       if (!close) { index += 2; continue; }
       const node = stack.pop();
       if (!node) fail(diagnostics, `未匹配的结束标签 </${close.tag}>。`, index, close.end);
-      else if (node.tag !== close.tag) { fail(diagnostics, `结束标签 </${close.tag}> 与 <${node.tag}> 不匹配。`, index, close.end); node.range.end = close.end; }
+      else if (canonicalTag(node.tag) !== canonicalTag(close.tag)) { fail(diagnostics, `结束标签 </${close.tag}> 与 <${node.tag}> 不匹配。`, index, close.end); node.range.end = close.end; }
       else { node.closeTagStart = index; node.range.end = close.end; }
       index = close.end;
       continue;
@@ -145,7 +147,7 @@ export function parseLui(source: string): LuiDocument {
 }
 
 export function getAttribute(node: LuiNode, name: string): LuiAttribute | undefined {
-  return node.attrs.find((attribute) => attribute.name === name);
+  return node.attrs.find((attribute) => canonicalAttribute(attribute.name) === name);
 }
 
 export interface LuiImport { alias: string; directory: string; attribute: LuiAttribute; }
@@ -155,8 +157,9 @@ export function namespaceImports(document: LuiDocument): LuiImport[] {
   const root = document.root;
   if (!root) return [];
   return root.attrs
-    .filter((attribute) => attribute.name.startsWith("xmlns:") && attribute.name !== "xmlns:lui")
-    .map((attribute) => ({ alias: attribute.name.slice("xmlns:".length), directory: attribute.value, attribute }));
+    .map((attribute) => ({ attribute, parsed: directoryAlias(attribute.name) }))
+    .filter((item): item is { attribute: LuiAttribute; parsed: { alias: string; legacy: boolean } } => Boolean(item.parsed))
+    .map(({ attribute, parsed }) => ({ alias: parsed.alias, directory: attribute.value, attribute }));
 }
 
 function isDesignName(value: string): boolean { return value.trim().length > 0 && !/[<>]/.test(value); }
@@ -172,12 +175,10 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
   const refs = new Map<string, LuiAttribute>();
   const imports = new Map<string, LuiAttribute>();
   for (const attribute of root.attrs) {
-    if (!attribute.name.startsWith("xmlns:")) continue;
-    const alias = attribute.name.slice("xmlns:".length);
-    if (alias === "lui") {
-      if (attribute.value !== "urn:lui") fail(diagnostics, "xmlns:lui 必须是 urn:lui。", attribute.valueRange.start, attribute.valueRange.end);
-      continue;
-    }
+    const directory = directoryAlias(attribute.name);
+    if (!directory) continue;
+    const alias = directory.alias;
+    if (directory.legacy) fail(diagnostics, `目录导入请改用 目录:${alias}。`, attribute.range.start, attribute.range.end, "warning");
     if (!alias || /[\s:]/.test(alias)) fail(diagnostics, `目录别名无效：${alias || "（空）"}。`, attribute.range.start, attribute.range.end);
     if (!isDirectory(attribute.value)) fail(diagnostics, `目录导入必须是项目内相对路径：${attribute.value}。`, attribute.valueRange.start, attribute.valueRange.end);
     if (imports.has(alias)) fail(diagnostics, `目录别名重复：${alias}。`, attribute.range.start, attribute.range.end);
@@ -189,28 +190,32 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     const display = getAttribute(node, "x:DisplayName");
     const ref = getAttribute(node, "x:Ref");
     const legacyNamespace = getAttribute(node, "x:Namespace");
-    if (legacyNamespace) fail(diagnostics, "x:Namespace 已废弃；请在根节点使用 xmlns:目录别名=\"目录路径\"。", legacyNamespace.range.start, legacyNamespace.range.end, "warning");
+    if (legacyNamespace) fail(diagnostics, "旧命名空间属性已废弃；请在根节点使用 目录:别名=\"目录路径\"。", legacyNamespace.range.start, legacyNamespace.range.end, "warning");
     if (primary) {
-      if (!isDesignName(primary.value)) fail(diagnostics, `x:Name 必须是非空的设计名称：${primary.value}`, primary.valueRange.start, primary.valueRange.end);
+      if (!isDesignName(primary.value)) fail(diagnostics, `名称必须是非空的设计名称：${primary.value}`, primary.valueRange.start, primary.valueRange.end);
       const duplicate = designNames.get(primary.value) ?? displayNames.get(primary.value);
       if (duplicate) fail(diagnostics, `设计名称重复或与副名称冲突：${primary.value}。`, primary.valueRange.start, primary.valueRange.end);
       designNames.set(primary.value, primary);
     }
     if (display) {
-      if (!isDesignName(display.value)) fail(diagnostics, "x:DisplayName 不能为空。", display.valueRange.start, display.valueRange.end);
+      if (!isDesignName(display.value)) fail(diagnostics, "副名称不能为空。", display.valueRange.start, display.valueRange.end);
       const duplicate = displayNames.get(display.value) ?? designNames.get(display.value);
       if (duplicate) fail(diagnostics, `副名称重复或与设计名称冲突：${display.value}。`, display.valueRange.start, display.valueRange.end);
       displayNames.set(display.value, display);
     }
     if (ref) {
-      if (!ASCII_REFERENCE.test(ref.value)) fail(diagnostics, `x:Ref 必须是 ASCII Lua 引用：${ref.value}`, ref.valueRange.start, ref.valueRange.end);
-      else if (refs.has(ref.value)) fail(diagnostics, `x:Ref 在渲染树内重复：${ref.value}。`, ref.valueRange.start, ref.valueRange.end);
+      if (!ASCII_REFERENCE.test(ref.value)) fail(diagnostics, `引用必须是 ASCII Lua 引用：${ref.value}`, ref.valueRange.start, ref.valueRange.end);
+      else if (refs.has(ref.value)) fail(diagnostics, `引用在渲染树内重复：${ref.value}。`, ref.valueRange.start, ref.valueRange.end);
       refs.set(ref.value, ref);
     }
-    const separator = node.tag?.indexOf(":") ?? -1;
+    const sourceTag = node.tag;
+    const canonical = canonicalTag(sourceTag);
+    if (sourceTag && canonical && chineseTag(canonical) !== sourceTag && isLegacyToken(sourceTag)) fail(diagnostics, `标签 <${sourceTag}> 已过时；请改为 <${chineseTag(canonical)}>。`, node.range.start, node.openTagEnd, "warning");
+    for (const attribute of node.attrs) if (isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
+    const separator = sourceTag?.indexOf(":") ?? -1;
     if (separator > 0) {
-      const alias = node.tag!.slice(0, separator);
-      if (alias !== "lui" && !imports.has(alias)) fail(diagnostics, `组件 <${node.tag}> 未导入目录别名 ${alias}。`, node.range.start, node.openTagEnd);
+      const alias = sourceTag!.slice(0, separator);
+      if (!imports.has(alias)) fail(diagnostics, `组件 <${sourceTag}> 未导入目录别名 ${alias}。`, node.range.start, node.openTagEnd);
     }
     for (const child of node.children) visit(child);
   };
@@ -243,6 +248,20 @@ export function editAttribute(source: string, node: LuiNode, name: string, value
   if (existing) return source.slice(0, existing.valueRange.start) + value + source.slice(existing.valueRange.end);
   const insertAt = (node.openTagEnd ?? node.range.end) - (source.slice(0, node.openTagEnd).endsWith("/>") ? 2 : 1);
   return source.slice(0, insertAt) + ` ${name}="${escapeAttribute(value)}"` + source.slice(insertAt);
+}
+
+/** Replaces the selected element's paired source tags without touching its attributes or children. */
+export function editTag(source: string, node: LuiNode, nextTag: string): string {
+  if (node.kind !== "element") return source;
+  const openEnd = node.openTagEnd ?? node.range.end;
+  const open = source.slice(node.range.start, openEnd);
+  const updatedOpen = open.replace(/^(<\s*)[^\s/>]+/, `$1${nextTag}`);
+  let result = source.slice(0, node.range.start) + updatedOpen + source.slice(openEnd);
+  if (node.closeTagStart === undefined) return result;
+  const delta = updatedOpen.length - open.length;
+  const closeStart = node.closeTagStart + delta;
+  const closeEnd = result.indexOf(">", closeStart) + 1;
+  return closeEnd > closeStart ? result.slice(0, closeStart) + result.slice(closeStart, closeEnd).replace(/^(<\s*\/\s*)[^\s>]+/, `$1${nextTag}`) + result.slice(closeEnd) : result;
 }
 
 export function displayNameOf(node: LuiNode): string {
