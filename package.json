@@ -42,7 +42,7 @@
           "LUI XAML"
         ],
         "extensions": [
-          ".LUI"
+          ".lui"
         ],
         "configuration": "./language-configuration.json"
       }
@@ -78,10 +78,10 @@
         "displayName": "LUI 设计预览",
         "selector": [
           {
-            "filenamePattern": "*.LUI"
+            "filenamePattern": "*.lui"
           }
         ],
-        "priority": "option"
+        "priority": "default"
       }
     ],
     "configuration": {

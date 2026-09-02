@@ -2,6 +2,8 @@
 
 LUI 使用安全 XML 子集：元素、属性、嵌套、注释、`lui:If`、`lui:For`、`lui:Preview`、`{Binding path}` 与 `{Action PrimaryName}`。不支持 DTD、外部实体、内嵌脚本或任意表达式。
 
+设计文件后缀固定为小写 `.lui`；同名 `.lui.lua` 是数据、动作和局部刷新的后端。
+
 运行时读取设计文件后会立即丢弃 `x:DisplayName`，并把 `x:Name` 折叠为内部数字符号；副名称不能成为绑定、动作或 UI 文案的隐式来源。
 
 | 类别 | 示例 | 约束 |

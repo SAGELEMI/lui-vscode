@@ -25,3 +25,11 @@ test("LUI parses comments and property-element syntax without weakening name val
   assert.equal(doc.diagnostics.length, 0);
   assert.equal(doc.root.children[0].tag, "Button");
 });
+
+test("Preview states provide Binding placeholders without touching the Lua backend", () => {
+  const doc = parseLui('<lui:Page x:Name="Tower" x:DisplayName="无尽塔"><Text x:Name="Floor" x:DisplayName="层数" Text="{Binding floor}" /><lui:Preview x:Name="Battle" x:DisplayName="战斗预览"><lui:Set Path="floor" Value="第 12 层" /></lui:Preview></lui:Page>');
+  const preview = doc.root.children.find((node) => node.tag === "lui:Preview");
+  assert.equal(doc.diagnostics.length, 0);
+  assert.equal(preview?.attrs.find((item) => item.name === "x:DisplayName")?.value, "战斗预览");
+  assert.equal(preview?.children[0]?.attrs.find((item) => item.name === "Value")?.value, "第 12 层");
+});

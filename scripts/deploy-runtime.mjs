@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve, relative, dirname, join } from "node:path";
 
 const targetArgument = process.argv[2];
@@ -9,8 +9,32 @@ const scriptsRoot = join(projectRoot, "scripts");
 if (!(await stat(scriptsRoot)).isDirectory()) throw new Error("目标不是包含 scripts 目录的项目：" + projectRoot);
 const sourceRoot = resolve("packages/runtime-urhox-lua/adapter");
 const targetRoot = join(scriptsRoot, "LUI");
-const backupRoot = join(targetRoot, `.backup-${Date.now()}`);
+const backupRoot = join(targetRoot, ".backup-last");
 const knownUuids = new Set();
+let backupPrepared = false;
+
+async function pathExists(path) {
+  try { await stat(path); return true; } catch { return false; }
+}
+
+async function consolidateLegacyBackups() {
+  if (!(await pathExists(targetRoot))) return;
+  const entries = await readdir(targetRoot, { withFileTypes: true });
+  const legacy = entries.filter((entry) => entry.isDirectory() && /^\.backup-\d+$/.test(entry.name)).map((entry) => entry.name).sort();
+  if (legacy.length === 0) return;
+  const latest = legacy[legacy.length - 1];
+  if (!(await pathExists(backupRoot))) await rename(join(targetRoot, latest), backupRoot);
+  for (const name of legacy) {
+    const folder = join(targetRoot, name);
+    if (await pathExists(folder)) await rm(folder, { recursive: true, force: true });
+  }
+}
+
+async function prepareBackup() {
+  if (backupPrepared) return;
+  await rm(backupRoot, { recursive: true, force: true });
+  backupPrepared = true;
+}
 
 async function scanMeta(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -35,6 +59,7 @@ async function deployDirectory(directory) {
     try { current = await readFile(destination); } catch { current = undefined; }
     if (rel === "lui.project.json" && current) continue;
     if (current && !current.equals(incoming)) {
+      await prepareBackup();
       const backup = join(backupRoot, rel);
       await mkdir(dirname(backup), { recursive: true });
       await writeFile(backup, current);
@@ -53,7 +78,7 @@ async function ensureLuiMetadata(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const full = join(directory, entry.name);
     if (entry.isDirectory()) { await ensureLuiMetadata(full); continue; }
-    if (!entry.name.endsWith(".LUI") && !entry.name.endsWith(".lui.lua")) continue;
+    if (!entry.name.endsWith(".lui") && !entry.name.endsWith(".lui.lua")) continue;
     try { await stat(`${full}.meta`); continue; } catch {}
     let uuid = randomBytes(18).toString("base64url"); while (knownUuids.has(uuid)) uuid = randomBytes(18).toString("base64url");
     knownUuids.add(uuid);
@@ -62,6 +87,7 @@ async function ensureLuiMetadata(directory) {
 }
 
 await scanMeta(scriptsRoot);
+await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
 await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
 console.log(`已部署 LUI UrhoX/Lua 运行时：${targetRoot}`);

@@ -104,6 +104,23 @@ async function writeMetaIfAbsent(root: vscode.Uri, destination: vscode.Uri): Pro
   void root; void rel;
 }
 
+/** 将早期按时间戳累积的运行时快照收敛为唯一可恢复的最新快照。 */
+async function consolidateLegacyBackups(destinationRoot: vscode.Uri): Promise<void> {
+  if (!(await exists(destinationRoot))) return;
+  const backupRoot = vscode.Uri.joinPath(destinationRoot, ".backup-last");
+  const legacy = (await vscode.workspace.fs.readDirectory(destinationRoot))
+    .filter(([name, type]) => type === vscode.FileType.Directory && /^\.backup-\d+$/.test(name))
+    .map(([name]) => name)
+    .sort();
+  if (legacy.length === 0) return;
+  const latest = legacy[legacy.length - 1]!;
+  if (!(await exists(backupRoot))) await vscode.workspace.fs.rename(vscode.Uri.joinPath(destinationRoot, latest), backupRoot, { overwrite: false });
+  for (const name of legacy) {
+    const folder = vscode.Uri.joinPath(destinationRoot, name);
+    if (await exists(folder)) await vscode.workspace.fs.delete(folder, { recursive: true, useTrash: false });
+  }
+}
+
 /** Installs only runtime-owned files. User LUI files and an existing project config are never overwritten. */
 async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<void> {
   const root = workspaceRoot();
@@ -120,15 +137,17 @@ async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<
     const previous = await vscode.workspace.fs.readFile(destination);
     if (sha256(incoming) !== sha256(previous)) differences.push(relative);
   }
-  const differenceNote = differences.length ? `\n将备份并更新：${differences.join("、")}` : "\n运行时文件哈希一致；仅会补齐缺失文件或元数据。";
+  const differenceNote = differences.length ? `\n将保留一份旧运行时并更新：${differences.join("、")}` : "\n运行时文件哈希一致；仅会补齐缺失文件或元数据。";
   const action = await vscode.window.showInformationMessage(
     (current?.installed ? `已检测到 LUI ${current.version ?? ""}。是否备份并更新运行时？` : "未检测到 LUI 运行时。是否部署 UrhoX/Lua 适配包？") + differenceNote,
-    current?.installed ? "备份并更新" : "部署",
+    current?.installed ? "更新" : "部署",
     "取消"
   );
   if (action === "取消" || !action) return;
 
-  const backupRoot = vscode.Uri.joinPath(destinationRoot, `.backup-${Date.now()}`);
+  await consolidateLegacyBackups(destinationRoot);
+  const backupRoot = vscode.Uri.joinPath(destinationRoot, ".backup-last");
+  let backupPrepared = false;
   for (const [relative, sourceFile] of files) {
     const destination = vscode.Uri.joinPath(destinationRoot, ...relative.split("/"));
     if (relative === CONFIG_FILE && await exists(destination)) continue;
@@ -136,6 +155,10 @@ async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<
     if (await exists(destination)) {
       const previous = await vscode.workspace.fs.readFile(destination);
       if (Buffer.compare(Buffer.from(previous), Buffer.from(bytes)) === 0) continue;
+      if (!backupPrepared) {
+        if (await exists(backupRoot)) await vscode.workspace.fs.delete(backupRoot, { recursive: true, useTrash: false });
+        backupPrepared = true;
+      }
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(backupRoot, ...relative.split("/").slice(0, -1)));
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(backupRoot, ...relative.split("/")), previous);
     }
@@ -155,7 +178,7 @@ async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<
     await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(defaultConfig, null, 2) + "\n", "utf8"));
     await writeMetaIfAbsent(root, config);
   }
-  vscode.window.showInformationMessage("LUI UrhoX/Lua 运行时已部署。现有运行时文件的变更已备份。 ");
+  vscode.window.showInformationMessage(backupPrepared ? "LUI UrhoX/Lua 运行时已部署；上一版本保留在 .backup-last。" : "LUI UrhoX/Lua 运行时已部署；运行时内容未变化。");
 }
 
 class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
@@ -250,7 +273,7 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
     async provideDefinition(document, position) {
       const word = document.getText(document.getWordRangeAtPosition(position, /[A-Za-z][A-Za-z0-9_.-]*/));
       if (!PRIMARY_NAME.test(word)) return undefined;
-      const files = await vscode.workspace.findFiles("**/*.LUI", "**/{.git,node_modules}/**", 512);
+      const files = await vscode.workspace.findFiles("**/*.lui", "**/{.git,node_modules}/**", 512);
       for (const uri of files) {
         const text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
         const targetDocument = await vscode.workspace.openTextDocument(uri);
@@ -280,7 +303,9 @@ function previews(node,out=[]){if(!node)return out;if(node.kind==='element'&&nod
 function stateValue(value){const hit=/^\\{Binding\\s+([\\w.-]+)\\}$/.exec(value||'');if(!hit)return value;const state=previews(model?.root).find(p=>p.start===Number(byId('preview').value));const set=(state?.children||[]).find(child=>child.tag==='lui:Set'&&child.attrs?.Path===hit[1]);return set?.attrs?.Value??('{{'+hit[1]+'}}');}
 function effectiveAttrs(node){const a={...(node.attrs||{})};for(const child of node.children||[]){const hit=new RegExp('^'+String(node.tag).split('.').join('\\\\.')+'\\.([\\w-]+)$').exec(child.tag||'');if(hit)a[hit[1]]=(child.children||[]).filter(c=>c.kind==='text').map(c=>c.text).join('').trim();}return a;}
 function visualChildren(node){return(node.children||[]).filter(child=>!child.tag?.startsWith(String(node.tag)+'.')&&child.tag!=='lui:Preview'&&child.tag!=='lui:Set');}
-function renderNode(node){if(node.kind==='text'){const span=document.createElement('span');span.textContent=node.text;return span;}if(node.kind==='comment')return document.createComment(node.text||''); if((node.tag||'').startsWith('lui:Preview')||node.tag==='lui:Set')return document.createDocumentFragment();const el=document.createElement('div');el.className='lui-node tag-'+(node.tag||'Panel').replace(/[^A-Za-z0-9_-]/g,'-');el.dataset.start=node.start;el.title=node.displayName||node.tag;const a=effectiveAttrs(node);if(a.Text){el.textContent=stateValue(a.Text);}else if(a['x:DisplayName']||a['x:Name']){const label=document.createElement('small');label.className='design-name';label.textContent=a['x:DisplayName']||a['x:Name'];el.append(label);}if(a.Width)el.style.width=a.Width; if(a.Height)el.style.height=a.Height;if(a.Background)el.style.background=a.Background;if((node.tag||'').includes('Button'))el.classList.add('button');if((node.tag||'').includes('Row'))el.classList.add('row');for(const child of visualChildren(node))el.append(renderNode(child));el.onclick=(e)=>{e.stopPropagation();pick(node.start)};return el;}
+function cssSize(value){return /^\\d+(?:\\.\\d+)?$/.test(String(value))?String(value)+'px':String(value);}
+function number(value,fallback){const result=Number(value);return Number.isFinite(result)?result:fallback;}
+function renderNode(node){if(node.kind==='text'){const span=document.createElement('span');span.textContent=node.text;return span;}if(node.kind==='comment')return document.createComment(node.text||'');const tag=node.tag||'Panel';if(tag.startsWith('lui:Preview')||tag==='lui:Set')return document.createDocumentFragment();const el=document.createElement('div');el.className='lui-node tag-'+tag.replace(/[^A-Za-z0-9_-]/g,'-');el.dataset.start=node.start;el.title=node.displayName||tag;const a=effectiveAttrs(node);if(a.Width)el.style.width=cssSize(a.Width);if(a.Height)el.style.height=cssSize(a.Height);if(a.Background)el.style.background=a.Background;if(tag==='Button')el.classList.add('button');if(tag==='Row')el.classList.add('row');if(tag==='Scroll')el.classList.add('scroll');if(tag==='Card')el.classList.add('card');if(tag==='Modal')el.classList.add('modal');if(tag==='SafeArea')el.classList.add('safe-area');if(tag==='Text'||tag==='Button'){el.textContent=stateValue(a.Text||a['x:DisplayName']||a['x:Name']||'');}else if(tag==='Progress'){const value=number(stateValue(a.Value),0),max=Math.max(1,number(stateValue(a.Max),1));const track=document.createElement('div'),fill=document.createElement('i'),label=document.createElement('small');track.className='progress-track';fill.className='progress-fill';fill.style.width=Math.max(0,Math.min(100,value/max*100))+'%';label.textContent=Math.round(value)+' / '+Math.round(max);track.append(fill);el.append(track,label);}else if(tag==='Toggle'){const indicator=document.createElement('span');indicator.className='toggle '+(String(stateValue(a.Value))==='true'?'on':'');indicator.textContent=indicator.classList.contains('on')?'开启':'关闭';el.append(indicator);}else if(tag==='Slider'){const input=document.createElement('input');input.type='range';input.disabled=true;input.min=String(a.Min||0);input.max=String(a.Max||100);input.value=String(number(stateValue(a.Value),0));el.append(input);}else if(a['x:DisplayName']||a['x:Name']){const label=document.createElement('small');label.className='design-name';label.textContent=a['x:DisplayName']||a['x:Name'];el.append(label);}for(const child of visualChildren(node))el.append(renderNode(child));el.onclick=(e)=>{e.stopPropagation();pick(node.start)};return el;}
 function outline(node,host){if(!node||node.kind!=='element'||node.tag==='lui:Preview'||node.tag==='lui:Set')return;const row=document.createElement('button');row.className='outline-row'+(selected===node.start?' selected':'');row.textContent=node.displayName||node.tag;row.onclick=()=>pick(node.start);host.append(row);const kids=document.createElement('div');kids.className='outline-children';for(const child of visualChildren(node))outline(child,kids);host.append(kids);}
 function properties(node){const host=byId('properties');host.innerHTML='<h2>属性</h2>';if(!node){host.insertAdjacentHTML('beforeend','<p>在画布或组件树选择节点。</p>');return;}host.insertAdjacentHTML('beforeend','<p><strong>'+escape(node.displayName||node.tag)+'</strong></p>');for(const [name,value] of Object.entries(node.attrs||{})){const label=document.createElement('label');label.textContent=name;const input=document.createElement('input');input.value=value;input.onchange=()=>vscode.postMessage({type:'setAttribute',start:node.start,name,value:input.value});label.append(input);host.append(label);}const add=document.createElement('button');add.textContent='添加 Panel 子节点';add.onclick=()=>vscode.postMessage({type:'addChild',start:node.start,tag:'Panel'});host.append(add);}
 function draw(){const outlineHost=byId('outline');outlineHost.innerHTML='';const canvas=byId('canvas');canvas.innerHTML='';if(!model?.root)return;const select=byId('preview');const states=previews(model.root);const retained=select.value;select.innerHTML=states.map(s=>'<option value="'+s.start+'">'+escape(s.displayName||s.attrs?.['x:Name']||'预览')+'</option>').join('');if([...select.options].some(o=>o.value===retained))select.value=retained;byId('preview-label').style.display=states.length?'':'none';outline(model.root,outlineHost);canvas.append(renderNode(model.root));properties(currentNode(model.root,selected));const diagnostics=byId('diagnostics');diagnostics.innerHTML=(model.diagnostics||[]).map(d=>'<p>⚠ '+escape(d.message)+'</p>').join('');}
