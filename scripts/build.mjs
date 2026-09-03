@@ -1,6 +1,7 @@
 import { build, context } from "esbuild";
 import { cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import "./generate-controls.mjs";
 
 const watch = process.argv.includes("--watch");
 const outdir = resolve("dist");

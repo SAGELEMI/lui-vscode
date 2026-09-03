@@ -6,7 +6,7 @@ import { linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
-import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, directoryAlias, enumOptions, isBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
+import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, UI_CONTROL_DEFINITIONS, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, controlDefinition, directoryAlias, enumOptions, isBinding, parseBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
 
 interface DiagnosticInfo { message: string; severity: "error" | "warning"; range: { start: number; end: number }; }
 interface SerializableNode {
@@ -39,8 +39,9 @@ const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:�
 const CATEGORIES: Array<[string, string[]]> = [
   ["LUI 名称", ["x:Name", "x:DisplayName"]],
   ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"]],
-  ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant"]],
-  ["文本与交互", ["Text", "Title", "FontSize", "Click", "Change", "Close", "Disabled", "Value", "Min", "Max"]],
+  ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible"]],
+  ["内容与数据", ["Text", "Title", "Subtitle", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
+  ["交互", ["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel", "Disabled"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
 ];
 const PROPERTY_STATE_KEY = "lui.inspector.collapsedCategories";
@@ -139,12 +140,14 @@ function getPath(value: unknown, path: string): unknown {
 }
 
 function resolve(value: string | undefined, scope: Record<string, unknown>): string | undefined {
-  const path = bindingPath(value);
+  const binding = parseBinding(value);
+  const path = binding?.path;
   if (!path) return value;
   const fromScope = getPath(scope, path);
-  if (fromScope !== undefined) return String(fromScope);
+  if (fromScope !== undefined) return binding?.stringFormat?.replace("{0}", String(fromScope)) ?? String(fromScope);
   const fromPreview = getPath(previewValues(), path);
-  if (fromPreview !== undefined) return String(fromPreview);
+  if (fromPreview !== undefined) return binding?.stringFormat?.replace("{0}", String(fromPreview)) ?? String(fromPreview);
+  if (binding?.previewContent !== undefined) return binding.stringFormat?.replace("{0}", binding.previewContent) ?? binding.previewContent;
   const samples: Record<string, string> = {
     title: "无尽塔", enemyText: "塔层守卫 · Lv.1", playerText: "冒险者 · Lv.1", logText: "战斗记录将在这里显示。",
     weaponText: "武器槽（空）", armorText: "护甲槽（空）", detailText: "在这里查看当前选择的说明。", profileSummary: "本地进度已就绪。",
@@ -397,11 +400,25 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
     field.onchange = () => writeAttribute(node, key, field.value); input = field;
   }
   label.append(input); host.append(label);
-  if (isBinding(value)) {
-    const preview = document.createElement("label"); preview.textContent = "预览值";
-    const previewInput = document.createElement("input"); previewInput.value = sourceValue(node, `Preview.${key}`) ?? ""; previewInput.placeholder = "仅设计预览使用";
-    previewInput.onchange = () => writeAttribute(node, `Preview.${key}`, previewInput.value);
-    preview.append(previewInput); host.append(preview);
+  const binding = parseBinding(value);
+  if (binding) {
+    const bindingSection = document.createElement("fieldset"); bindingSection.className = "binding-options";
+    const legend = document.createElement("legend"); legend.textContent = "绑定"; bindingSection.append(legend);
+    const build = (patch: Partial<typeof binding>) => {
+      const next = { ...binding, ...patch };
+      const option = (name: string, entry: string | undefined) => entry === undefined || entry === "" ? "" : `, ${name}=${/[,'\"]/.test(entry) ? `'${entry}'` : entry}`;
+      writeAttribute(node, key, `{绑定 ${next.path}, 模式=${next.mode}, 更新源触发=${next.updateSourceTrigger}${option("字符串格式", next.stringFormat)}${option("预览内容", next.previewContent)}}`);
+    };
+    const add = (title: string, current: string, options?: readonly string[]) => {
+      const item = document.createElement("label"); item.textContent = title;
+      const field = options ? document.createElement("select") : document.createElement("input");
+      if (options) for (const optionValue of options) { const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; field.append(option); }
+      field.value = current; field.onchange = () => build(title === "模式" ? { mode: field.value as typeof binding.mode } : title === "更新源触发" ? { updateSourceTrigger: field.value as typeof binding.updateSourceTrigger } : title === "字符串格式" ? { stringFormat: field.value } : { previewContent: field.value }); item.append(field); bindingSection.append(item);
+    };
+    add("模式", binding.mode, ["单向", "双向", "单次", "单向到源"]);
+    add("更新源触发", binding.updateSourceTrigger, ["默认", "属性变更", "失焦", "显式"]);
+    add("字符串格式", binding.stringFormat ?? ""); add("预览内容", binding.previewContent ?? sourceValue(node, `Preview.${key}`) ?? "");
+    host.append(bindingSection);
   }
 }
 
@@ -424,6 +441,12 @@ function attributesFor(node: SerializableNode): string[] {
   const specific: Record<string, string[]> = {
     Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["Name"], "lui:Set": ["Path", "Value"]
   };
+  const control = controlDefinition(tag);
+  if (control) {
+    const declarative = ["Text", "Title", "Subtitle", "Value", "Min", "Max", "Step", "Placeholder", "Items", "Data", "Options", "Icon", "Image", "Source", "Orientation", "Columns", "Rows", "Gap", "Type", "Visible", ...(control.events ?? [])];
+    if (control.bindable && !declarative.includes(control.bindable)) declarative.push(control.bindable);
+    specific[tag ?? ""] = [...(specific[tag ?? ""] ?? []), ...declarative];
+  }
   const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"] : [];
   return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached])];
 }
@@ -567,12 +590,13 @@ function sourceExtensions(): Extension[] {
 function setEditorSelection(node: PickedNode): void {
   if (!editor) return;
   writingSource = true;
-  editor.dispatch({ selection: EditorSelection.range(node.start, node.end), scrollIntoView: true });
+  // Designer selections must never overwrite the user's source selection.
+  editor.dispatch({ selection: EditorSelection.cursor(node.start), scrollIntoView: true });
   writingSource = false;
 }
 
-function activateSource(_source: string, selection?: PickedNode): void {
-  const payload = chooseSource(rootSource);
+function activateSource(source: string, selection?: PickedNode): void {
+  const payload = chooseSource(source);
   if (!payload) return;
   activeSource = payload;
   if (!editor) {

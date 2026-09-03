@@ -1,6 +1,7 @@
 local UI = require("urhox-libs/UI")
 local Parser = require("LUI.Parser")
 local Components = require("Presentation.Components")
+local Controls = require("LUI.Controls")
 
 -- LUI.Runtime 将纯声明式节点映射到 UrhoX UI。所有业务代码必须留在同名 .lui.lua。
 local Runtime = {}
@@ -39,8 +40,33 @@ local function loadLuaModule(path, roots)
     return exported, nil
 end
 
+local function bindingSpec(value)
+    if type(value) ~= "string" then return nil end
+    local body = value:match("^{绑定%s+(.+)}$") or value:match("^{Binding%s+(.+)}$")
+    if not body then return nil end
+    local parts, current, quote = {}, "", nil
+    for index = 1, #body do
+        local char = body:sub(index, index)
+        if (char == "'" or char == "\"") and (not quote or quote == char) then quote = quote and nil or char end
+        if char == "," and not quote then table.insert(parts, current); current = "" else current = current .. char end
+    end
+    table.insert(parts, current)
+    local path = (parts[1] or ""):match("^%s*([A-Za-z][A-Za-z0-9_.%-]*)%s*$")
+    if not path then return nil end
+    local spec = { path = path, mode = "单向", updateSourceTrigger = "默认" }
+    for index = 2, #parts do
+        local key, option = parts[index]:match("^%s*([^=]+)%s*=%s*(.-)%s*$")
+        if key and option then
+            option = option:gsub("^['\"]", ""):gsub("['\"]$", "")
+            if key == "模式" then spec.mode = option elseif key == "更新源触发" then spec.updateSourceTrigger = option elseif key == "字符串格式" then spec.stringFormat = option elseif key == "预览内容" then spec.previewContent = option end
+        end
+    end
+    return spec
+end
+
 local function bindingPath(value)
-    return type(value) == "string" and (value:match("^{绑定%s+([A-Za-z][A-Za-z0-9_.%-]*)}$") or value:match("^{Binding%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")) or nil
+    local spec = bindingSpec(value)
+    return spec and spec.path or nil
 end
 
 local function actionName(value)
@@ -57,9 +83,27 @@ local function resolvePath(context, path)
 end
 
 local function resolve(value, context)
-    local path = bindingPath(value)
-    if path then return resolvePath(context, path) end
+    local spec = bindingSpec(value)
+    if spec then
+        local resolved = resolvePath(context, spec.path)
+        if spec.stringFormat and resolved ~= nil then return spec.stringFormat:gsub("{0}", tostring(resolved)) end
+        return resolved
+    end
     return value
+end
+
+local function setPath(context, path, value)
+    local parent, last = context, nil
+    for key in tostring(path or ""):gmatch("[^%.]+") do
+        if last then
+            if type(parent[last]) ~= "table" then return false end
+            parent = parent[last]
+        end
+        last = key
+    end
+    if not last or type(parent) ~= "table" then return false end
+    parent[last] = value
+    return true
 end
 
 local function color(value)
@@ -72,7 +116,7 @@ end
 
 local function enumValue(name, value)
     local chinese = {
-        Variant = { ["主要"] = "primary", ["次要"] = "secondary" },
+        Variant = { ["高亮"] = "primary", ["常规"] = "secondary", ["主要"] = "primary", ["次要"] = "secondary" },
         Disabled = { ["是"] = "true", ["否"] = "false" },
         CloseOnOverlay = { ["是"] = "true", ["否"] = "false" },
         ShowCloseButton = { ["是"] = "true", ["否"] = "false" },
@@ -129,7 +173,44 @@ local function propsFor(attrs, context)
         local value = resolve(attrs.NativeMenuInset, context)
         props.nativeMenuInset = value == true or value == "true" or value == "是"
     end
+    local direct = {
+        Text = "text", Title = "title", Subtitle = "subtitle", Value = "value", Min = "min", Max = "max", Step = "step", Placeholder = "placeholder",
+        Items = "items", Data = "data", Options = "options", Icon = "icon", Image = "image", Source = "source", Orientation = "orientation", Columns = "columns", Rows = "rows", Gap = "gap", Type = "type",
+    }
+    for source, target in pairs(direct) do
+        local value = resolve(attrs[source], context)
+        if value ~= nil then props[target] = tonumber(value) or value end
+    end
+    if attrs.Visible ~= nil then
+        local value = resolve(attrs.Visible, context)
+        props.visible = value == true or value == "是" or value == "true"
+    end
     return props
+end
+
+local EVENT_CALLBACKS = { Click = "onClick", Change = "onChange", Submit = "onSubmit", Select = "onSelect", Open = "onOpen", Close = "onClose", Focus = "onFocus", Blur = "onBlur", Complete = "onComplete", DragStart = "onDragStart", DragEnd = "onDragEnd", DragCancel = "onDragCancel" }
+local function invokeAction(context, key, ...)
+    local callback = context.actions and context.actions[key]
+    if callback then return callback(...) end
+end
+local function wireControlEvents(props, attrs, context, descriptor)
+    for _, event in ipairs(descriptor.events or {}) do
+        local action = actionName(resolve(attrs[event], context))
+        if action then props[EVENT_CALLBACKS[event]] = function(_, ...)
+            return invokeAction(context, action, ...)
+        end end
+    end
+    local binding = descriptor.bindable and bindingSpec(attrs[descriptor.bindable]) or nil
+    if binding and binding.mode ~= "单向" and binding.mode ~= "单次" then
+        local previous = props.onChange
+        props.onChange = function(widget, value, ...)
+            if previous then previous(widget, value, ...) end
+            if binding.updateSourceTrigger ~= "显式" then
+                setPath(context, binding.path, value)
+                if context.bindings and context.bindings.Notify then context.bindings:Notify(binding.path) end
+            elseif context.bindings then context.bindings.pending[binding.path] = value end
+        end
+    end
 end
 
 local function hasAny(t) return t ~= nil and next(t) ~= nil end
@@ -582,10 +663,19 @@ function Runtime:BuildNode(node, context)
         widget = Components.Screen(nil, children, props)
     elseif tag == "FixedScreen" then
         widget = Components.FixedScreen(nil, UI.Panel { width = "100%", height = "100%", children = children }, props)
+    else
+        local descriptor = Controls[tag]
+        if descriptor then
+            props.children = children
+            wireControlEvents(props, attrs, context, descriptor)
+            local constructor = UI[descriptor.ui]
+            if not constructor then error("LUI 控件 <" .. tostring(tag) .. "> 的 UI." .. tostring(descriptor.ui) .. " 构造器不可用；请升级 urhox-libs/UI。") end
+            widget = constructor(props)
         end
+    end
         if not widget then
-        props.flexDirection = props.flexDirection or "column"; props.children = children
-        widget = UI.Panel(props)
+            props.flexDirection = props.flexDirection or "column"; props.children = children
+            widget = UI.Panel(props)
         end
     end
     local ref = attrs["x:Ref"]
@@ -626,9 +716,30 @@ function Runtime:Render(markupPath, codePath, presentation)
     local imports, importsErr = self:ImportsFor(document)
     if not imports then return nil, importsErr end
     local context = result.view or {}; context.actions = result.actions or {}; context.refs = {}; context.imports = imports; context.componentStack = {}
+    -- Bindings remain plain Lua data. View-model authors call Notify after a
+    -- mutation, or Commit to flush a binding that requested explicit update.
+    context.bindings = { pending = {} }
+    function context.bindings:Notify(path)
+        if result.OnBindingChanged then result.OnBindingChanged(path, context) end
+    end
+    function context.bindings:Commit(path)
+        local value = self.pending[path]
+        if value == nil then return false end
+        self.pending[path] = nil
+        if not setPath(context, path, value) then return false end
+        self:Notify(path)
+        return true
+    end
     local root = self:BuildNode(document, context)
     if result.AfterMount then result.AfterMount(root, context) end
     return root, nil
+end
+
+-- Registered names are the stable Lua-facing discovery surface. Markup paths
+-- remain validated by Render, so the registry never expands code-loading scope.
+function Runtime:RenderRegistered(name, presentation)
+    local registry = require("LUI.Registry")
+    return registry:Render(self, name, presentation)
 end
 
 return Runtime

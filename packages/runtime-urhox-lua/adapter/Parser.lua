@@ -1,5 +1,6 @@
 -- LUI 解析器：设计层使用 UTF-8 中文语法；只有引用、绑定、动作值会进入 Lua。
 local Parser = {}
+local Controls = require("LUI.Controls")
 
 local tags = {
     ["页面"] = "lui:Page", ["组件"] = "lui:Component", ["条件"] = "lui:If", ["循环"] = "lui:For", ["插槽"] = "lui:Slot", ["预览"] = "lui:Preview", ["设值"] = "lui:Set",
@@ -8,9 +9,14 @@ local tags = {
 local components = {
     Header = "页眉", EquipmentSlots = "装备槽", PageShell = "页面外壳", ScrollRegion = "滚动区域", InformationPanel = "信息面板", SelectionList = "选择列表", TabView = "页签视图",
 }
-local attrs = {
-    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["关闭"] = "Close", ["禁用"] = "Disabled", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["条件"] = "Test", ["集合"] = "In", ["项目"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
+local attributeAliases = {
+    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["外观"] = "Variant", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["提交"] = "Submit", ["选择"] = "Select", ["打开"] = "Open", ["获得焦点"] = "Focus", ["失去焦点"] = "Blur", ["完成"] = "Complete", ["拖动开始"] = "DragStart", ["拖动结束"] = "DragEnd", ["拖动取消"] = "DragCancel", ["关闭"] = "Close", ["禁用"] = "Disabled", ["可见"] = "Visible", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["步长"] = "Step", ["占位文本"] = "Placeholder", ["项目"] = "Items", ["数据"] = "Data", ["选项"] = "Options", ["图标"] = "Icon", ["图片"] = "Image", ["资源"] = "Source", ["方向"] = "Orientation", ["列数"] = "Columns", ["行数"] = "Rows", ["间距"] = "Gap", ["类型"] = "Type", ["条件"] = "Test", ["集合"] = "In", ["循环项"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
 }
+
+for internalName, descriptor in pairs(Controls) do
+    tags[descriptor.name] = internalName
+    tags[internalName] = internalName
+end
 
 local function canonicalAttr(name)
     local preview = name:match("^预览%.(.+)$")
@@ -19,7 +25,7 @@ local function canonicalAttr(name)
     if directory then return "目录:" .. directory end
     local legacy = name:match("^xmlns:(.+)$")
     if legacy then return "目录:" .. legacy end
-    return attrs[name] or name
+    return attributeAliases[name] or name
 end
 local function canonicalTag(tag)
     local owner, property = tag:match("^(.+)%.(.+)$")
@@ -55,7 +61,7 @@ local function readName(text, index)
 end
 
 local function parseAttributes(text, start, finish)
-    local attrs = {}
+    local parsedAttributes = {}
     local index = start
     while index <= finish do
         index = skipSpace(text, index)
@@ -72,11 +78,11 @@ local function parseAttributes(text, start, finish)
         local close = text:find(quote, valueStart, true)
         if not close or close > finish + 1 then return nil, "LUI 属性没有结束引号：" .. name end
         name = canonicalAttr(name)
-        if attrs[name] ~= nil then return nil, "LUI 属性重复：" .. name end
-        attrs[name] = text:sub(valueStart, close - 1)
+        if parsedAttributes[name] ~= nil then return nil, "LUI 属性重复：" .. name end
+        parsedAttributes[name] = text:sub(valueStart, close - 1)
         index = close + 1
     end
-    return attrs
+    return parsedAttributes
 end
 
 local function makeSymbolPool()
@@ -140,12 +146,12 @@ function Parser.Parse(text, path)
                 local node = table.remove(stack)
                 if not node or node.tag ~= tag then return nil, string.format("%s:%d LUI 结束标签不匹配：%s", path, openStart, tag) end
             else
-                local attrs, attrErr = parseAttributes(text, index, attrFinish)
-                if not attrs then return nil, string.format("%s:%d %s", path, openStart, attrErr) end
-                local valid, message = validateDesignName(attrs, path, openStart)
+                local nodeAttributes, attrErr = parseAttributes(text, index, attrFinish)
+                if not nodeAttributes then return nil, string.format("%s:%d %s", path, openStart, attrErr) end
+                local valid, message = validateDesignName(nodeAttributes, path, openStart)
                 if not valid then return nil, message end
-                local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = attrs, attrSymbols = {}, children = {}, sourcePath = path }
-                for name in pairs(attrs) do node.attrSymbols[pool:Intern(name)] = true end
+                local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = nodeAttributes, attrSymbols = {}, children = {}, sourcePath = path }
+                for name in pairs(nodeAttributes) do node.attrSymbols[pool:Intern(name)] = true end
                 if not root then root = node elseif #stack == 0 then return nil, string.format("%s:%d LUI 只能有一个根元素。", path, openStart) end
                 if #stack > 0 then stack[#stack].children[#stack[#stack].children + 1] = node end
                 if not selfClosing then stack[#stack + 1] = node end

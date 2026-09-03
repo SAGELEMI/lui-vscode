@@ -1,7 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import spec from "../dist/spec.cjs";
-const { parseLui, editAttribute, editTag, displayNameOf, formatLui, namespaceImports, normalizeLuiAttributes } = spec;
+const { UI_CONTROL_DEFINITIONS, parseBinding, parseLui, editAttribute, editTag, displayNameOf, formatLui, namespaceImports, normalizeLuiAttributes } = spec;
+
+test("the generated visual control catalog covers every public UI constructor", () => {
+  const expected = ["TextField", "Checkbox", "Dropdown", "Tabs", "Calendar", "Table", "Spine", "Sprite", "VirtualList", "DragDropContext", "SkillTree", "ChatWindow"];
+  assert.ok(UI_CONTROL_DEFINITIONS.length >= 40);
+  for (const name of expected) assert.ok(UI_CONTROL_DEFINITIONS.some((item) => item.tag === name && item.name));
+});
+
+test("WPF-style bindings retain mode, trigger, format and Studio preview content", () => {
+  assert.deepEqual(parseBinding("{绑定 view.profile.name, 模式=双向, 更新源触发=失焦, 字符串格式='你好，{0}', 预览内容='冒险者'}"), {
+    path: "view.profile.name", mode: "双向", updateSourceTrigger: "失焦", stringFormat: "你好，{0}", previewContent: "冒险者"
+  });
+});
 
 test("LUI accepts UTF-8 design names and keeps the Lua boundary on ASCII x:Ref", () => {
   const doc = parseLui('<页面 目录:积木="Presentation/Components" 名称="塔内"><安全区><视图框 宽度="390" 高度="844"><积木:页眉 名称="塔内页眉" /><进度条 名称="敌人血量" 引用="EnemyHp" /></视图框></安全区></页面>');

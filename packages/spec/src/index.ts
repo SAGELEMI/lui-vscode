@@ -1,4 +1,6 @@
-import { attributeDefinition, canonicalAttribute, canonicalTag, DEPRECATED_CANONICAL_ATTRIBUTES, DEPRECATED_CANONICAL_TAGS, directoryAlias, enumOptions, isLegacyToken, legacyEnumValue, normalizedEnumValue, sourceAttribute, sourceTag as chineseTag } from "./vocabulary.js";
+import { UI_CONTROL_DEFINITIONS, attributeDefinition, canonicalAttribute, canonicalTag, DEPRECATED_CANONICAL_ATTRIBUTES, DEPRECATED_CANONICAL_TAGS, directoryAlias, enumOptions, isLegacyToken, legacyEnumValue, normalizedEnumValue, parseBinding, sourceAttribute, sourceTag as chineseTag } from "./vocabulary.js";
+
+export { UI_CONTROL_DEFINITIONS, parseBinding };
 
 /**
  * LUI's portable syntax model. UTF-8 is valid everywhere in the design
@@ -188,7 +190,7 @@ function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): v
   if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”、“填充”或“2填充”。`, attribute.valueRange.start, attribute.valueRange.end);
   const options = enumOptions(canonical);
   if (options && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
-  else if (options && legacyEnumValue(canonical, attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 请改用中文值“${normalizedEnumValue(canonical, attribute.value)}”。`, attribute.valueRange.start, attribute.valueRange.end, "warning");
+  else if (options && legacyEnumValue(canonical, attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 的旧值“${attribute.value}”请改为“${normalizedEnumValue(canonical, attribute.value)}”（旧“主要/次要”现称“高亮/常规”）。`, attribute.valueRange.start, attribute.valueRange.end, "warning");
 }
 
 /** Validates LUI identities and the boundary between design-only and Lua-visible values. */

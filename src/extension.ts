@@ -10,6 +10,7 @@ import { decideSourceEdit, type VersionedSource } from "./webview/sourceSync.js"
 const RUNTIME_DIRECTORY = ["scripts", "LUI"] as const;
 const CONFIG_FILE = "lui.project.json";
 const MANIFEST_FILE = "runtime-manifest.json";
+const REGISTRY_FILE = "Registry.lua";
 const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" };
 const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 
@@ -81,6 +82,61 @@ async function writeMetaIfAbsent(destination: vscode.Uri): Promise<void> {
   const meta = vscode.Uri.file(`${destination.fsPath}.meta`);
   if (await exists(meta)) return;
   await vscode.workspace.fs.writeFile(meta, Buffer.from(JSON.stringify({ uuid: createUuid() }, null, 2) + "\n", "utf8"));
+}
+
+async function collectLuiFiles(directory: vscode.Uri, relative = ""): Promise<Array<[string, vscode.Uri]>> {
+  const found: Array<[string, vscode.Uri]> = [];
+  try {
+    for (const [name, type] of await vscode.workspace.fs.readDirectory(directory)) {
+      const child = vscode.Uri.joinPath(directory, name); const path = relative ? `${relative}/${name}` : name;
+      if (type === vscode.FileType.Directory && name !== ".backup-last") found.push(...await collectLuiFiles(child, path));
+      else if (type === vscode.FileType.File && name.endsWith(".lui")) found.push([path, child]);
+    }
+  } catch { /* A project can omit a configured source root. */ }
+  return found;
+}
+
+function luaString(value: string): string { return JSON.stringify(value); }
+async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
+  const scripts = uriPath(root, "scripts"); const configUri = uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE);
+  const config = (await readJson(configUri)) ?? { schemaVersion: 3, adapter: "urhox-lua", sourceRoots: ["Presentation/Pages", "Presentation/Components"] };
+  const roots = Array.isArray(config.sourceRoots) ? config.sourceRoots.filter((value): value is string => typeof value === "string") : [];
+  const pages: Array<{ name: string; markup: string; code: string }> = []; const components: Array<{ name: string; markup: string; code: string }> = [];
+  for (const sourceRoot of roots) for (const [relative, uri] of await collectLuiFiles(uriPath(scripts, ...sourceRoot.split("/")))) {
+    const markup = `${sourceRoot}/${relative}`; const parsed = parseLui(asText(await vscode.workspace.fs.readFile(uri))).root;
+    const name = parsed?.attrs.find((attribute) => canonicalAttribute(attribute.name) === "x:Name")?.value ?? relative.replace(/\.lui$/, "");
+    const item = { name, markup, code: `${markup}.lua` };
+    if (canonicalTag(parsed?.tag) === "lui:Component") components.push(item); else if (canonicalTag(parsed?.tag) === "lui:Page") pages.push(item);
+  }
+  pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); components.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  const row = (item: { name: string; markup: string; code: string }) => `${luaString(item.name)} = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
+  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {\n        ${pages.map(row).join("\n        ")}\n    },\n    components = {\n        ${components.map(row).join("\n        ")}\n    },\n}\n\nfunction Registry:Get(name) return self.pages[name] or self.components[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或组件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
+  const destination = uriPath(root, ...RUNTIME_DIRECTORY, REGISTRY_FILE);
+  await vscode.workspace.fs.writeFile(destination, Buffer.from(registry, "utf8")); await writeMetaIfAbsent(destination);
+}
+
+function templateFor(kind: "页面" | "组件", name: string): { markup: string; code: string } {
+  const markup = kind === "页面"
+    ? `<!-- ${name}：设备预设只影响预览；视图框定义内部设计坐标。 -->\n<页面 名称="${name}">\n  <安全区>\n    <视图框 宽度="390" 高度="844">\n      <网格 行定义="自动,填充" 列定义="填充">\n        <文本 名称="标题" 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${name}'}" 字号="28" />\n      </网格>\n    </视图框>\n  </安全区>\n</页面>\n`
+    : `<!-- ${name}：在页面根节点以 目录:别名 导入后使用。 -->\n<组件 名称="${name}">\n  <网格 行定义="自动" 列定义="填充">\n    <文本 名称="标题" 文本="{绑定 props.title, 预览内容='${name}'}" />\n  </网格>\n</组件>\n`;
+  const objectName = kind === "页面" ? "Page" : "Component";
+  const code = `-- ${name} 的 MVVM 后端。布局、样式和静态属性留在同名 .lui。\n-- view：绑定数据；actions：{动作 ...}；refs：所有 x:Ref 控件；bindings：Notify/Commit。\nlocal ${objectName} = {}\n\nfunction ${objectName}.Build(presentation)\n    return {\n        view = { title = \"${name}\" },\n        actions = {\n            -- Save = function() end, -- 对应 {动作 Save}\n        },\n        AfterMount = function(root, context)\n            -- local title = context.refs.TitleRef -- 对应 x:Ref=\"TitleRef\"\n        end,\n        OnBindingChanged = function(path, context)\n            -- 修改 view 后调用 context.bindings:Notify(\"view.字段\")。\n        end,\n    }\nend\n\nreturn ${objectName}\n`;
+  return { markup, code };
+}
+
+async function createLuiPair(): Promise<void> {
+  const root = workspaceRoot(); if (!root) { vscode.window.showErrorMessage("请先打开 Maker 游戏项目。"); return; }
+  const kind = await vscode.window.showQuickPick(["页面", "组件"], { placeHolder: "选择 LUI 文件类型" }) as "页面" | "组件" | undefined; if (!kind) return;
+  const name = await vscode.window.showInputBox({ prompt: "中文设计名称", placeHolder: kind === "页面" ? "新页面" : "新组件", validateInput: (value) => value.trim() ? undefined : "名称不能为空。" }); if (!name) return;
+  const safeName = name.replace(/[\\/:*?\"<>|]/g, ""); if (!safeName) return;
+  const folder = kind === "页面" ? ["scripts", "Presentation", "Pages"] : ["scripts", "Presentation", "Components"];
+  const markupUri = uriPath(root, ...folder, `${safeName}.lui`); const codeUri = uriPath(root, ...folder, `${safeName}.lui.lua`);
+  if (await exists(markupUri) || await exists(codeUri)) { vscode.window.showErrorMessage(`已存在：${safeName}`); return; }
+  const template = templateFor(kind, name); await vscode.workspace.fs.createDirectory(uriPath(root, ...folder));
+  await vscode.workspace.fs.writeFile(markupUri, Buffer.from(template.markup, "utf8")); await vscode.workspace.fs.writeFile(codeUri, Buffer.from(template.code, "utf8"));
+  await writeMetaIfAbsent(markupUri); await writeMetaIfAbsent(codeUri); await updateProjectRegistry(root);
+  await vscode.commands.executeCommand("vscode.openWith", markupUri, LuiPreviewProvider.viewType);
+  vscode.window.showInformationMessage(`已新建 ${kind}、MVVM 后端并更新 LUI 注册表。`);
 }
 
 /** A runtime upgrade has one recoverable snapshot and never owns user design files or configuration. */
@@ -253,6 +309,10 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
     const normalized = normalizeLuiAttributes(event.document.getText());
     if (normalized !== event.document.getText()) event.waitUntil(Promise.resolve([vscode.TextEdit.replace(new vscode.Range(event.document.positionAt(0), event.document.positionAt(event.document.getText().length)), normalized)]));
   }));
+  context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
+    if (document.languageId !== "lui") return;
+    const root = workspaceRoot(); if (root) void updateProjectRegistry(root);
+  }));
   vscode.workspace.textDocuments.forEach((document) => void refresh(document));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(LUI_SELECTOR, {
     async provideCompletionItems(document) {
@@ -342,6 +402,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.env.clipboard.writeText(`${ref} = function()\n  -- 在这里转发受控动作。\nend, -- LUI：动作`);
     vscode.window.showInformationMessage(`已复制 ${ref} 动作桩。`);
   }));
+  context.subscriptions.push(vscode.commands.registerCommand("lui.createPair", createLuiPair));
 }
 
 export function deactivate(): void {}

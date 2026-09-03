@@ -1,6 +1,6 @@
 {
   "adapter": "urhox-lua",
-  "version": "0.6.0",
-  "layoutContract": "viewbox-grid-v1",
-  "description": "LUI runtime adapter for UrhoX Lua projects with Chinese source vocabulary."
+  "version": "0.7.0",
+  "layoutContract": "viewbox-grid-v1-controls-mvvm",
+  "description": "LUI runtime adapter for UrhoX Lua projects with a generated UI control catalog and MVVM bindings."
 }
