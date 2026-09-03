@@ -399,6 +399,48 @@ local function viewbox(children, attrs, context)
     return outer
 end
 
+-- A Page is the only document root that owns device semantics.  Its Width and
+-- Height are authored design coordinates (not a device mode); SafeArea gives
+-- this surface the logical viewport and the page uniformly scales inside it.
+local function pageSurface(children, attrs, context)
+    local designWidth = tonumber(resolve(attrs.Width, context)) or 0
+    local designHeight = tonumber(resolve(attrs.Height, context)) or 0
+    if designWidth <= 0 or designHeight <= 0 then error("LUI <页面> 的宽度和高度必须是正数 px。") end
+    local page = UI.Panel { width = "100%", height = "100%", children = {} }
+    local content = UI.Panel {
+        width = designWidth, height = designHeight, padding = thickness(resolve(attrs.Padding, context)),
+        overflow = resolve(attrs.ClipToBounds, context) == "否" and "visible" or "hidden",
+        children = children, transformOrigin = "top-left",
+    }
+    page:AddChild(content)
+    local baseRender = page.Render
+    function page:Render(nvg)
+        local rect = self:GetAbsoluteLayout()
+        local left, top, right, bottom = thicknessParts(resolve(attrs.Margin, context))
+        local availableW, availableH = math.max(0, rect.w - left - right), math.max(0, rect.h - top - bottom)
+        local scale = math.min(availableW / designWidth, availableH / designHeight)
+        if scale ~= scale or scale == math.huge then scale = 1 end
+        local drawWidth, drawHeight = designWidth * scale, designHeight * scale
+        applyFrame(content, rect.x + left + (availableW - drawWidth) * 0.5, rect.y + top + (availableH - drawHeight) * 0.5, designWidth, designHeight)
+        content.props.scale, content.props.transformOrigin = scale, "top-left"
+        local paddingLeft, paddingTop, paddingRight, paddingBottom = thicknessParts(resolve(attrs.Padding, context))
+        self.luiLayoutProbe_ = {
+            kind = "Page", scale = scale, x = content.renderOffsetX_, y = content.renderOffsetY_, width = designWidth, height = designHeight,
+            contentWidth = math.max(0, designWidth - paddingLeft - paddingRight), contentHeight = math.max(0, designHeight - paddingTop - paddingBottom),
+        }
+        baseRender(self, nvg)
+    end
+    return page
+end
+
+-- Controls deliberately have no SafeArea or document scale.  Their own
+-- width/height/padding remain ordinary WPF-style measure/arrange properties.
+local function controlSurface(children, attrs, context)
+    local props = propsFor(attrs, context)
+    props.children = children
+    return UI.Panel(props)
+end
+
 local function propertyText(node)
     local values = {}
     for _, child in ipairs(node.children or {}) do
@@ -595,10 +637,11 @@ function Runtime:BuildNode(node, context)
     if tag == "lui:Slot" then
         return { __luiList = true, items = self:BuildChildren((context.slots or {}).Content or {}, context) }
     end
-    if tag == "lui:Page" or tag == "lui:Component" then
-        local items = self:BuildChildren(visualChildren, context)
-        if #items == 1 then return items[1] end
-        return UI.Panel { width = "100%", height = "100%", children = items }
+    if tag == "lui:Page" then
+        return pageSurface(self:BuildChildren(visualChildren, context), attrs, context)
+    end
+    if tag == "lui:Component" then
+        return controlSurface(self:BuildChildren(visualChildren, context), attrs, context)
     end
     local component, componentErr, componentKey = nil, nil, nil
     local alias, name = tag:match("^([^:]+):(.+)$")
@@ -789,12 +832,9 @@ function Runtime:Render(markupPath, codePath, presentation)
         return true
     end
     local root = self:BuildNode(document, context)
-    -- Pages own no device chrome in source.  The runtime is the single safe-area
-    -- host; old page documents that still contain <安全区> remain compatible.
-    local first = (document.children or {})[1]
-    if document.tag == "lui:Page" and root and (not first or first.tag ~= "SafeArea") then
-        root = UI.SafeAreaView { width = "100%", height = "100%", children = { root } }
-    end
+    -- Only a Page receives a SafeArea host. A Control is reusable content and
+    -- must measure inside its parent without acquiring device semantics.
+    if document.tag == "lui:Page" and root then root = UI.SafeAreaView { width = "100%", height = "100%", children = { root } } end
     if result.AfterMount then result.AfterMount(root, context) end
     return root, nil
 end

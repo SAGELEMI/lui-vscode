@@ -1,6 +1,6 @@
 {
   "adapter": "urhox-lua",
-  "version": "0.8.0",
-  "layoutContract": "wpf-layout-v1-controls-mvvm",
+  "version": "0.9.0",
+  "layoutContract": "page-control-roots-v1-controls-mvvm",
   "description": "LUI runtime adapter for UrhoX Lua with WPF-style Measure/Arrange semantics, UI controls and MVVM bindings."
 }

@@ -212,7 +212,9 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     if (imports.has(alias)) fail(diagnostics, `目录别名重复：${alias}。`, attribute.range.start, attribute.range.end);
     imports.set(alias, attribute);
   }
-  const visit = (node: LuiNode, parentTag?: string) => {
+  const rootTag = canonicalTag(root.tag);
+  if (rootTag !== "lui:Page" && rootTag !== "lui:Component") fail(diagnostics, "LUI 根节点只能是 <页面> 或 <控件>。", root.range.start, root.openTagEnd);
+  const visit = (node: LuiNode, parentTag?: string, isRoot = false) => {
     if (node.kind !== "element") return;
     if (node.tag === "__placeholder__") {
       fail(diagnostics, "空标签仅用于设计器占位；请选择标签类型后再运行。", node.range.start, node.range.end, "warning");
@@ -256,6 +258,13 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const sourceTag = node.tag;
     const canonical = canonicalTag(sourceTag);
+    if (!isRoot && (canonical === "lui:Page" || canonical === "lui:Component")) fail(diagnostics, "<页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", node.range.start, node.openTagEnd);
+    if (canonical === "lui:Page") {
+      for (const name of ["Width", "Height"]) {
+        const attribute = getAttribute(node, name);
+        if (!attribute || !/^\d+(?:\.\d+)?$/.test(attribute.value) || Number(attribute.value) <= 0) fail(diagnostics, `<页面> 的${sourceAttribute(name)}必须是正数 px，作为设计坐标而非设备分辨率。`, attribute?.valueRange.start ?? node.range.start, attribute?.valueRange.end ?? node.openTagEnd);
+      }
+    }
     if (canonical === "Viewbox") {
       for (const name of ["Width", "Height"]) {
         const attribute = getAttribute(node, name);
@@ -273,9 +282,9 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     // 旧条件、循环和内容呈现器只控制是否/如何产生子项，不是布局容器；其子项
     // 仍视为最近网格或画布的直接可定位子项。
     const childParent = canonical === "lui:If" || canonical === "lui:For" || canonical === "lui:Slot" ? parentTag : canonical;
-    for (const child of node.children) visit(child, childParent);
+    for (const child of node.children) visit(child, childParent, false);
   };
-  visit(root);
+  visit(root, undefined, true);
   if (canonicalTag(root.tag) === "lui:Page" || canonicalTag(root.tag) === "lui:Component") {
     const hosts = root.children.filter((node) => node.kind === "element" && !["lui:Preview", "lui:Set"].includes(canonicalTag(node.tag) ?? ""));
     if (hosts.length !== 1) fail(diagnostics, `<${chineseTag(canonicalTag(root.tag) ?? "lui:Page")}> 必须恰好包含一个布局根；页面安全区由 Runtime 自动提供。`, root.range.start, root.openTagEnd);

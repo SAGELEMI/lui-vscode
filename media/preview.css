@@ -61,11 +61,13 @@ button { padding: 7px 9px; border: 1px solid #7855aa; border-radius: 6px; backgr
 
 main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 main > header { height: 48px; padding: 8px 14px; display: flex; gap: 12px; justify-content: flex-end; align-items: center; border-bottom: 1px solid #4c3568; }
-main > header select { margin-left: 6px; background: #271a3c; color: #fff; border: 1px solid #60477e; border-radius: 4px; padding: 4px; }
+main > header select, main > header input { margin-left: 6px; background: #271a3c; color: #fff; border: 1px solid #60477e; border-radius: 4px; padding: 4px; }
+#control-constraints input { width: 66px; }
 #diagnostics { color: #ff9db8; padding: 0 14px; }
 #diagnostics p { margin: 5px 0; }
 #stage { flex: 1; min-height: 0; padding: 20px; overflow: auto; background: radial-gradient(circle at 20% 0, #30204f, transparent 42%), #0d0717; }
 #canvas { width: 390px; min-height: 844px; margin: auto; padding: 0; background: #0b0714; box-shadow: 0 16px 50px #0008; overflow: hidden; }
+#canvas.control-preview { width: fit-content; min-width: 0; min-height: 0; margin: 0 auto; overflow: visible; background: transparent; box-shadow: none; }
 
 #splitter { cursor: row-resize; background: #28183e; border-top: 1px solid #60477e; border-bottom: 1px solid #0b0714; position: relative; }
 #splitter:hover, #splitter:active { background: #7855aa; }
@@ -75,13 +77,15 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 
 .lui-node { position: relative; min-width: 0; color: #f4ecff; cursor: pointer; }
 .lui-node.row { display: flex; flex-direction: row; min-height: 32px; }
-.lui-node.panel, .lui-node.page, .lui-node.component, .lui-component-instance { display: flex; flex-direction: column; min-height: 0; }
+.lui-node.panel, .lui-node.page, .lui-node.component, .lui-component-instance, .lui-node.control-root { display: flex; flex-direction: column; min-height: 0; }
 .lui-node.grid { display: grid; min-width: 0; min-height: 0; align-content: stretch; justify-content: stretch; }
 .lui-node.canvas { min-width: 0; min-height: 0; position: relative; }
 .lui-node.viewbox { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 .lui-viewbox-design { position: absolute; transform-origin: top left; display: flex; flex-direction: column; }
 .lui-node.placeholder { min-width: 130px; min-height: 36px; border: 1px dashed #ffe16b; color: #ffe16b; background: #271a3c; }
-.lui-node.component, .lui-node.page { width: 100%; }
+.lui-node.page-root { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: visible; position: relative; }
+.lui-page-design { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; box-sizing: border-box; }
+.lui-node.control-root { width: fit-content; min-width: 0; align-self: flex-start; }
 .lui-component-instance { min-width: 0; position: relative; }
 .lui-node.text { align-self: flex-start; color: #f6f0ff; white-space: pre-wrap; }
 .lui-node.button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 36px; padding: 8px 12px; border: 1px solid #af8cff; border-radius: 8px; background: linear-gradient(135deg, #7851c9, #4d2a91); color: #fff; font-weight: 700; }

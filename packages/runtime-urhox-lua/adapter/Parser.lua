@@ -10,7 +10,7 @@ local components = {
     Header = "页眉", EquipmentSlots = "装备槽", PageShell = "页面外壳", ScrollRegion = "滚动区域", InformationPanel = "信息面板", SelectionList = "选择列表", TabView = "页签视图",
 }
 local attributeAliases = {
-    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["水平对齐"] = "HorizontalAlignment", ["垂直对齐"] = "VerticalAlignment", ["可见性"] = "Visibility", ["停靠"] = "Dock", ["最后子项填充"] = "LastChildFill", ["层级"] = "ZIndex", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["外观"] = "Variant", ["可见"] = "Visible", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["提交"] = "Submit", ["选择"] = "Select", ["打开"] = "Open", ["获得焦点"] = "Focus", ["失去焦点"] = "Blur", ["完成"] = "Complete", ["拖动开始"] = "DragStart", ["拖动结束"] = "DragEnd", ["拖动取消"] = "DragCancel", ["关闭"] = "Close", ["禁用"] = "Disabled", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["步长"] = "Step", ["占位文本"] = "Placeholder", ["项目"] = "Items", ["数据"] = "Data", ["选项"] = "Options", ["图标"] = "Icon", ["图片"] = "Image", ["资源"] = "Source", ["方向"] = "Orientation", ["列数"] = "Columns", ["行数"] = "Rows", ["间距"] = "Gap", ["类型"] = "Type", ["条件"] = "Test", ["集合"] = "In", ["循环项"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
+    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["裁剪超出"] = "ClipToBounds", ["水平对齐"] = "HorizontalAlignment", ["垂直对齐"] = "VerticalAlignment", ["可见性"] = "Visibility", ["停靠"] = "Dock", ["最后子项填充"] = "LastChildFill", ["层级"] = "ZIndex", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["外观"] = "Variant", ["可见"] = "Visible", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["提交"] = "Submit", ["选择"] = "Select", ["打开"] = "Open", ["获得焦点"] = "Focus", ["失去焦点"] = "Blur", ["完成"] = "Complete", ["拖动开始"] = "DragStart", ["拖动结束"] = "DragEnd", ["拖动取消"] = "DragCancel", ["关闭"] = "Close", ["禁用"] = "Disabled", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["步长"] = "Step", ["占位文本"] = "Placeholder", ["项目"] = "Items", ["数据"] = "Data", ["选项"] = "Options", ["图标"] = "Icon", ["图片"] = "Image", ["资源"] = "Source", ["方向"] = "Orientation", ["列数"] = "Columns", ["行数"] = "Rows", ["间距"] = "Gap", ["类型"] = "Type", ["条件"] = "Test", ["集合"] = "In", ["循环项"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
 }
 
 for internalName, descriptor in pairs(Controls) do
@@ -161,6 +161,19 @@ function Parser.Parse(text, path)
     end
     if #stack > 0 then return nil, string.format("%s: <%s> 缺少结束标签。", path, stack[#stack].tag) end
     if not root then return nil, string.format("%s: LUI 文档缺少根元素。", path) end
+    if root.tag ~= "lui:Page" and root.tag ~= "lui:Component" then return nil, string.format("%s: LUI 根节点只能是 <页面> 或 <控件>。", path) end
+    if root.tag == "lui:Page" then
+        local width, height = tonumber(root.attrs.Width), tonumber(root.attrs.Height)
+        if not width or width <= 0 or not height or height <= 0 then return nil, string.format("%s: <页面> 的宽度和高度必须是正数 px。", path) end
+    end
+    local function validateRootOnly(node)
+        for _, child in ipairs(node.children or {}) do
+            if child.tag == "lui:Page" or child.tag == "lui:Component" then return false end
+            if not validateRootOnly(child) then return false end
+        end
+        return true
+    end
+    if not validateRootOnly(root) then return nil, string.format("%s: <页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", path) end
     root.symbols = pool.names
     return root, nil
 end

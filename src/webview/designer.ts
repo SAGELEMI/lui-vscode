@@ -38,7 +38,7 @@ const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(
 const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
   ["LUI 名称", ["x:Name", "x:DisplayName"]],
-  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "HorizontalAlignment", "VerticalAlignment", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Dock", "LastChildFill", "ZIndex"]],
+  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Dock", "LastChildFill", "ZIndex"]],
   ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
   ["内容与数据", ["Text", "Title", "Subtitle", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
   ["交互", ["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel", "Disabled"]],
@@ -58,6 +58,8 @@ let activeSource: SourcePayload | undefined;
 let sourceTimer: ReturnType<typeof setTimeout> | undefined;
 let writingSource = false;
 let inFlight: { source: string; version: number; text: string } | undefined;
+let controlAvailableWidth = "";
+let controlAvailableHeight = "";
 interface LayoutData { x: number; y: number; width: number; height: number; parentX: number; parentY: number; contentWidth: number; contentHeight: number; margin: string; padding: string; }
 const layouts = new Map<string, LayoutData>();
 
@@ -218,6 +220,7 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
   if (attrs.BorderRadius !== undefined) element.style.borderRadius = cssSize(attrs.BorderRadius);
   if (attrs.Margin !== undefined) element.style.margin = cssThickness(attrs.Margin);
   if (attrs.Padding !== undefined) element.style.padding = cssThickness(attrs.Padding);
+  if (attrs.ClipToBounds !== undefined) element.style.overflow = bool(attrs.ClipToBounds) ? "hidden" : "visible";
   const horizontal = attrs.HorizontalAlignment;
   const vertical = attrs.VerticalAlignment;
   if (horizontal) element.style.justifySelf = ({ "左": "start", "居中": "center", "右": "end", "拉伸": "stretch" } as Record<string, string>)[horizontal] ?? "stretch";
@@ -314,6 +317,32 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   }
   if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace);
   const attrs = effective(node, scope);
+  if (tag === "lui:Page") {
+    const viewport = document.createElement("div"); decorate(viewport, node); viewport.classList.add("lui-node", "page-root");
+    const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
+    const design = document.createElement("div"); design.className = "lui-page-design";
+    design.style.width = `${designWidth}px`; design.style.height = `${designHeight}px`; design.style.transformOrigin = "top left";
+    if (attrs.Padding !== undefined) design.style.padding = cssThickness(attrs.Padding);
+    design.style.overflow = bool(attrs.ClipToBounds) ? "hidden" : "visible";
+    design.append(fragmentChildren(visualChildren(node), scope, trace)); viewport.append(design);
+    const applyScale = () => {
+      const rect = viewport.getBoundingClientRect(); const margin = thicknessParts(attrs.Margin);
+      const left = Number(margin[0]) || 0; const top = Number(margin[1]) || 0; const right = Number(margin[2]) || 0; const bottom = Number(margin[3]) || 0;
+      const availableWidth = Math.max(0, rect.width - left - right); const availableHeight = Math.max(0, rect.height - top - bottom);
+      const scale = Math.min(availableWidth / designWidth, availableHeight / designHeight);
+      const safeScale = Number.isFinite(scale) ? scale : 1;
+      design.style.transform = `scale(${safeScale})`;
+      design.style.left = `${left + Math.max(0, (availableWidth - designWidth * safeScale) * 0.5)}px`;
+      design.style.top = `${top + Math.max(0, (availableHeight - designHeight * safeScale) * 0.5)}px`;
+      viewport.dataset.pageScale = String(safeScale);
+    };
+    new ResizeObserver(applyScale).observe(viewport); requestAnimationFrame(applyScale);
+    return viewport;
+  }
+  if (tag === "lui:Component") {
+    const element = document.createElement("div"); decorate(element, node); element.classList.add("lui-node", "control-root");
+    applyLayout(element, "Component", attrs); element.append(fragmentChildren(visualChildren(node), scope, trace)); return element;
+  }
   if (tag === "Viewbox") {
     const viewport = document.createElement("div"); decorate(viewport, node); viewport.classList.add("lui-node", "viewbox");
     const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
@@ -458,16 +487,21 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   }
 }
 
-function tagChoices(): string[] {
+function isDocumentRoot(node: SerializableNode): boolean { return allRoots().some((root) => root.start === node.start && root.source === node.source); }
+
+function tagChoices(node: SerializableNode): string[] {
+  if (isDocumentRoot(node)) return ["页面", "控件"];
   const imported = model?.root ? Object.entries(model.root.attrs).filter(([name]) => directoryAlias(name)).flatMap(([name]) => {
     const alias = directoryAlias(name)?.alias ?? ""; const directory = model?.root?.attrs[name] ?? ""; return Object.keys(catalog[directory] ?? {}).map((component) => `${alias}:${component}`);
   }) : [];
-  return [...BUILTIN_TAGS, ...imported];
+  return [...BUILTIN_TAGS.filter((tag) => !["lui:Page", "lui:Component", "页面", "控件", "组件"].includes(tag)), ...imported];
 }
 
 function attributesFor(node: SerializableNode): string[] {
   const tag = canonicalTag(node.tag);
   if (tag === "__placeholder__") return [];
+  if (tag === "lui:Page") return ["x:Name", "x:DisplayName", "Width", "Height", "Margin", "Padding", "ClipToBounds"];
+  if (tag === "lui:Component") return ["x:Name", "x:DisplayName", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding"];
   let parent = parentOf(node);
   while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
   const parentTag = canonicalTag(parent?.tag);
@@ -544,7 +578,7 @@ function properties(node: SerializableNode | undefined): void {
   const fillTags = () => {
     const query = filter.value.trim().toLowerCase(); select.innerHTML = "";
     if (rawTag === "__placeholder__") { const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "请选择标签类型"; placeholder.selected = true; select.append(placeholder); }
-    for (const tag of tagChoices().filter((item) => (category.value === "全部" || tagCategory(item) === category.value) && tagSearchText(item).includes(query))) {
+    for (const tag of tagChoices(node).filter((item) => (category.value === "全部" || tagCategory(item) === category.value) && tagSearchText(item).includes(query))) {
       const option = document.createElement("option"); option.value = tag; option.textContent = `${tag} · ${canonicalTag(tag) ?? tag}`; option.selected = tag === rawTag; select.append(option);
     }
   };
@@ -705,6 +739,18 @@ function collectLayoutData(): void {
 function draw(): void {
   const canvas = byId("canvas"); const tree = byId("outline"); canvas.innerHTML = ""; tree.innerHTML = "";
   if (!model?.root) return;
+  const isPage = canonicalTag(model.root.tag) === "lui:Page";
+  byId("device-label").style.display = isPage ? "" : "none";
+  byId("control-constraints").style.display = isPage ? "none" : "";
+  canvas.classList.toggle("control-preview", !isPage);
+  if (isPage) {
+    const [width, height] = byId<HTMLSelectElement>("device").value.split("x");
+    canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; canvas.style.minHeight = `${height}px`;
+  } else {
+    canvas.style.width = controlAvailableWidth ? `${controlAvailableWidth}px` : "fit-content";
+    canvas.style.height = controlAvailableHeight ? `${controlAvailableHeight}px` : "fit-content";
+    canvas.style.minHeight = controlAvailableHeight ? `${controlAvailableHeight}px` : "0";
+  }
   const select = byId<HTMLSelectElement>("preview"); const states = previews(model.root); const previous = select.value; select.innerHTML = "";
   for (const state of states) { const option = document.createElement("option"); option.value = String(state.start); option.textContent = state.displayName || "预览状态"; select.append(option); }
   if ([...select.options].some((option) => option.value === previous)) select.value = previous;
@@ -768,7 +814,9 @@ window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceRel
   if (event.data.type === "source") applyReload(event.data);
 });
 
-byId<HTMLSelectElement>("device").onchange = () => { const [width, height] = byId<HTMLSelectElement>("device").value.split("x"); byId("canvas").style.width = `${width}px`; byId("canvas").style.minHeight = `${height}px`; };
+byId<HTMLSelectElement>("device").onchange = draw;
+byId<HTMLInputElement>("available-width").onchange = () => { controlAvailableWidth = byId<HTMLInputElement>("available-width").value; draw(); };
+byId<HTMLInputElement>("available-height").onchange = () => { controlAvailableHeight = byId<HTMLInputElement>("available-height").value; draw(); };
 byId<HTMLSelectElement>("preview").onchange = draw;
 byId<HTMLButtonElement>("deploy").onclick = () => vscode.postMessage({ type: "deploy" });
 byId<HTMLButtonElement>("collapse").onclick = () => { const inspector = byId("inspector"); inspector.classList.toggle("collapsed"); byId("collapse").textContent = inspector.classList.contains("collapsed") ? "展开" : "收起"; };

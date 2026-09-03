@@ -52,6 +52,66 @@ function migrateTag(full, body) {
   return `<${name}${migrated.length ? ` ${migrated.join(" ")}` : ""}${closing ? " /" : ""}>`;
 }
 
+function attributes(body) {
+  return [...body.matchAll(ATTRIBUTE)].map((match) => ({ name: match[1], value: match[3], quote: match[2] }));
+}
+
+function opening(tag, attrs, selfClosing = false) {
+  return `<${tag}${attrs.length ? ` ${attrs.map((attr) => `${attr.name}=${attr.quote ?? '"'}${attr.value}${attr.quote ?? '"'}`).join(" ")}` : ""}${selfClosing ? " /" : ""}>`;
+}
+
+function setAttribute(attrs, name, value) {
+  const item = attrs.find((attr) => attr.name === name);
+  if (item) item.value = value; else attrs.push({ name, value, quote: '"' });
+}
+
+function takeAttribute(attrs, name) {
+  const index = attrs.findIndex((attr) => attr.name === name);
+  return index < 0 ? undefined : attrs.splice(index, 1)[0];
+}
+
+function migrateRoots(source) {
+  // Old page roots delegated their design surface to a full-size Grid.  The
+  // new root owns that surface, so padding becomes scaled page padding while
+  // the direct layout root keeps only its layout-specific declarations.
+  let result = source.replace(/<页面([^>]*)>(\s*)<(网格|画布|堆叠面板|换行面板|停靠面板|均分网格|边框|内容控件|滚动查看器)([^>]*)>/g, (_all, pageBody, spacing, tag, layoutBody) => {
+    const page = attributes(pageBody); const layout = attributes(layoutBody);
+    setAttribute(page, "宽度", page.find((item) => item.name === "宽度")?.value || "390");
+    setAttribute(page, "高度", page.find((item) => item.name === "高度")?.value || "844");
+    setAttribute(page, "裁剪超出", page.find((item) => item.name === "裁剪超出")?.value || "是");
+    const padding = takeAttribute(layout, "内边距"); if (padding && !page.some((item) => item.name === "内边距")) page.push(padding);
+    for (const name of ["宽度", "高度"]) {
+      const item = layout.find((attr) => attr.name === name);
+      if (item?.value === "100%") takeAttribute(layout, name);
+    }
+    return `${opening("页面", page)}${spacing}${opening(tag, layout)}`;
+  });
+  // A custom control has no device host.  PageShell was the only legacy
+  // component with a SafeArea wrapper; unwrap it and move its surface sizing
+  // to the control root.  Other direct grids can likewise declare root size.
+  result = result.replace(/<控件([^>]*)>(\s*)<安全区[^>]*>(\s*)<(网格)([^>]*)>([\s\S]*?)<\/网格>\s*<\/安全区>/g, (_all, controlBody, before, between, tag, layoutBody, children) => {
+    const control = attributes(controlBody); const layout = attributes(layoutBody);
+    for (const name of ["宽度", "高度", "内边距"]) { const item = takeAttribute(layout, name); if (item && !control.some((attr) => attr.name === name)) control.push(item); }
+    return `${opening("控件", control)}${before}${between}${opening(tag, layout)}${children}</网格>`;
+  });
+  result = result.replace(/<控件([^>]*)>(\s*)<网格([^>]*)>/g, (_all, controlBody, spacing, gridBody) => {
+    const control = attributes(controlBody); const grid = attributes(gridBody);
+    for (const name of ["宽度", "高度", "内边距"]) {
+      const item = takeAttribute(grid, name);
+      if (item && !control.some((attr) => attr.name === name)) control.push(item);
+    }
+    return `${opening("控件", control)}${spacing}${opening("网格", grid)}`;
+  });
+  result = result.replace(/<页面([^>]*)>/g, (_all, pageBody) => {
+    const page = attributes(pageBody);
+    setAttribute(page, "宽度", page.find((item) => item.name === "宽度")?.value || "390");
+    setAttribute(page, "高度", page.find((item) => item.name === "高度")?.value || "844");
+    setAttribute(page, "裁剪超出", page.find((item) => item.name === "裁剪超出")?.value || "是");
+    return opening("页面", page);
+  });
+  return result;
+}
+
 function migrate(source) {
   // Existing project markup has no raw '<' in an attribute value.  Keeping the
   // surrounding tag intact also preserves comments and literal text nodes.
@@ -68,7 +128,7 @@ function migrate(source) {
     return `${child}${open} 可见性=${quote}{绑定 ${test.replace(/^\{绑定\s+|\}$/g, "").split(",")[0].trim()}, 模式=单向, 更新源触发=默认}${quote}${selfClosing ? " />" : ">"}`;
   });
   result = result.replace(/<\/条件>/g, "");
-  return result;
+  return migrateRoots(result);
 }
 
 const target = resolve(process.argv[2] ?? process.cwd());

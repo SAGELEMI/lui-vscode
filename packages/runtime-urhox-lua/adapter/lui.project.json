@@ -1,8 +1,8 @@
 {
   "schemaVersion": 3,
   "adapter": "urhox-lua",
-  "version": "0.8.0",
-  "layoutContract": "wpf-layout-v1-controls-mvvm",
+  "version": "0.9.0",
+  "layoutContract": "page-control-roots-v1-controls-mvvm",
   "sourceRoots": [
     "Presentation"
   ],

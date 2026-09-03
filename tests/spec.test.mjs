@@ -15,15 +15,23 @@ test("WPF-style bindings retain mode, trigger, format and Studio preview content
   });
 });
 
+test("only Page or Control may be a document root, and Page owns positive design coordinates", () => {
+  assert.ok(parseLui('<网格 />').diagnostics.some((item) => item.message.includes("根节点只能")));
+  assert.ok(parseLui('<页面 名称="P"><网格 /></页面>').diagnostics.some((item) => item.message.includes("宽度")));
+  const nested = parseLui('<页面 名称="P" 宽度="390" 高度="844"><网格><控件 名称="C"><网格 /></控件></网格></页面>');
+  assert.ok(nested.diagnostics.some((item) => item.message.includes("不能嵌套")));
+  assert.equal(parseLui('<控件 名称="C" 内边距="8"><网格 /></控件>').diagnostics.filter((item) => item.severity === "error").length, 0);
+});
+
 test("LUI accepts UTF-8 design names and keeps the Lua boundary on ASCII x:Ref", () => {
-  const doc = parseLui('<页面 目录:积木="Presentation/Components" 名称="塔内"><安全区><视图框 宽度="390" 高度="844"><积木:页眉 名称="塔内页眉" /><进度条 名称="敌人血量" 引用="EnemyHp" /></视图框></安全区></页面>');
+  const doc = parseLui('<页面 目录:积木="Presentation/Components" 名称="塔内" 宽度="390" 高度="844"><网格><积木:页眉 名称="塔内页眉" /><进度条 名称="敌人血量" 引用="EnemyHp" /></网格></页面>');
   assert.equal(doc.diagnostics.length, 0);
-  assert.equal(displayNameOf(doc.root.children[0].children[0].children[0]), "塔内页眉");
+  assert.equal(displayNameOf(doc.root.children[0].children[0]), "塔内页眉");
   assert.deepEqual(namespaceImports(doc).map((item) => [item.alias, item.directory]), [["积木", "Presentation/Components"]]);
 });
 
 test("LUI rejects duplicate design and secondary names in a document", () => {
-  const doc = parseLui('<页面 名称="Tower" 副名称="无尽塔"><面板 名称="Panel" 副名称="无尽塔" /></页面>');
+  const doc = parseLui('<页面 名称="Tower" 副名称="无尽塔" 宽度="390" 高度="844"><面板 名称="Panel" 副名称="无尽塔" /></页面>');
   assert.ok(doc.diagnostics.some((item) => item.message.includes("重复")));
 });
 
@@ -41,11 +49,10 @@ test("duplicate semantic attributes collapse to the last Chinese value", () => {
 });
 
 test("Grid and Canvas validate their dedicated layout attributes", () => {
-  const valid = parseLui('<页面 名称="Layout"><安全区><视图框 宽度="390" 高度="844"><网格 名称="Grid" 行定义="自动,2填充" 列定义="30%,填充"><文本 名称="Title" 网格.行="0" 网格.列="1" /></网格><画布 名称="Canvas"><按钮 名称="Close" 画布.左="8" 画布.上="12" /></画布></视图框></安全区></页面>');
+  const valid = parseLui('<页面 名称="Layout" 宽度="390" 高度="844"><网格 名称="Grid" 行定义="自动,2填充" 列定义="30%,填充"><文本 名称="Title" 网格.行="0" 网格.列="1" /><画布 名称="Canvas" 网格.行="1"><按钮 名称="Close" 画布.左="8" 画布.上="12" /></画布></网格></页面>');
   assert.equal(valid.diagnostics.filter((item) => item.severity === "error").length, 0);
-  const invalid = parseLui('<页面 名称="Layout"><安全区><网格 名称="Canvas"><文本 名称="Bad" 画布.左="0" 画布.右="0" 宽度="20" /></网格></安全区><文本 名称="Wrong" 网格.行="0" /></页面>');
+  const invalid = parseLui('<页面 名称="Layout" 宽度="390" 高度="844"><网格 名称="Canvas"><文本 名称="Bad" 画布.左="0" 画布.右="0" 宽度="20" /></网格></页面>');
   assert.ok(invalid.diagnostics.some((item) => item.message.includes("画布")));
-  assert.ok(invalid.diagnostics.some((item) => item.message.includes("网格")));
 });
 
 test("WPF layout roots accept star tracks, alignment, visibility and one ContentPresenter", () => {
@@ -53,21 +60,21 @@ test("WPF layout roots accept star tracks, alignment, visibility and one Content
   assert.equal(valid.diagnostics.filter((item) => item.severity === "error").length, 0);
   const invalid = parseLui('<控件 名称="卡片壳"><网格><内容呈现器 /><内容呈现器 /></网格></控件>');
   assert.ok(invalid.diagnostics.some((item) => item.message.includes("最多只能包含一个")));
-  const boundLength = parseLui('<页面 名称="滚动页"><网格><滚动查看器 高度="{绑定 view.contentHeight, 模式=单向, 更新源触发=默认}" /></网格></页面>');
+  const boundLength = parseLui('<页面 名称="滚动页" 宽度="390" 高度="844"><网格><滚动查看器 高度="{绑定 view.contentHeight, 模式=单向, 更新源触发=默认}" /></网格></页面>');
   assert.equal(boundLength.diagnostics.filter((item) => item.severity === "error").length, 0);
 });
 
 test("Chinese enum values are accepted and legacy values receive migration diagnostics", () => {
-  const current = parseLui('<页面 名称="Layout"><安全区><视图框 宽度="390" 高度="844"><按钮 名称="Confirm" 样式="主要" /></视图框></安全区></页面>');
+  const current = parseLui('<页面 名称="Layout" 宽度="390" 高度="844"><网格><按钮 名称="Confirm" 样式="主要" /></网格></页面>');
   assert.equal(current.diagnostics.filter((item) => item.severity === "error").length, 0);
   const legacy = parseLui('<页面 名称="Layout"><按钮 名称="Confirm" 样式="primary" /></页面>');
   assert.ok(legacy.diagnostics.some((item) => item.severity === "warning" && item.message.includes("主要")));
 });
 
 test("LUI parses comments and property-element syntax without weakening Lua reference validation", () => {
-  const doc = parseLui('<!-- 设计备注 --><页面 名称="Cover" 副名称="封面"><安全区><视图框 宽度="390" 高度="844"><按钮 名称="EnterTower" 副名称="进入塔" ><按钮.文本>进入无尽塔</按钮.文本></按钮></视图框></安全区><预览 名称="Default" 副名称="默认状态" /></页面>');
+  const doc = parseLui('<!-- 设计备注 --><页面 名称="Cover" 副名称="封面" 宽度="390" 高度="844"><网格><按钮 名称="EnterTower" 副名称="进入塔" ><按钮.文本>进入无尽塔</按钮.文本></按钮></网格><预览 名称="Default" 副名称="默认状态" /></页面>');
   assert.equal(doc.diagnostics.length, 0);
-  assert.equal(doc.root.children[0].children[0].children[0].tag, "按钮");
+  assert.equal(doc.root.children[0].children[0].tag, "按钮");
 });
 
 test("LUI rejects a UTF-8 x:Ref while leaving UTF-8 x:Name valid", () => {
@@ -76,13 +83,13 @@ test("LUI rejects a UTF-8 x:Ref while leaving UTF-8 x:Name valid", () => {
 });
 
 test("LUI reports an unimported component alias and formats valid UTF-8 documents", () => {
-  const invalid = parseLui('<页面 名称="塔内"><积木:页眉 名称="页眉" /></页面>');
+  const invalid = parseLui('<页面 名称="塔内" 宽度="390" 高度="844"><积木:页眉 名称="页眉" /></页面>');
   assert.ok(invalid.diagnostics.some((item) => item.message.includes("未导入目录别名")));
-  assert.equal(formatLui('<网格 名称="塔内"><文本 名称="标题" 文本="无尽塔" /></网格>'), '<网格 名称="塔内">\n  <文本 名称="标题" 文本="无尽塔" />\n</网格>\n');
+  assert.equal(formatLui('<控件 名称="塔内"><网格><文本 名称="标题" 文本="无尽塔" /></网格></控件>'), '<控件 名称="塔内">\n  <网格>\n    <文本 名称="标题" 文本="无尽塔" />\n  </网格>\n</控件>\n');
 });
 
 test("Preview states provide Binding placeholders without touching the Lua backend", () => {
-  const doc = parseLui('<页面 名称="Tower" 副名称="无尽塔"><安全区><视图框 宽度="390" 高度="844"><文本 名称="Floor" 副名称="层数" 文本="{绑定 floor}" 预览.文本="第 13 层" /></视图框></安全区><预览 名称="Battle" 副名称="战斗预览"><设值 路径="floor" 值="第 12 层" /></预览></页面>');
+  const doc = parseLui('<页面 名称="Tower" 副名称="无尽塔" 宽度="390" 高度="844"><网格><文本 名称="Floor" 副名称="层数" 文本="{绑定 floor}" 预览.文本="第 13 层" /></网格><预览 名称="Battle" 副名称="战斗预览"><设值 路径="floor" 值="第 12 层" /></预览></页面>');
   const preview = doc.root.children.find((node) => node.tag === "预览");
   assert.equal(doc.diagnostics.length, 0);
   assert.equal(preview?.attrs.find((item) => item.name === "副名称")?.value, "战斗预览");

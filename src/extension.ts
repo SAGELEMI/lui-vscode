@@ -65,7 +65,7 @@ async function runtimeStatus(root = workspaceRoot()): Promise<RuntimeStatus | un
   const version = typeof parsed?.version === "string" ? parsed.version : "未知";
   const layoutContract = typeof parsed?.layoutContract === "string" ? parsed.layoutContract : undefined;
   const synchronized = project?.version === version && project?.layoutContract === layoutContract && project?.runtimeManifestHash === sha256(manifestBytes);
-  return { root, installed: true, version, layoutContract, message: layoutContract === "wpf-layout-v1-controls-mvvm" && synchronized ? "UrhoX/Lua WPF 布局运行时已部署且版本匹配。" : "Studio 与 Runtime 布局契约或哈希不匹配；请部署升级。" };
+  return { root, installed: true, version, layoutContract, message: layoutContract === "page-control-roots-v1-controls-mvvm" && synchronized ? "UrhoX/Lua 页面/控件布局运行时已部署且版本匹配。" : "Studio 与 Runtime 布局契约或哈希不匹配；请部署升级。" };
 }
 
 async function collectAdapterFiles(source: vscode.Uri, relative = ""): Promise<Array<[string, vscode.Uri]>> {
@@ -118,15 +118,16 @@ async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
   }
   pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); controls.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   const row = (item: { name: string; markup: string; code: string }) => `[${luaString(item.name)}] = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
-  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {\n        ${pages.map(row).join("\n        ")}\n    },\n    controls = {\n        ${controls.map(row).join("\n        ")}\n    },\n}\n\n-- components 是 0.7 及更早 Runtime 的兼容别名。\nRegistry.components = Registry.controls\nfunction Registry:Get(name) return self.pages[name] or self.controls[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或控件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
+  const tableRows = (items: Array<{ name: string; markup: string; code: string }>) => items.length ? `\n        ${items.map(row).join("\n        ")}\n    ` : "";
+  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {${tableRows(pages)}},\n    controls = {${tableRows(controls)}},\n}\n\n-- components 是 0.7 及更早 Runtime 的兼容别名。\nRegistry.components = Registry.controls\nfunction Registry:Get(name) return self.pages[name] or self.controls[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或控件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
   const destination = uriPath(root, ...RUNTIME_DIRECTORY, REGISTRY_FILE);
   await vscode.workspace.fs.writeFile(destination, Buffer.from(registry, "utf8")); await writeMetaIfAbsent(destination);
 }
 
 function templateFor(kind: "页面" | "控件", name: string): { markup: string; code: string } {
   const markup = kind === "页面"
-    ? `<!-- ${name}：页面安全区由 Runtime 提供；设备预设只影响预览。 -->\n<页面 名称="${name}">\n  <网格 行定义="自动,*" 列定义="*">\n    <文本 名称="标题" 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${name}'}" 字号="28" />\n  </网格>\n</页面>\n`
-    : `<!-- ${name}：Components 中的自定义控件；宽高默认自动测量。 -->\n<控件 名称="${name}">\n  <边框 内边距="8">\n    <内容呈现器 />\n  </边框>\n</控件>\n`;
+    ? `<!-- ${name}：390×844 是设计坐标；设备预设只影响页面预览。 -->\n<页面 名称="${name}" 宽度="390" 高度="844" 裁剪超出="是">\n  <网格 行定义="自动,*" 列定义="*">\n    <文本 名称="标题" 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${name}'}" 字号="28" />\n  </网格>\n</页面>\n`
+    : `<!-- ${name}：Components 中的自定义控件；宽高默认自动测量，不获得设备安全区。 -->\n<控件 名称="${name}" 内边距="8">\n  <边框>\n    <内容呈现器 />\n  </边框>\n</控件>\n`;
   const objectName = kind === "页面" ? "Page" : "Control";
   const code = `-- ${name} 的 MVVM 后端。布局、样式和静态属性留在同名 .lui。\n-- view：绑定数据；actions：{动作 ...}；refs：所有 x:Ref 控件；bindings：Notify/Commit。\nlocal ${objectName} = {}\n\nfunction ${objectName}.Build(presentation)\n    return {\n        view = { title = \"${name}\" },\n        actions = {\n            -- Save = function() end, -- 对应 {动作 Save}\n        },\n        AfterMount = function(root, context)\n            -- local title = context.refs.TitleRef -- 对应 x:Ref=\"TitleRef\"\n        end,\n        OnBindingChanged = function(path, context)\n            -- 修改 view 后调用 context.bindings:Notify(\"view.字段\")。\n        end,\n    }\nend\n\nreturn ${objectName}\n`;
   return { markup, code };
@@ -384,7 +385,7 @@ function previewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
   const designer = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "designer.js"));
   const nonce = createUuid();
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
-<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label>设备 <select id="device"><option>390x844</option><option>360x800</option><option>768x1024</option></select></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
+<section id="design-workbench"><aside id="outline-panel"><h1>LUI 设计</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label id="device-label">设备 <select id="device"><option>390x844</option><option>360x800</option><option>768x1024</option></select></label><label id="control-constraints">可用尺寸 <input id="available-width" type="number" min="0" placeholder="宽度" /> × <input id="available-height" type="number" min="0" placeholder="高度" /></label><label id="preview-label">预览状态 <select id="preview"></select></label><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage"><div id="canvas"></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
 <div id="splitter" role="separator" aria-label="调整设计预览与源码高度"></div>
 <section id="source-panel"><div id="source-editor"></div></section>
 <script nonce="${nonce}" src="${designer}"></script></body></html>`;
