@@ -88,8 +88,12 @@ end
 -- LUI Thickness uses XAML order: left,top,right,bottom. UrhoX receives top,right,bottom,left.
 local function thickness(value)
     if type(value) == "table" then return value end
+    ---@type number[]
     local parts = {}
-    for part in tostring(value or "0"):gmatch("[^,]+") do parts[#parts + 1] = tonumber(part:match("^%s*(.-)%s*$")) or 0 end
+    for part in tostring(value or "0"):gmatch("[^,]+") do
+        local numberValue = tonumber(part:match("^%s*(.-)%s*$")) or 0
+        table.insert(parts, numberValue)
+    end
     if #parts == 0 then parts[1] = 0 end
     if #parts == 1 then parts[2], parts[3], parts[4] = parts[1], parts[1], parts[1] end
     return { parts[2] or 0, parts[3] or 0, parts[4] or 0, parts[1] or 0 }
