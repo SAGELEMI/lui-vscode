@@ -133,6 +133,7 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "deploy:urhox": "node ./scripts/deploy-runtime.mjs",
+    "migrate:v07": "node ./scripts/migrate-lui-v07.mjs",
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",

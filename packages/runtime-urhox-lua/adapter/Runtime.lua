@@ -93,8 +93,15 @@ local function resolve(value, context)
 end
 
 local function setPath(context, path, value)
+    -- Old designs addressed the view-model at the context root.  Keep that
+    -- source compatible while canonical LUI 0.7 writes explicit view.* paths.
+    local rawPath = tostring(path or "")
+    if not rawPath:find("%.") and type(context.view) == "table" and rawget(context, rawPath) == nil then
+        context.view[rawPath] = value
+        return true
+    end
     local parent, last = context, nil
-    for key in tostring(path or ""):gmatch("[^%.]+") do
+    for key in rawPath:gmatch("[^%.]+") do
         if last then
             if type(parent[last]) ~= "table" then return false end
             parent = parent[last]
@@ -715,7 +722,11 @@ function Runtime:Render(markupPath, codePath, presentation)
     if type(result) ~= "table" then return nil, "LUI Build 必须返回 table。" end
     local imports, importsErr = self:ImportsFor(document)
     if not imports then return nil, importsErr end
-    local context = result.view or {}; context.actions = result.actions or {}; context.refs = {}; context.imports = imports; context.componentStack = {}
+    -- `view` is the stable MVVM root.  The metatable keeps legacy bare paths
+    -- readable without making new templates depend on the compatibility form.
+    local view = result.view or {}
+    local context = setmetatable({ view = view }, { __index = view })
+    context.actions = result.actions or {}; context.refs = {}; context.imports = imports; context.componentStack = {}
     -- Bindings remain plain Lua data. View-model authors call Notify after a
     -- mutation, or Commit to flush a binding that requested explicit update.
     context.bindings = { pending = {} }

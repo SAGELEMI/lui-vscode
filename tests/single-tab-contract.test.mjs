@@ -17,6 +17,7 @@ test("the LUI custom editor has one tag and does not create a native editor grou
 });
 
 test("the inspector exposes only applicable Chinese controls and preserves the Lua boundary", async () => {
+  const host = await readFile("src/extension.ts", "utf8");
   const designer = await readFile("src/webview/designer.ts", "utf8");
   const vocabulary = await readFile("packages/spec/src/vocabulary.ts", "utf8");
   assert.match(designer, /key !== "x:Ref"/);
@@ -29,6 +30,13 @@ test("the inspector exposes only applicable Chinese controls and preserves the L
   assert.match(vocabulary, /"画布": "Canvas"/);
   assert.match(vocabulary, /"插槽名": "Name"/);
   assert.match(vocabulary, /"原生菜单安全区": "NativeMenuInset"/);
+  assert.match(designer, /tagLabel\.textContent = "标签类型"/);
+  assert.doesNotMatch(designer, /标签类型（可搜索）/);
+  assert.match(designer, /"全部", "基础", "布局", "输入", "导航", "数据", "展示", "反馈", "媒体", "交互", "组合", "已导入组件", "结构"/);
+  assert.match(designer, /category\.value === "全部"/);
+  assert.match(designer, /definition\?\.ui/);
+  assert.match(host, /const seenMarkup = new Set<string>\(\)/);
+  assert.match(host, /\[\$\{luaString\(item\.name\)\}\] =/);
 });
 
 test("the preview defaults to the Maker long-screen viewport and hides unresolved conditional branches", async () => {

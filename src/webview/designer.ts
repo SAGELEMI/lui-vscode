@@ -483,19 +483,38 @@ function layoutResult(host: HTMLElement, node: SerializableNode): void {
 function properties(node: SerializableNode | undefined): void {
   const host = byId("properties"); host.innerHTML = "<h2>当前节点属性</h2>";
   if (!node) { const paragraph = document.createElement("p"); paragraph.textContent = "在组件树、画布或源码中选择一个节点。"; host.append(paragraph); return; }
-  const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型（可搜索）";
+  const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型";
+  const category = document.createElement("select");
+  const categories = ["全部", "基础", "布局", "输入", "导航", "数据", "展示", "反馈", "媒体", "交互", "组合", "已导入组件", "结构"];
+  for (const value of categories) { const option = document.createElement("option"); option.value = value; option.textContent = value; category.append(option); }
   const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "搜索中文名称、内部类型或已导入组件";
   const select = document.createElement("select"); const rawTag = node.tag ?? "";
+  const tagCategory = (tag: string): string => {
+    if (tag.includes(":")) return "已导入组件";
+    const canonical = canonicalTag(tag) ?? tag;
+    const definition = controlDefinition(canonical);
+    if (definition?.category) return definition.category;
+    if (["lui:Page", "lui:Component", "lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"].includes(canonical)) return "结构";
+    if (["Viewbox", "Grid", "Canvas", "SafeArea", "Scroll"].includes(canonical)) return "布局";
+    if (["Text", "Card", "Section", "Progress"].includes(canonical)) return "展示";
+    if (["Button", "Toggle", "Slider"].includes(canonical)) return "输入";
+    if (["Modal", "Screen", "FixedScreen", "Notice"].includes(canonical)) return "反馈";
+    return "基础";
+  };
+  const tagSearchText = (tag: string): string => {
+    const canonical = canonicalTag(tag) ?? tag; const definition = controlDefinition(canonical);
+    return [tag, canonical, definition?.name, definition?.ui, definition?.category].filter(Boolean).join(" ").toLowerCase();
+  };
   const fillTags = () => {
     const query = filter.value.trim().toLowerCase(); select.innerHTML = "";
     if (rawTag === "__placeholder__") { const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "请选择标签类型"; placeholder.selected = true; select.append(placeholder); }
-    for (const tag of tagChoices().filter((item) => item.toLowerCase().includes(query) || (canonicalTag(item) ?? "").toLowerCase().includes(query))) {
+    for (const tag of tagChoices().filter((item) => (category.value === "全部" || tagCategory(item) === category.value) && tagSearchText(item).includes(query))) {
       const option = document.createElement("option"); option.value = tag; option.textContent = `${tag} · ${canonicalTag(tag) ?? tag}`; option.selected = tag === rawTag; select.append(option);
     }
   };
-  fillTags(); filter.oninput = fillTags;
+  fillTags(); filter.oninput = fillTags; category.onchange = fillTags;
   select.onchange = () => { if (select.value) vscode.postMessage({ type: "setTag", start: node.start, source: node.source, name: select.value }); };
-  tagLabel.append(filter, select); host.append(tagLabel);
+  tagLabel.append(category, filter, select); host.append(tagLabel);
   const available = new Set(attributesFor(node));
   for (const [title, keys] of CATEGORIES) {
     const valid = keys.filter((key) => available.has(key)); if (!valid.length) continue;

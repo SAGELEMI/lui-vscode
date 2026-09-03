@@ -102,14 +102,22 @@ async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
   const config = (await readJson(configUri)) ?? { schemaVersion: 3, adapter: "urhox-lua", sourceRoots: ["Presentation/Pages", "Presentation/Components"] };
   const roots = Array.isArray(config.sourceRoots) ? config.sourceRoots.filter((value): value is string => typeof value === "string") : [];
   const pages: Array<{ name: string; markup: string; code: string }> = []; const components: Array<{ name: string; markup: string; code: string }> = [];
+  const seenMarkup = new Set<string>(); const registeredNames = new Map<string, string>();
   for (const sourceRoot of roots) for (const [relative, uri] of await collectLuiFiles(uriPath(scripts, ...sourceRoot.split("/")))) {
     const markup = `${sourceRoot}/${relative}`; const parsed = parseLui(asText(await vscode.workspace.fs.readFile(uri))).root;
     const name = parsed?.attrs.find((attribute) => canonicalAttribute(attribute.name) === "x:Name")?.value ?? relative.replace(/\.lui$/, "");
+    if (seenMarkup.has(markup)) continue;
+    seenMarkup.add(markup);
+    const codeUri = uriPath(scripts, ...`${markup}.lua`.split("/"));
+    if (!(await exists(codeUri))) throw new Error(`LUI 注册失败：缺少配对 MVVM 后端 ${markup}.lua。`);
+    const existingMarkup = registeredNames.get(name);
+    if (existingMarkup && existingMarkup !== markup) throw new Error(`LUI 注册失败：名称“${name}”同时用于 ${existingMarkup} 与 ${markup}。`);
+    registeredNames.set(name, markup);
     const item = { name, markup, code: `${markup}.lua` };
     if (canonicalTag(parsed?.tag) === "lui:Component") components.push(item); else if (canonicalTag(parsed?.tag) === "lui:Page") pages.push(item);
   }
   pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); components.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-  const row = (item: { name: string; markup: string; code: string }) => `${luaString(item.name)} = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
+  const row = (item: { name: string; markup: string; code: string }) => `[${luaString(item.name)}] = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
   const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {\n        ${pages.map(row).join("\n        ")}\n    },\n    components = {\n        ${components.map(row).join("\n        ")}\n    },\n}\n\nfunction Registry:Get(name) return self.pages[name] or self.components[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或组件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
   const destination = uriPath(root, ...RUNTIME_DIRECTORY, REGISTRY_FILE);
   await vscode.workspace.fs.writeFile(destination, Buffer.from(registry, "utf8")); await writeMetaIfAbsent(destination);
