@@ -25,6 +25,7 @@ test("the inspector exposes only applicable Chinese controls and preserves the L
   assert.match(designer, /parentTag === "Grid"/);
   assert.match(designer, /parentTag === "Canvas"/);
   assert.match(vocabulary, /"网格": "Grid"/);
+  assert.match(vocabulary, /"视图框": "Viewbox"/);
   assert.match(vocabulary, /"画布": "Canvas"/);
   assert.match(vocabulary, /"插槽名": "Name"/);
   assert.match(vocabulary, /"原生菜单安全区": "NativeMenuInset"/);

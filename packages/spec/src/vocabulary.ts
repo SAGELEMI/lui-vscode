@@ -4,16 +4,16 @@
  */
 export const TAG_TO_CANONICAL: Record<string, string> = {
   "页面": "lui:Page", "组件": "lui:Component", "条件": "lui:If", "循环": "lui:For", "插槽": "lui:Slot", "预览": "lui:Preview", "设值": "lui:Set",
-  "网格": "Grid", "画布": "Canvas", "文本": "Text", "按钮": "Button", "卡片": "Card", "滚动区": "Scroll", "进度条": "Progress", "开关": "Toggle", "滑块": "Slider", "安全区": "SafeArea", "弹窗": "Modal", "分区": "Section", "提示": "Notice", "屏幕": "Screen", "固定屏幕": "FixedScreen",
+  "网格": "Grid", "画布": "Canvas", "视图框": "Viewbox", "文本": "Text", "按钮": "Button", "卡片": "Card", "滚动区": "Scroll", "进度条": "Progress", "开关": "Toggle", "滑块": "Slider", "安全区": "SafeArea", "弹窗": "Modal", "分区": "Section", "提示": "Notice", "屏幕": "Screen", "固定屏幕": "FixedScreen",
   "lui:Page": "lui:Page", "lui:Component": "lui:Component", "lui:If": "lui:If", "lui:For": "lui:For", "lui:Slot": "lui:Slot", "lui:Preview": "lui:Preview", "lui:Set": "lui:Set",
-  Grid: "Grid", Canvas: "Canvas", Panel: "Panel", Row: "Row", Text: "Text", Button: "Button", Card: "Card", Scroll: "Scroll", Progress: "Progress", Toggle: "Toggle", Slider: "Slider", SafeArea: "SafeArea", Modal: "Modal", Section: "Section", Notice: "Notice", Screen: "Screen", FixedScreen: "FixedScreen",
+  Grid: "Grid", Canvas: "Canvas", Viewbox: "Viewbox", Panel: "Panel", Row: "Row", Text: "Text", Button: "Button", Card: "Card", Scroll: "Scroll", Progress: "Progress", Toggle: "Toggle", Slider: "Slider", SafeArea: "SafeArea", Modal: "Modal", Section: "Section", Notice: "Notice", Screen: "Screen", FixedScreen: "FixedScreen",
   // Kept for parsing old documents only. New design documents must use 网格/画布.
   "面板": "Panel", "横排": "Row"
 };
 
 export const CANONICAL_TO_TAG: Record<string, string> = {
   "lui:Page": "页面", "lui:Component": "组件", "lui:If": "条件", "lui:For": "循环", "lui:Slot": "插槽", "lui:Preview": "预览", "lui:Set": "设值",
-  Grid: "网格", Canvas: "画布", Text: "文本", Button: "按钮", Card: "卡片", Scroll: "滚动区", Progress: "进度条", Toggle: "开关", Slider: "滑块", SafeArea: "安全区", Modal: "弹窗", Section: "分区", Notice: "提示", Screen: "屏幕", FixedScreen: "固定屏幕"
+  Grid: "网格", Canvas: "画布", Viewbox: "视图框", Text: "文本", Button: "按钮", Card: "卡片", Scroll: "滚动区", Progress: "进度条", Toggle: "开关", Slider: "滑块", SafeArea: "安全区", Modal: "弹窗", Section: "分区", Notice: "提示", Screen: "屏幕", FixedScreen: "固定屏幕"
 };
 
 /** Public component names are directory-scoped in source, but share these default Chinese aliases. */

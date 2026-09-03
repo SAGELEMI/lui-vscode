@@ -113,8 +113,33 @@ local function propsFor(attrs, context)
     if attrs.Color then props.fontColor = color(resolve(attrs.Color, context)) end
     if attrs.Variant then props.variant = enumValue("Variant", resolve(attrs.Variant, context)) end
     if attrs.Disabled then local value = enumValue("Disabled", resolve(attrs.Disabled, context)); props.disabled = value == true or value == "true" end
+    if attrs.Edges ~= nil then
+        local value = resolve(attrs.Edges, context)
+        props.edges = ({ ["全部"] = "all", ["无"] = "none", ["水平"] = "horizontal", ["垂直"] = "vertical" })[value] or value
+    end
+    if attrs.Mode ~= nil then
+        local value = resolve(attrs.Mode, context)
+        props.mode = ({ ["内边距"] = "padding", ["外边距"] = "margin" })[value] or value
+    end
+    if attrs.NativeMenuInset ~= nil then
+        local value = resolve(attrs.NativeMenuInset, context)
+        props.nativeMenuInset = value == true or value == "true" or value == "是"
+    end
     return props
 end
+
+local function hasAny(t) return t ~= nil and next(t) ~= nil end
+local function splitProps(source, moveToWrapper)
+    local direct, wrapped = {}, {}
+    for key, value in pairs(source or {}) do if moveToWrapper[key] then wrapped[key] = value else direct[key] = value end end
+    return direct, wrapped
+end
+local function applyWrapper(inside, wrapperProps)
+    if not hasAny(wrapperProps) then return inside end
+    wrapperProps.children = { inside }
+    return UI.Panel(wrapperProps)
+end
+local WRAP_KEYS = { margin = true, padding = true, backgroundColor = true }
 
 local function numberOrPercent(value, total)
     if value == nil or value == "自动" then return nil end
@@ -229,6 +254,29 @@ local function layoutPanel(props, entries, mode, attrs, context)
         baseRender(self, nvg)
     end
     return panel
+end
+
+-- A Viewbox is a design coordinate system, never a device/page resolution.
+-- Its descendants keep authored pixels and receive one uniform transform after
+-- SafeArea establishes the available logical viewport.
+local function viewbox(children, attrs, context)
+    local designWidth = tonumber(resolve(attrs.Width, context)) or 0
+    local designHeight = tonumber(resolve(attrs.Height, context)) or 0
+    if designWidth <= 0 or designHeight <= 0 then error("LUI <视图框> 的宽度和高度必须是正数 px。") end
+    local outer = UI.Panel { width = "100%", height = "100%", children = {} }
+    local inner = UI.Panel { width = designWidth, height = designHeight, children = children, transformOrigin = "top-left" }
+    outer:AddChild(inner)
+    local baseRender = outer.Render
+    function outer:Render(nvg)
+        local rect = self:GetAbsoluteLayout()
+        local scale = math.min(rect.w / designWidth, rect.h / designHeight)
+        local drawWidth, drawHeight = designWidth * scale, designHeight * scale
+        applyFrame(inner, rect.x + (rect.w - drawWidth) * 0.5, rect.y + (rect.h - drawHeight) * 0.5, designWidth, designHeight)
+        inner.props.scale, inner.props.transformOrigin = scale, "top-left"
+        self.luiLayoutProbe_ = { kind = "Viewbox", scale = scale, x = inner.renderOffsetX_, y = inner.renderOffsetY_, width = designWidth, height = designHeight, contentWidth = rect.w, contentHeight = rect.h }
+        baseRender(self, nvg)
+    end
+    return outer
 end
 
 local function propertyText(node)
@@ -464,11 +512,14 @@ function Runtime:BuildNode(node, context)
     local widget = nil
     if tag == "Grid" or tag == "Canvas" then
         widget = layoutPanel(props, self:BuildLayoutEntries(visualChildren, context), tag, attrs, context)
+    elseif tag == "Viewbox" then
+        widget = viewbox(self:BuildChildren(visualChildren, context), attrs, context)
     else
         local children = self:BuildChildren(visualChildren, context)
         if tag == "Text" then
-        props.text = tostring(text or "")
-        widget = UI.Label(props)
+        local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
+        innerProps.text = tostring(text or "")
+        widget = applyWrapper(UI.Label(innerProps), wrapperProps)
     elseif tag == "Button" then
         props.text = tostring(text or "按钮")
         local action = actionName(resolve(attrs.Click, context))
@@ -482,13 +533,14 @@ function Runtime:BuildNode(node, context)
         props.max = math.max(1, tonumber(resolve(attrs.Max, context)) or 1)
         widget = UI.ProgressBar(props)
     elseif tag == "Toggle" then
-        props.value = resolve(attrs.Value, context) == true
+        local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
+        innerProps.value = resolve(attrs.Value, context) == true
         local action = actionName(resolve(attrs.Change, context))
-        if action then props.onChange = function(_, value)
+        if action then innerProps.onChange = function(_, value)
             local callback = context.actions and context.actions[action]
             if callback then callback(value) end
         end end
-        widget = UI.Toggle(props)
+        widget = applyWrapper(UI.Toggle(innerProps), wrapperProps)
     elseif tag == "Slider" then
         props.value = tonumber(resolve(attrs.Value, context)) or 0
         props.min, props.max = tonumber(attrs.Min) or 0, tonumber(attrs.Max) or 100
@@ -503,17 +555,19 @@ function Runtime:BuildNode(node, context)
     elseif tag == "Scroll" then
         props.scrollY, props.showScrollbar = true, false; props.children = children; widget = UI.ScrollView(props)
     elseif tag == "SafeArea" then
-        props.children = children; widget = UI.SafeAreaView(props)
+        local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
+        innerProps.children = children; widget = applyWrapper(UI.SafeAreaView(innerProps), wrapperProps)
     elseif tag == "Modal" then
-        props.title = resolve(attrs.Title, context) or "设置"
-        props.closeOnOverlay = enumValue("CloseOnOverlay", resolve(attrs.CloseOnOverlay, context)) ~= "false"
-        props.showCloseButton = enumValue("ShowCloseButton", resolve(attrs.ShowCloseButton, context)) ~= "false"
+        local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
+        innerProps.title = resolve(attrs.Title, context) or "设置"
+        innerProps.closeOnOverlay = enumValue("CloseOnOverlay", resolve(attrs.CloseOnOverlay, context)) ~= "false"
+        innerProps.showCloseButton = enumValue("ShowCloseButton", resolve(attrs.ShowCloseButton, context)) ~= "false"
         local closeAction = actionName(resolve(attrs.Close, context))
-        if closeAction then props.onClose = function()
+        if closeAction then innerProps.onClose = function()
             local callback = context.actions and context.actions[closeAction]
             if callback then callback() end
         end end
-        props.children = children; widget = UI.Modal(props)
+        innerProps.children = children; widget = applyWrapper(UI.Modal(innerProps), wrapperProps)
     elseif tag == "Card" then
         widget = Components.Card(children, props)
     elseif tag == "Section" then
@@ -532,11 +586,30 @@ function Runtime:BuildNode(node, context)
     end
     local ref = attrs["x:Ref"]
     if not ref and not self.isV2_ then ref = attrs["x:Name"] end
+    widget.luiName_ = attrs["x:Name"] or attrs["x:DisplayName"] or tag
     if ref and context.refs then
         if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end
         context.refs[ref] = widget
     end
     return widget
+end
+
+-- Stable, data-only layout probe used to compare Studio and device layout by
+-- node name. Consumers may serialize this table to their existing diagnostics.
+function Runtime:LayoutProbe(root)
+    local result = {}
+    local function visit(widget)
+        if not widget then return end
+        local rect = widget:GetAbsoluteLayout()
+        local probe = widget.luiLayoutProbe_ or {}
+        result[#result + 1] = {
+            name = widget.luiName_ or "anonymous", x = rect.x, y = rect.y, width = rect.w, height = rect.h,
+            contentWidth = probe.contentWidth or rect.w, contentHeight = probe.contentHeight or rect.h, scale = probe.scale or 1,
+        }
+        for _, child in ipairs(widget:GetChildren() or {}) do visit(child) end
+    end
+    visit(root)
+    return result
 end
 
 function Runtime:Render(markupPath, codePath, presentation)

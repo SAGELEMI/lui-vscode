@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve, relative, dirname, join } from "node:path";
 
@@ -118,9 +118,23 @@ async function ensureLuiMetadata(directory) {
   }
 }
 
+async function stampLayoutContract() {
+  const manifestPath = join(sourceRoot, "runtime-manifest.json");
+  const configPath = join(targetRoot, "lui.project.json");
+  const manifestText = await readFile(manifestPath, "utf8");
+  const manifest = JSON.parse(manifestText);
+  let config = {};
+  try { config = JSON.parse(await readFile(configPath, "utf8")); } catch {}
+  config.version = manifest.version;
+  config.layoutContract = manifest.layoutContract;
+  config.runtimeManifestHash = createHash("sha256").update(manifestText).digest("hex");
+  await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
 await scanMeta(scriptsRoot);
 await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
+await stampLayoutContract();
 if (!backupPrepared) await completeBackup();
 await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
 console.log(`已部署 LUI UrhoX/Lua 运行时：${targetRoot}`);

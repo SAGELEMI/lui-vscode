@@ -1,6 +1,7 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, type Completion, type CompletionContext } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { indentUnit, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentWithTab, moveLineDown, moveLineUp, toggleComment } from "@codemirror/commands";
+import { bracketMatching, foldGutter, foldKeymap, indentUnit, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
@@ -42,6 +43,8 @@ const CATEGORIES: Array<[string, string[]]> = [
   ["文本与交互", ["Text", "Title", "FontSize", "Click", "Change", "Close", "Disabled", "Value", "Min", "Max"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
 ];
+const PROPERTY_STATE_KEY = "lui.inspector.collapsedCategories";
+const collapsedCategories = new Set<string>(JSON.parse(localStorage.getItem(PROPERTY_STATE_KEY) ?? "[]") as string[]);
 
 let model: ModelPayload["model"] | undefined;
 let catalog: ModelPayload["catalog"] = {};
@@ -217,6 +220,12 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
     element.style.columnGap = cssSize(attrs.ColumnSpacing ?? "0");
   }
   if (tag === "Canvas") element.style.position = "relative";
+  if (tag === "Viewbox") {
+    // The design canvas is its own coordinate system.  The parent stage only
+    // supplies a viewport; it never changes the page definition.
+    element.style.position = "relative";
+    element.style.overflow = "hidden";
+  }
   if (attrs["Grid.Row"] !== undefined) element.style.gridRow = `${Number(attrs["Grid.Row"]) + 1} / span ${attrs["Grid.RowSpan"] ?? "1"}`;
   if (attrs["Grid.Column"] !== undefined) element.style.gridColumn = `${Number(attrs["Grid.Column"]) + 1} / span ${attrs["Grid.ColumnSpan"] ?? "1"}`;
   if (attrs["Canvas.Left"] !== undefined || attrs["Canvas.Top"] !== undefined || attrs["Canvas.Right"] !== undefined || attrs["Canvas.Bottom"] !== undefined) {
@@ -266,6 +275,13 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   if (node.kind === "text") { const span = document.createElement("span"); span.textContent = node.text ?? ""; return span; }
   if (node.kind === "comment") return document.createComment(node.text ?? "");
   const tag = canonicalTag(node.tag) ?? "Panel";
+  if (tag === "__placeholder__") {
+    const placeholder = document.createElement("button");
+    placeholder.className = "lui-node placeholder";
+    placeholder.textContent = "<> 选择标签类型";
+    decorate(placeholder, node);
+    return placeholder;
+  }
   if (tag === "lui:Preview" || tag === "lui:Set") return document.createDocumentFragment();
   if (tag === "lui:If") return bool(effective(node, scope).Test) ? fragmentChildren(visualChildren(node), scope, trace) : document.createDocumentFragment();
   if (tag === "lui:For") {
@@ -275,12 +291,29 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   }
   if (tag === "lui:Slot") return fragmentChildren(((scope.slots as Record<string, SerializableNode[]> | undefined)?.[effective(node, scope).Name ?? ""] ?? []), scope, trace);
   if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace);
+  const attrs = effective(node, scope);
+  if (tag === "Viewbox") {
+    const viewport = document.createElement("div"); decorate(viewport, node); viewport.classList.add("lui-node", "viewbox");
+    const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
+    const design = document.createElement("div"); design.className = "lui-viewbox-design";
+    design.style.width = `${designWidth}px`; design.style.height = `${designHeight}px`;
+    design.style.transformOrigin = "top left";
+    design.append(fragmentChildren(visualChildren(node), scope, trace)); viewport.append(design);
+    const applyScale = () => {
+      const rect = viewport.getBoundingClientRect(); const scale = Math.min(rect.width / designWidth, rect.height / designHeight);
+      design.style.transform = `scale(${Number.isFinite(scale) ? scale : 1})`;
+      design.style.left = `${Math.max(0, (rect.width - designWidth * scale) * 0.5)}px`;
+      design.style.top = `${Math.max(0, (rect.height - designHeight * scale) * 0.5)}px`;
+      viewport.dataset.viewboxScale = String(scale);
+    };
+    new ResizeObserver(applyScale).observe(viewport); requestAnimationFrame(applyScale);
+    return viewport;
+  }
   const element = document.createElement("div");
   decorate(element, node);
-  const attrs = effective(node, scope);
   element.classList.add(`tag-${tag.replace(/[^A-Za-z0-9_-]/g, "-")}`);
   applyLayout(element, tag, attrs);
-  if (tag === "Grid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Row") element.classList.add("row"); else element.classList.add("panel");
+  if (tag === "Grid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Viewbox") element.classList.add("viewbox"); else if (tag === "Row") element.classList.add("row"); else element.classList.add("panel");
   if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
   else if (tag === "Text") { element.classList.add("text"); element.style.fontSize = attrs.FontSize ? cssSize(attrs.FontSize) : ""; element.textContent = text(attrs.Text); }
   else if (tag === "Card") element.classList.add("card");
@@ -381,6 +414,7 @@ function tagChoices(): string[] {
 
 function attributesFor(node: SerializableNode): string[] {
   const tag = canonicalTag(node.tag);
+  if (tag === "__placeholder__") return [];
   let parent = parentOf(node);
   while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
   const parentTag = canonicalTag(parent?.tag);
@@ -391,7 +425,19 @@ function attributesFor(node: SerializableNode): string[] {
     Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["Name"], "lui:Set": ["Path", "Value"]
   };
   const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"] : [];
-  return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached, ...Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !key.startsWith("Preview.") && key !== "x:Ref" && !directoryAlias(key))])];
+  return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached])];
+}
+
+function collapsibleSection(title: string): HTMLElement {
+  const section = document.createElement("details");
+  section.className = "property-category";
+  section.open = !collapsedCategories.has(title);
+  const heading = document.createElement("summary"); heading.textContent = title; section.append(heading);
+  section.ontoggle = () => {
+    if (section.open) collapsedCategories.delete(title); else collapsedCategories.add(title);
+    localStorage.setItem(PROPERTY_STATE_KEY, JSON.stringify([...collapsedCategories]));
+  };
+  return section;
 }
 
 function layoutResult(host: HTMLElement, node: SerializableNode): void {
@@ -414,18 +460,28 @@ function layoutResult(host: HTMLElement, node: SerializableNode): void {
 function properties(node: SerializableNode | undefined): void {
   const host = byId("properties"); host.innerHTML = "<h2>当前节点属性</h2>";
   if (!node) { const paragraph = document.createElement("p"); paragraph.textContent = "在组件树、画布或源码中选择一个节点。"; host.append(paragraph); return; }
-  const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型";
+  const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型（可搜索）";
+  const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "搜索中文名称、内部类型或已导入组件";
   const select = document.createElement("select"); const rawTag = node.tag ?? "";
-  for (const tag of tagChoices()) { const option = document.createElement("option"); option.value = tag; option.textContent = tag; option.selected = tag === rawTag; select.append(option); }
-  select.onchange = () => vscode.postMessage({ type: "setTag", start: node.start, source: node.source, name: select.value }); tagLabel.append(select); host.append(tagLabel);
-  const attrs = node.attrs ?? {}; const used = new Set<string>(); const available = new Set(attributesFor(node));
+  const fillTags = () => {
+    const query = filter.value.trim().toLowerCase(); select.innerHTML = "";
+    if (rawTag === "__placeholder__") { const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "请选择标签类型"; placeholder.selected = true; select.append(placeholder); }
+    for (const tag of tagChoices().filter((item) => item.toLowerCase().includes(query) || (canonicalTag(item) ?? "").toLowerCase().includes(query))) {
+      const option = document.createElement("option"); option.value = tag; option.textContent = `${tag} · ${canonicalTag(tag) ?? tag}`; option.selected = tag === rawTag; select.append(option);
+    }
+  };
+  fillTags(); filter.oninput = fillTags;
+  select.onchange = () => { if (select.value) vscode.postMessage({ type: "setTag", start: node.start, source: node.source, name: select.value }); };
+  tagLabel.append(filter, select); host.append(tagLabel);
+  const available = new Set(attributesFor(node));
   for (const [title, keys] of CATEGORIES) {
-    const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = title; section.append(heading);
-    for (const key of keys) if (available.has(key)) { propertyInput(section, node, key); used.add(key); }
+    const valid = keys.filter((key) => available.has(key)); if (!valid.length) continue;
+    const section = collapsibleSection(title);
+    for (const key of valid) propertyInput(section, node, key);
     host.append(section);
   }
-  const rest = [...new Set(Object.keys(attrs).map(canonicalAttribute))].filter((key) => !used.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
-  if (rest.length) { const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "其他属性"; section.append(heading); for (const key of rest) propertyInput(section, node, key); host.append(section); }
+  const illegal = Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
+  if (illegal.length) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = `源代码保留 ${[...new Set(illegal)].map(sourceAttribute).join("、")}；这些属性不适用于当前标签，诊断中可定位并手动删除或迁移。`; host.append(note); }
   layoutResult(host, node);
 }
 
@@ -477,9 +533,14 @@ function sourceCompletions(context: CompletionContext) {
 }
 
 function sourceExtensions(): Extension[] {
+  const copySelection = (view: EditorView): boolean => {
+    const values = view.state.selection.ranges.map((range) => view.state.sliceDoc(range.from, range.to)).filter(Boolean);
+    if (values.length) vscode.postMessage({ type: "copy", text: values.join("\n") });
+    return true;
+  };
   return [
-    lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(), history(), indentUnit.of("  "), xml(), syntaxHighlighting(defaultHighlightStyle), closeBrackets(),
-    keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
+    lineNumbers(), foldGutter(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(), history(), indentUnit.of("  "), xml(), syntaxHighlighting(defaultHighlightStyle), closeBrackets(), bracketMatching(), search({ top: true }), highlightSelectionMatches(),
+    keymap.of([{ key: "Mod-c", run: copySelection }, { key: "Mod-Alt-ArrowUp", run: copyLineUp }, { key: "Mod-Alt-ArrowDown", run: copyLineDown }, { key: "Alt-ArrowUp", run: moveLineUp }, { key: "Alt-ArrowDown", run: moveLineDown }, { key: "Mod-/", run: toggleComment }, ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, ...foldKeymap, ...searchKeymap, indentWithTab]),
     autocompletion({ override: [sourceCompletions], activateOnTyping: true }),
     linter(() => activeSource ? sourceDiagnostics(activeSource) : []),
     EditorView.updateListener.of((update) => {
@@ -497,7 +558,8 @@ function sourceExtensions(): Extension[] {
       ".cm-scroller": { overflow: "auto", fontFamily: "Consolas, 'Cascadia Code', 'Microsoft YaHei Mono', monospace" },
       ".cm-gutters": { backgroundColor: "#170f27", color: "#a895c6", borderRight: "1px solid #4c3568" },
       ".cm-activeLine": { backgroundColor: "#2a194466" }, ".cm-activeLineGutter": { backgroundColor: "#2a1944" },
-      ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#64449399" }
+      ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#8b5cf6aa" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#ffe16b" }, ".cm-content": { caretColor: "#ffe16b" }, ".cm-matchingBracket": { backgroundColor: "#d5b56d44", outline: "1px solid #ffe16b" }
     })
   ];
 }

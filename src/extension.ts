@@ -13,8 +13,8 @@ const MANIFEST_FILE = "runtime-manifest.json";
 const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" };
 const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 
-interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; message: string; }
-interface WebviewMessage { type: "ready" | "setAttribute" | "setTag" | "sourceEdit" | "deploy"; start?: number; source?: string; name?: string; value?: string; version?: number; text?: string; }
+interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; layoutContract?: string; message: string; }
+interface WebviewMessage { type: "ready" | "setAttribute" | "setTag" | "sourceEdit" | "copy" | "deploy"; start?: number; source?: string; name?: string; value?: string; version?: number; text?: string; }
 interface SerializableNode { kind: LuiNode["kind"]; tag?: string; text?: string; start: number; end: number; source: string; displayName: string; attrs: Record<string, string>; children: SerializableNode[]; }
 interface SourcePayload extends VersionedSource { displayPath: string; diagnostics: LuiDiagnostic[]; }
 interface CatalogBundle { catalog: Record<string, Record<string, SerializableNode>>; sources: Record<string, SourcePayload>; }
@@ -58,8 +58,13 @@ async function runtimeStatus(root = workspaceRoot()): Promise<RuntimeStatus | un
   const config = uriPath(directory, CONFIG_FILE);
   const manifest = uriPath(directory, MANIFEST_FILE);
   if (!(await exists(config)) || !(await exists(manifest))) return { root, installed: false, message: "未发现 scripts/LUI 运行时部署。" };
-  const parsed = await readJson(manifest);
-  return { root, installed: true, version: typeof parsed?.version === "string" ? parsed.version : "未知", message: "UrhoX/Lua 运行时已部署。" };
+  const manifestBytes = await vscode.workspace.fs.readFile(manifest);
+  const parsed = JSON.parse(asText(manifestBytes)) as Record<string, unknown>;
+  const project = await readJson(config);
+  const version = typeof parsed?.version === "string" ? parsed.version : "未知";
+  const layoutContract = typeof parsed?.layoutContract === "string" ? parsed.layoutContract : undefined;
+  const synchronized = project?.version === version && project?.layoutContract === layoutContract && project?.runtimeManifestHash === sha256(manifestBytes);
+  return { root, installed: true, version, layoutContract, message: layoutContract === "viewbox-grid-v1" && synchronized ? "UrhoX/Lua Viewbox/Grid 运行时已部署且版本匹配。" : "Studio 与 Runtime 布局契约或哈希不匹配；请部署升级。" };
 }
 
 async function collectAdapterFiles(source: vscode.Uri, relative = ""): Promise<Array<[string, vscode.Uri]>> {
@@ -118,6 +123,14 @@ async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<
     await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(defaultConfig, null, 2) + "\n", "utf8"));
     await writeMetaIfAbsent(config);
   }
+  const destinationManifest = uriPath(destinationRoot, MANIFEST_FILE);
+  const manifestBytes = await vscode.workspace.fs.readFile(destinationManifest);
+  const manifest = JSON.parse(asText(manifestBytes)) as Record<string, unknown>;
+  const projectConfig = (await readJson(config)) ?? {};
+  projectConfig.version = manifest.version;
+  projectConfig.layoutContract = manifest.layoutContract;
+  projectConfig.runtimeManifestHash = sha256(manifestBytes);
+  await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(projectConfig, null, 2) + "\n", "utf8"));
   vscode.window.showInformationMessage(backedUp ? "LUI 运行时已更新，旧运行时保留在 .backup-last。" : "LUI 运行时已部署；没有需要备份的旧运行时。");
 }
 
@@ -185,6 +198,7 @@ class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
     panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       if (message.type === "ready") { await update(); return; }
       if (message.type === "deploy") { await deployUrhoXLuaRuntime(this.context); return; }
+      if (message.type === "copy") { if (typeof message.text === "string" && message.text.length > 0) await vscode.env.clipboard.writeText(message.text); return; }
       if (!message.source || !allowedSources.has(message.source)) return;
       const targetUri = vscode.Uri.parse(message.source);
       const targetDocument = await vscode.workspace.openTextDocument(targetUri);

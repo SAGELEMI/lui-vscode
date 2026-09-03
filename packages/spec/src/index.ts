@@ -60,8 +60,12 @@ function parseOpenTag(source: string, start: number, diagnostics: LuiDiagnostic[
   let index = skipSpace(source, start + 1);
   const name = readName(source, index);
   if (!name) {
-    fail(diagnostics, "LUI 标签缺少名称。", start);
     const terminator = source.indexOf(">", start);
+    if (terminator === start + 1) {
+      const end = terminator + 1;
+      return { node: { kind: "element", tag: "__placeholder__", attrs: [], children: [], range: { start, end }, openTagEnd: end }, end, selfClosing: true };
+    }
+    fail(diagnostics, "LUI 标签缺少名称。", start);
     return { end: terminator < 0 ? source.length : terminator + 1, selfClosing: false };
   }
   index = name.end;
@@ -208,6 +212,10 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
   }
   const visit = (node: LuiNode, parentTag?: string) => {
     if (node.kind !== "element") return;
+    if (node.tag === "__placeholder__") {
+      fail(diagnostics, "空标签仅用于设计器占位；请选择标签类型后再运行。", node.range.start, node.range.end, "warning");
+      return;
+    }
     const seenAttributes = new Map<string, LuiAttribute>();
     for (const attribute of node.attrs) {
       const canonicalAttributeName = canonicalAttribute(attribute.name);
@@ -246,6 +254,12 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const sourceTag = node.tag;
     const canonical = canonicalTag(sourceTag);
+    if (canonical === "Viewbox") {
+      for (const name of ["Width", "Height"]) {
+        const attribute = getAttribute(node, name);
+        if (!attribute || !/^\d+(?:\.\d+)?$/.test(attribute.value) || Number(attribute.value) <= 0) fail(diagnostics, `<视图框> 的${sourceAttribute(name)}必须是正数 px，作为内部设计坐标而非设备分辨率。`, attribute?.valueRange.start ?? node.range.start, attribute?.valueRange.end ?? node.openTagEnd);
+      }
+    }
     if (canonical && DEPRECATED_CANONICAL_TAGS.has(canonical)) fail(diagnostics, `<${sourceTag}> 已移除；请使用 <网格> 或 <画布>。`, node.range.start, node.openTagEnd, "warning");
     if (sourceTag && canonical && chineseTag(canonical) !== sourceTag && isLegacyToken(sourceTag)) fail(diagnostics, `标签 <${sourceTag}> 已过时；请改为 <${chineseTag(canonical)}>。`, node.range.start, node.openTagEnd, "warning");
     for (const attribute of node.attrs) if (isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
@@ -260,6 +274,11 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     for (const child of node.children) visit(child, childParent);
   };
   visit(root);
+  if (canonicalTag(root.tag) === "lui:Page") {
+    const safeArea = root.children.find((node) => node.kind === "element" && canonicalTag(node.tag) === "SafeArea");
+    const hosts = safeArea?.children.filter((node) => node.kind === "element" && !["lui:Preview", "lui:Set"].includes(canonicalTag(node.tag) ?? "")) ?? [];
+    if (hosts.length !== 1 || !["Grid", "Viewbox"].includes(canonicalTag(hosts[0]?.tag) ?? "")) fail(diagnostics, "<页面> 的安全区内必须恰好包含一个 <网格> 或 <视图框> 底层容器。", root.range.start, root.openTagEnd);
+  }
   return diagnostics;
 }
 
@@ -332,6 +351,7 @@ export function editAttribute(source: string, node: LuiNode, name: string, value
 
 /** Replaces the selected element's paired source tags without touching its attributes or children. */
 export function editTag(source: string, node: LuiNode, nextTag: string): string {
+  if (node.tag === "__placeholder__") return source.slice(0, node.range.start) + `<${nextTag} />` + source.slice(node.range.end);
   if (node.kind !== "element") return source;
   const openEnd = node.openTagEnd ?? node.range.end;
   const open = source.slice(node.range.start, openEnd);

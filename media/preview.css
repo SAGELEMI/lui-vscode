@@ -24,6 +24,10 @@ aside { padding: 14px; background: #170f27; overflow: auto; }
 h1 { font-size: 18px; margin: 0 0 12px; color: #d5b56d; }
 h2 { font-size: 13px; margin: 16px 0 8px; color: #d5b56d; }
 h3 { margin: 15px 0 7px; color: #c6b0e4; font-size: 12px; }
+.property-category { margin: 12px 0; border: 1px solid #4c3568; border-radius: 6px; background: #130b20; }
+.property-category > summary { padding: 7px 9px; color: #d5b56d; cursor: pointer; font-size: 12px; font-weight: 700; }
+.property-category > label { margin-left: 9px !important; margin-right: 9px !important; }
+.property-category > summary:focus-visible { outline: 2px solid #ffe16b; outline-offset: -2px; }
 
 .outline-row {
   display: block; width: 100%; padding: 6px; text-align: left; color: #eee4ff;
@@ -33,6 +37,7 @@ h3 { margin: 15px 0 7px; color: #c6b0e4; font-size: 12px; }
 .outline-children { margin-left: 12px; border-left: 1px solid #49355d; }
 
 #properties label { display: block; margin: 8px 0; color: #b9a9d1; }
+#properties input[type=search] { margin-top: 3px; }
 #properties input:not([type=range]), #properties select {
   display: block; width: 100%; margin-top: 3px; padding: 6px; color: #fff;
   background: #271a3c; border: 1px solid #60477e; border-radius: 5px;
@@ -63,6 +68,9 @@ main > header select { margin-left: 6px; background: #271a3c; color: #fff; borde
 .lui-node.panel, .lui-node.page, .lui-node.component, .lui-component-instance { display: flex; flex-direction: column; min-height: 0; }
 .lui-node.grid { display: grid; min-width: 0; min-height: 0; align-content: stretch; justify-content: stretch; }
 .lui-node.canvas { min-width: 0; min-height: 0; position: relative; }
+.lui-node.viewbox { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
+.lui-viewbox-design { position: absolute; transform-origin: top left; display: flex; flex-direction: column; }
+.lui-node.placeholder { min-width: 130px; min-height: 36px; border: 1px dashed #ffe16b; color: #ffe16b; background: #271a3c; }
 .lui-node.component, .lui-node.page { width: 100%; }
 .lui-component-instance { min-width: 0; position: relative; }
 .lui-node.text { align-self: flex-start; color: #f6f0ff; white-space: pre-wrap; }
