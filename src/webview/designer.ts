@@ -38,8 +38,8 @@ const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(
 const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
   ["LUI 名称", ["x:Name", "x:DisplayName"]],
-  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"]],
-  ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible"]],
+  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "HorizontalAlignment", "VerticalAlignment", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Dock", "LastChildFill", "ZIndex"]],
+  ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
   ["内容与数据", ["Text", "Title", "Subtitle", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
   ["交互", ["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel", "Disabled"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
@@ -191,6 +191,9 @@ function cssTracks(value: unknown): string {
   return text(value).split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
     if (part === "自动") return "auto";
     if (part === "填充") return "1fr";
+    if (part === "*") return "1fr";
+    const star = /^(\d+(?:\.\d+)?)\*$/.exec(part);
+    if (star) return `${star[1]}fr`;
     const fill = /^(\d+(?:\.\d+)?)填充$/.exec(part);
     return fill ? `${fill[1]}fr` : cssSize(part);
   }).join(" ");
@@ -215,6 +218,13 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
   if (attrs.BorderRadius !== undefined) element.style.borderRadius = cssSize(attrs.BorderRadius);
   if (attrs.Margin !== undefined) element.style.margin = cssThickness(attrs.Margin);
   if (attrs.Padding !== undefined) element.style.padding = cssThickness(attrs.Padding);
+  const horizontal = attrs.HorizontalAlignment;
+  const vertical = attrs.VerticalAlignment;
+  if (horizontal) element.style.justifySelf = ({ "左": "start", "居中": "center", "右": "end", "拉伸": "stretch" } as Record<string, string>)[horizontal] ?? "stretch";
+  if (vertical) element.style.alignSelf = ({ "上": "start", "居中": "center", "下": "end", "拉伸": "stretch" } as Record<string, string>)[vertical] ?? "stretch";
+  const visibility = attrs.Visibility;
+  if (visibility === "折叠" || visibility === "否" || visibility === "false") element.style.display = "none";
+  else if (visibility === "隐藏") element.style.visibility = "hidden";
   if (tag === "Grid") {
     element.style.display = "grid";
     element.style.gridTemplateRows = cssTracks(attrs.RowDefinitions ?? "填充");
@@ -223,6 +233,10 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
     element.style.columnGap = cssSize(attrs.ColumnSpacing ?? "0");
   }
   if (tag === "Canvas") element.style.position = "relative";
+  if (tag === "StackPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "水平" ? "row" : "column"; }
+  if (tag === "WrapPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "垂直" ? "column" : "row"; element.style.flexWrap = "wrap"; }
+  if (tag === "UniformGrid") { element.style.display = "grid"; element.style.gridTemplateColumns = `repeat(${Math.max(1, Number(attrs.Columns) || 1)}, minmax(0, 1fr))`; }
+  if (tag === "DockPanel") { element.style.display = "flex"; element.style.flexDirection = "column"; }
   if (tag === "Viewbox") {
     // The design canvas is its own coordinate system.  The parent stage only
     // supplies a viewport; it never changes the page definition.
@@ -231,6 +245,7 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
   }
   if (attrs["Grid.Row"] !== undefined) element.style.gridRow = `${Number(attrs["Grid.Row"]) + 1} / span ${attrs["Grid.RowSpan"] ?? "1"}`;
   if (attrs["Grid.Column"] !== undefined) element.style.gridColumn = `${Number(attrs["Grid.Column"]) + 1} / span ${attrs["Grid.ColumnSpan"] ?? "1"}`;
+  if (attrs.ZIndex !== undefined) element.style.zIndex = attrs.ZIndex;
   if (attrs["Canvas.Left"] !== undefined || attrs["Canvas.Top"] !== undefined || attrs["Canvas.Right"] !== undefined || attrs["Canvas.Bottom"] !== undefined) {
     element.style.position = "absolute";
     if (attrs["Canvas.Left"] !== undefined) element.style.left = cssSize(attrs["Canvas.Left"]);
@@ -292,7 +307,11 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     const sample = { label: "示例项目", name: "示例项目", text: "示例内容" };
     return fragmentChildren(visualChildren(node), { ...scope, [attrs.Each ?? "item"]: sample, item: sample, index: 1 }, trace);
   }
-  if (tag === "lui:Slot") return fragmentChildren(((scope.slots as Record<string, SerializableNode[]> | undefined)?.[effective(node, scope).Name ?? ""] ?? []), scope, trace);
+  if (tag === "lui:Slot") {
+    const content = (scope.slots as Record<string, SerializableNode[]> | undefined)?.Content ?? [];
+    if (content.length) return fragmentChildren(content, scope, trace);
+    const placeholder = document.createElement("div"); placeholder.className = "content-presenter-placeholder"; placeholder.textContent = "调用处内容"; return placeholder;
+  }
   if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace);
   const attrs = effective(node, scope);
   if (tag === "Viewbox") {
@@ -316,7 +335,7 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   decorate(element, node);
   element.classList.add(`tag-${tag.replace(/[^A-Za-z0-9_-]/g, "-")}`);
   applyLayout(element, tag, attrs);
-  if (tag === "Grid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Viewbox") element.classList.add("viewbox"); else if (tag === "Row") element.classList.add("row"); else element.classList.add("panel");
+  if (tag === "Grid" || tag === "UniformGrid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Viewbox") element.classList.add("viewbox"); else if (tag === "Row" || tag === "StackPanel" || tag === "WrapPanel" || tag === "DockPanel") element.classList.add("row"); else element.classList.add("panel");
   if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
   else if (tag === "Text") { element.classList.add("text"); element.style.fontSize = attrs.FontSize ? cssSize(attrs.FontSize) : ""; element.textContent = text(attrs.Text); }
   else if (tag === "Card") element.classList.add("card");
@@ -378,14 +397,31 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   const definition = attributeDefinition(key);
   const value = sourceValue(node, key) ?? "";
   let input: HTMLInputElement | HTMLSelectElement;
-  if (definition?.kind === "enum") {
+  if (key === "HorizontalAlignment" || key === "VerticalAlignment") {
+    const buttons = document.createElement("div"); buttons.className = "alignment-buttons";
+    const values = key === "HorizontalAlignment" ? [["左", "↤"], ["居中", "↔"], ["右", "↦"], ["拉伸", "↹"]] : [["上", "↥"], ["居中", "↕"], ["下", "↧"], ["拉伸", "↕"]];
+    for (const [option, glyph] of values) {
+      const button = document.createElement("button"); button.type = "button"; button.textContent = glyph; button.title = `${option}（${key === "HorizontalAlignment" ? "HorizontalAlignment" : "VerticalAlignment"}）`; button.classList.toggle("is-active", value === option || (!value && option === "拉伸"));
+      button.onclick = () => writeAttribute(node, key, option); buttons.append(button);
+    }
+    label.append(buttons); host.append(label); return;
+  } else if (key === "Width" || key === "Height") {
+    const box = document.createElement("div"); box.className = "size-editor";
+    const actual = layouts.get(`${node.source}:${node.start}`); const measured = key === "Width" ? actual?.width : actual?.height;
+    const mode = document.createElement("select"); for (const [labelValue, optionText] of [["自动", measured === undefined ? "自动" : `自动（${Math.round(measured)}）`], ["像素", "像素"]]) { const option = document.createElement("option"); option.value = labelValue; option.textContent = optionText; mode.append(option); }
+    const isAuto = !value || value === "自动"; mode.value = isAuto ? "自动" : "像素";
+    const field = document.createElement("input"); field.type = "number"; field.step = "any"; field.value = isAuto ? "" : value; field.placeholder = "实际尺寸见下方";
+    mode.onchange = () => writeAttribute(node, key, mode.value === "自动" ? "自动" : (field.value || "0")); field.onchange = () => { if (mode.value === "像素") writeAttribute(node, key, field.value || "0"); };
+    box.append(mode, field); label.append(box); host.append(label); return;
+  } else if (definition?.kind === "enum") {
     const select = document.createElement("select");
     const empty = document.createElement("option"); empty.value = ""; empty.textContent = "未设置"; select.append(empty);
     for (const optionValue of enumOptions(key) ?? []) { const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; select.append(option); }
     select.value = value; select.onchange = () => writeAttribute(node, key, select.value); input = select;
   } else if (definition?.kind === "thickness") {
-    const grid = document.createElement("div"); grid.className = "property-grid";
+    const grid = document.createElement("div"); grid.className = "thickness-editor";
     const parts = thicknessParts(value); const names = ["左", "上", "右", "下"];
+    const uniform = document.createElement("button"); uniform.type = "button"; uniform.textContent = "四边相同"; uniform.title = "将四边距统一为左侧数值"; uniform.onclick = () => writeAttribute(node, key, parts[0]!); grid.append(uniform);
     for (let index = 0; index < 4; index += 1) {
       const side = document.createElement("label"); side.textContent = names[index]!;
       const field = document.createElement("input"); field.type = "number"; field.step = "any"; field.value = parts[index]!;
@@ -436,10 +472,10 @@ function attributesFor(node: SerializableNode): string[] {
   while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
   const parentTag = canonicalTag(parent?.tag);
   const structural = ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"];
-  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding"];
+  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "HorizontalAlignment", "VerticalAlignment", "Visibility"];
   const surface = ["Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag ?? "") ? ["Background", "Opacity", "BorderRadius"] : [];
   const specific: Record<string, string[]> = {
-    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": ["Name"], "lui:Set": ["Path", "Value"]
+    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], DockPanel: ["LastChildFill"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": [], "lui:Set": ["Path", "Value"]
   };
   const control = controlDefinition(tag);
   if (control) {
@@ -447,7 +483,7 @@ function attributesFor(node: SerializableNode): string[] {
     if (control.bindable && !declarative.includes(control.bindable)) declarative.push(control.bindable);
     specific[tag ?? ""] = [...(specific[tag ?? ""] ?? []), ...declarative];
   }
-  const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom"] : [];
+  const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "ZIndex"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "ZIndex"] : parentTag === "DockPanel" ? ["Dock"] : [];
   return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached])];
 }
 

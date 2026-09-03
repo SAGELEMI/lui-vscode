@@ -1,12 +1,10 @@
 {
   "schemaVersion": 3,
   "adapter": "urhox-lua",
-  "version": "0.6.0",
-  "layoutContract": "viewbox-grid-v1",
+  "version": "0.8.0",
+  "layoutContract": "wpf-layout-v1-controls-mvvm",
   "sourceRoots": [
-    "Presentation/Pages",
-    "Presentation/Components",
-    "Presentation/Modals"
+    "Presentation"
   ],
   "componentDirectories": {}
 }

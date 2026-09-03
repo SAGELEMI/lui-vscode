@@ -28,6 +28,16 @@ h3 { margin: 15px 0 7px; color: #c6b0e4; font-size: 12px; }
 .property-category > summary { padding: 7px 9px; color: #d5b56d; cursor: pointer; font-size: 12px; font-weight: 700; }
 .property-category > label { margin-left: 9px !important; margin-right: 9px !important; }
 .property-category > summary:focus-visible { outline: 2px solid #ffe16b; outline-offset: -2px; }
+.size-editor, .alignment-buttons, .thickness-editor { display: grid; gap: 4px; align-items: center; }
+.size-editor { grid-template-columns: 80px minmax(0, 1fr); }
+.alignment-buttons { grid-template-columns: repeat(4, 1fr); }
+.alignment-buttons button { min-width: 0; padding: 3px; font-size: 16px; }
+.alignment-buttons button.is-active { background: #7851c9; outline: 1px solid #ffe16b; }
+.thickness-editor { grid-template-columns: repeat(4, minmax(0, 1fr)); position: relative; padding-top: 24px; }
+.thickness-editor > button { position: absolute; top: 0; right: 0; padding: 2px 5px; font-size: 10px; }
+.thickness-editor label { margin: 0 !important; font-size: 10px; }
+.thickness-editor input { width: 100%; min-width: 0; }
+.content-presenter-placeholder { min-width: 96px; min-height: 32px; padding: 7px; color: #ffe16b; border: 1px dashed #d5b56d; background: #271a3c; }
 
 .outline-row {
   display: block; width: 100%; padding: 6px; text-align: left; color: #eee4ff;

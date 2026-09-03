@@ -136,6 +136,10 @@ local function layoutValue(value)
     return tonumber(value) or value
 end
 
+local function isCollapsed(value)
+    return value == false or value == "false" or value == "否" or value == "折叠"
+end
+
 -- LUI Thickness uses XAML order: left,top,right,bottom. UrhoX receives top,right,bottom,left.
 local function thickness(value)
     if type(value) == "table" then return value end
@@ -192,6 +196,10 @@ local function propsFor(attrs, context)
         local value = resolve(attrs.Visible, context)
         props.visible = value == true or value == "是" or value == "true"
     end
+    if attrs.Visibility ~= nil then
+        local value = resolve(attrs.Visibility, context)
+        props.visible = not isCollapsed(value) and value ~= "隐藏"
+    end
     return props
 end
 
@@ -246,9 +254,9 @@ local function tracks(value)
     for part in tostring(value or "填充"):gmatch("[^,]+") do
         local text = part:match("^%s*(.-)%s*$")
         if text == "自动" then result[#result + 1] = { kind = "auto", value = 0 }
-        elseif text == "填充" then result[#result + 1] = { kind = "fill", value = 1 }
+        elseif text == "填充" or text == "*" then result[#result + 1] = { kind = "fill", value = 1 }
         else
-            local fill = text:match("^(%d+%.?%d*)填充$")
+            local fill = text:match("^(%d+%.?%d*)填充$") or text:match("^(%d+%.?%d*)%*$")
             local percent = text:match("^(%d+%.?%d*)%%$")
             if fill then result[#result + 1] = { kind = "fill", value = tonumber(fill) or 1 }
             elseif percent then result[#result + 1] = { kind = "percent", value = (tonumber(percent) or 0) / 100 }
@@ -304,6 +312,26 @@ local function applyFrame(widget, x, y, width, height)
     end
 end
 
+local function arrangeFrame(widget, x, y, width, height, attrs, context)
+    local left, top, right, bottom = thicknessParts(resolve(attrs.Margin, context))
+    x, y = x + left, y + top
+    width, height = math.max(0, width - left - right), math.max(0, height - top - bottom)
+    local layout = widget:GetLayout()
+    local desiredW, desiredH = layout.w or 0, layout.h or 0
+    local horizontal, vertical = resolve(attrs.HorizontalAlignment, context), resolve(attrs.VerticalAlignment, context)
+    if horizontal and horizontal ~= "拉伸" then
+        local actualW = math.min(width, tonumber(resolve(attrs.Width, context)) or desiredW)
+        if horizontal == "居中" then x = x + (width - actualW) * 0.5 elseif horizontal == "右" then x = x + width - actualW end
+        width = actualW
+    end
+    if vertical and vertical ~= "拉伸" then
+        local actualH = math.min(height, tonumber(resolve(attrs.Height, context)) or desiredH)
+        if vertical == "居中" then y = y + (height - actualH) * 0.5 elseif vertical == "下" then y = y + height - actualH end
+        height = actualH
+    end
+    applyFrame(widget, x, y, width, height)
+end
+
 local function layoutPanel(props, entries, mode, attrs, context)
     props.children = {}
     local panel = UI.Panel(props)
@@ -327,7 +355,7 @@ local function layoutPanel(props, entries, mode, attrs, context)
                 if y ~= nil and bottomOffset ~= nil and entry.attrs.Height == nil then childH = math.max(0, contentH - y - bottomOffset) end
                 if x == nil then x = rightOffset ~= nil and contentW - rightOffset - childW or 0 end
                 if y == nil then y = bottomOffset ~= nil and contentH - bottomOffset - childH or 0 end
-                applyFrame(child, contentX + x, contentY + y, childW, childH)
+                arrangeFrame(child, contentX + x, contentY + y, childW, childH, entry.attrs, context)
             end
         else
             local rowGap = numberOrPercent(resolve(attrs.RowSpacing, context), contentH) or 0
@@ -340,7 +368,7 @@ local function layoutPanel(props, entries, mode, attrs, context)
                 local y = contentY + (rowPositions[entry.row] or 0)
                 local width = spanSize(columnSizes, entry.column, entry.columnSpan, columnGap)
                 local height = spanSize(rowSizes, entry.row, entry.rowSpan, rowGap)
-                applyFrame(entry.widget, x, y, width, height)
+                arrangeFrame(entry.widget, x, y, width, height, entry.attrs, context)
             end
         end
         baseRender(self, nvg)
@@ -484,6 +512,13 @@ function Runtime:BuildChildren(nodes, context)
     return built
 end
 
+local function hasContentPresenter(node)
+    if not node then return false end
+    if node.tag == "lui:Slot" then return true end
+    for _, child in ipairs(node.children or {}) do if hasContentPresenter(child) then return true end end
+    return false
+end
+
 -- Grid/Canvas own their children's placement. This keeps the layout declaration in
 -- .lui while preserving the regular builder for controls and imported components.
 function Runtime:BuildLayoutEntries(nodes, context)
@@ -509,7 +544,7 @@ function Runtime:BuildLayoutEntries(nodes, context)
             return
         end
         if node.tag == "lui:Slot" then
-            for _, child in ipairs((activeContext.slots or {})[attrs.Name] or {}) do appendNode(child, activeContext) end
+            for _, child in ipairs((activeContext.slots or {})[attrs.Name or "Content"] or {}) do appendNode(child, activeContext) end
             return
         end
         local built = self:BuildNode(node, activeContext)
@@ -540,6 +575,7 @@ function Runtime:BuildNode(node, context)
         return UI.Label { text = node.text, fontSize = 14 }
     end
     local tag, attrs, visualChildren = node.tag, resolvedNodeParts(node)
+    if isCollapsed(resolve(attrs.Visibility, context)) then return nil end
     if tag == "lui:If" then
         local test = resolve(attrs.Test, context)
         return test ~= nil and test ~= false and { __luiList = true, items = self:BuildChildren(visualChildren, context) } or nil
@@ -557,7 +593,7 @@ function Runtime:BuildNode(node, context)
     end
     if tag == "lui:Preview" or tag == "lui:Action" or tag == "lui:Resource" then return nil end
     if tag == "lui:Slot" then
-        return { __luiList = true, items = self:BuildChildren((context.slots or {})[attrs.Name] or {}, context) }
+        return { __luiList = true, items = self:BuildChildren((context.slots or {}).Content or {}, context) }
     end
     if tag == "lui:Page" or tag == "lui:Component" then
         local items = self:BuildChildren(visualChildren, context)
@@ -582,6 +618,10 @@ function Runtime:BuildNode(node, context)
         local componentStack = context.componentStack or {}
         if componentStack[componentKey] then error("LUI 组件循环依赖：" .. componentKey) end
         componentStack[componentKey] = true
+        if #visualChildren > 0 and not hasContentPresenter(component) then
+            componentStack[componentKey] = nil
+            error("LUI 控件 <" .. tostring(tag) .. "> 未声明 <内容呈现器 />，不能传入子内容。")
+        end
         local componentImports, importsErr = self:ImportsFor(component)
         if not componentImports then componentStack[componentKey] = nil; error(importsErr) end
         local properties = {}
@@ -642,8 +682,15 @@ function Runtime:BuildNode(node, context)
             if callback then callback(value) end
         end end
         widget = UI.Slider(props)
-    elseif tag == "Row" then
-        props.flexDirection = "row"; props.children = children; widget = UI.Panel(props)
+    elseif tag == "Row" or tag == "StackPanel" or tag == "WrapPanel" or tag == "DockPanel" then
+        props.flexDirection = (tag == "Row" or resolve(attrs.Orientation, context) == "水平") and "row" or "column"
+        if tag == "WrapPanel" then props.flexWrap = "wrap" end
+        props.children = children; widget = UI.Panel(props)
+    elseif tag == "UniformGrid" then
+        local columns = math.max(1, tonumber(resolve(attrs.Columns, context)) or 1)
+        props.children = children; widget = layoutPanel(props, self:BuildLayoutEntries(visualChildren, context), "Grid", { RowDefinitions = "填充", ColumnDefinitions = string.rep("填充,", columns):sub(1, -2) }, context)
+    elseif tag == "Border" or tag == "ContentControl" then
+        props.children = children; widget = UI.Panel(props)
     elseif tag == "Scroll" then
         props.scrollY, props.showScrollbar = true, false; props.children = children; widget = UI.ScrollView(props)
     elseif tag == "SafeArea" then
@@ -742,6 +789,12 @@ function Runtime:Render(markupPath, codePath, presentation)
         return true
     end
     local root = self:BuildNode(document, context)
+    -- Pages own no device chrome in source.  The runtime is the single safe-area
+    -- host; old page documents that still contain <安全区> remain compatible.
+    local first = (document.children or {})[1]
+    if document.tag == "lui:Page" and root and (not first or first.tag ~= "SafeArea") then
+        root = UI.SafeAreaView { width = "100%", height = "100%", children = { root } }
+    end
     if result.AfterMount then result.AfterMount(root, context) end
     return root, nil
 end

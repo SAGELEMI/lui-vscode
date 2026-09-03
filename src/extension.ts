@@ -65,7 +65,7 @@ async function runtimeStatus(root = workspaceRoot()): Promise<RuntimeStatus | un
   const version = typeof parsed?.version === "string" ? parsed.version : "未知";
   const layoutContract = typeof parsed?.layoutContract === "string" ? parsed.layoutContract : undefined;
   const synchronized = project?.version === version && project?.layoutContract === layoutContract && project?.runtimeManifestHash === sha256(manifestBytes);
-  return { root, installed: true, version, layoutContract, message: layoutContract === "viewbox-grid-v1" && synchronized ? "UrhoX/Lua Viewbox/Grid 运行时已部署且版本匹配。" : "Studio 与 Runtime 布局契约或哈希不匹配；请部署升级。" };
+  return { root, installed: true, version, layoutContract, message: layoutContract === "wpf-layout-v1-controls-mvvm" && synchronized ? "UrhoX/Lua WPF 布局运行时已部署且版本匹配。" : "Studio 与 Runtime 布局契约或哈希不匹配；请部署升级。" };
 }
 
 async function collectAdapterFiles(source: vscode.Uri, relative = ""): Promise<Array<[string, vscode.Uri]>> {
@@ -101,7 +101,7 @@ async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
   const scripts = uriPath(root, "scripts"); const configUri = uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE);
   const config = (await readJson(configUri)) ?? { schemaVersion: 3, adapter: "urhox-lua", sourceRoots: ["Presentation/Pages", "Presentation/Components"] };
   const roots = Array.isArray(config.sourceRoots) ? config.sourceRoots.filter((value): value is string => typeof value === "string") : [];
-  const pages: Array<{ name: string; markup: string; code: string }> = []; const components: Array<{ name: string; markup: string; code: string }> = [];
+  const pages: Array<{ name: string; markup: string; code: string }> = []; const controls: Array<{ name: string; markup: string; code: string }> = [];
   const seenMarkup = new Set<string>(); const registeredNames = new Map<string, string>();
   for (const sourceRoot of roots) for (const [relative, uri] of await collectLuiFiles(uriPath(scripts, ...sourceRoot.split("/")))) {
     const markup = `${sourceRoot}/${relative}`; const parsed = parseLui(asText(await vscode.workspace.fs.readFile(uri))).root;
@@ -114,28 +114,28 @@ async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
     if (existingMarkup && existingMarkup !== markup) throw new Error(`LUI 注册失败：名称“${name}”同时用于 ${existingMarkup} 与 ${markup}。`);
     registeredNames.set(name, markup);
     const item = { name, markup, code: `${markup}.lua` };
-    if (canonicalTag(parsed?.tag) === "lui:Component") components.push(item); else if (canonicalTag(parsed?.tag) === "lui:Page") pages.push(item);
+    if (canonicalTag(parsed?.tag) === "lui:Component") controls.push(item); else if (canonicalTag(parsed?.tag) === "lui:Page") pages.push(item);
   }
-  pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); components.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); controls.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   const row = (item: { name: string; markup: string; code: string }) => `[${luaString(item.name)}] = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
-  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {\n        ${pages.map(row).join("\n        ")}\n    },\n    components = {\n        ${components.map(row).join("\n        ")}\n    },\n}\n\nfunction Registry:Get(name) return self.pages[name] or self.components[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或组件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
+  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local page = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {\n        ${pages.map(row).join("\n        ")}\n    },\n    controls = {\n        ${controls.map(row).join("\n        ")}\n    },\n}\n\n-- components 是 0.7 及更早 Runtime 的兼容别名。\nRegistry.components = Registry.controls\nfunction Registry:Get(name) return self.pages[name] or self.controls[name] end\nfunction Registry:Render(runtime, name, presentation)\n    local item = self:Get(name)\n    if not item then return nil, \"LUI 未登记页面或控件：\" .. tostring(name) end\n    return runtime:Render(item.markup, item.code, presentation)\nend\n\nreturn Registry\n`;
   const destination = uriPath(root, ...RUNTIME_DIRECTORY, REGISTRY_FILE);
   await vscode.workspace.fs.writeFile(destination, Buffer.from(registry, "utf8")); await writeMetaIfAbsent(destination);
 }
 
-function templateFor(kind: "页面" | "组件", name: string): { markup: string; code: string } {
+function templateFor(kind: "页面" | "控件", name: string): { markup: string; code: string } {
   const markup = kind === "页面"
-    ? `<!-- ${name}：设备预设只影响预览；视图框定义内部设计坐标。 -->\n<页面 名称="${name}">\n  <安全区>\n    <视图框 宽度="390" 高度="844">\n      <网格 行定义="自动,填充" 列定义="填充">\n        <文本 名称="标题" 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${name}'}" 字号="28" />\n      </网格>\n    </视图框>\n  </安全区>\n</页面>\n`
-    : `<!-- ${name}：在页面根节点以 目录:别名 导入后使用。 -->\n<组件 名称="${name}">\n  <网格 行定义="自动" 列定义="填充">\n    <文本 名称="标题" 文本="{绑定 props.title, 预览内容='${name}'}" />\n  </网格>\n</组件>\n`;
-  const objectName = kind === "页面" ? "Page" : "Component";
+    ? `<!-- ${name}：页面安全区由 Runtime 提供；设备预设只影响预览。 -->\n<页面 名称="${name}">\n  <网格 行定义="自动,*" 列定义="*">\n    <文本 名称="标题" 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${name}'}" 字号="28" />\n  </网格>\n</页面>\n`
+    : `<!-- ${name}：Components 中的自定义控件；宽高默认自动测量。 -->\n<控件 名称="${name}">\n  <边框 内边距="8">\n    <内容呈现器 />\n  </边框>\n</控件>\n`;
+  const objectName = kind === "页面" ? "Page" : "Control";
   const code = `-- ${name} 的 MVVM 后端。布局、样式和静态属性留在同名 .lui。\n-- view：绑定数据；actions：{动作 ...}；refs：所有 x:Ref 控件；bindings：Notify/Commit。\nlocal ${objectName} = {}\n\nfunction ${objectName}.Build(presentation)\n    return {\n        view = { title = \"${name}\" },\n        actions = {\n            -- Save = function() end, -- 对应 {动作 Save}\n        },\n        AfterMount = function(root, context)\n            -- local title = context.refs.TitleRef -- 对应 x:Ref=\"TitleRef\"\n        end,\n        OnBindingChanged = function(path, context)\n            -- 修改 view 后调用 context.bindings:Notify(\"view.字段\")。\n        end,\n    }\nend\n\nreturn ${objectName}\n`;
   return { markup, code };
 }
 
 async function createLuiPair(): Promise<void> {
   const root = workspaceRoot(); if (!root) { vscode.window.showErrorMessage("请先打开 Maker 游戏项目。"); return; }
-  const kind = await vscode.window.showQuickPick(["页面", "组件"], { placeHolder: "选择 LUI 文件类型" }) as "页面" | "组件" | undefined; if (!kind) return;
-  const name = await vscode.window.showInputBox({ prompt: "中文设计名称", placeHolder: kind === "页面" ? "新页面" : "新组件", validateInput: (value) => value.trim() ? undefined : "名称不能为空。" }); if (!name) return;
+  const kind = await vscode.window.showQuickPick(["页面", "控件"], { placeHolder: "选择 LUI 文件类型" }) as "页面" | "控件" | undefined; if (!kind) return;
+  const name = await vscode.window.showInputBox({ prompt: "中文设计名称", placeHolder: kind === "页面" ? "新页面" : "新控件", validateInput: (value) => value.trim() ? undefined : "名称不能为空。" }); if (!name) return;
   const safeName = name.replace(/[\\/:*?\"<>|]/g, ""); if (!safeName) return;
   const folder = kind === "页面" ? ["scripts", "Presentation", "Pages"] : ["scripts", "Presentation", "Components"];
   const markupUri = uriPath(root, ...folder, `${safeName}.lui`); const codeUri = uriPath(root, ...folder, `${safeName}.lui.lua`);

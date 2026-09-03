@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * One-way LUI 0.7 migration for existing design files.
+ * One-way LUI 0.8 migration for existing design files.
  * It deliberately changes only markup: the paired .lui.lua view-model remains
  * the owner of data and actions.
  */
@@ -55,7 +55,20 @@ function migrateTag(full, body) {
 function migrate(source) {
   // Existing project markup has no raw '<' in an attribute value.  Keeping the
   // surrounding tag intact also preserves comments and literal text nodes.
-  return source.replace(/<(?![!/])([^<>]*)>/g, (full, body) => migrateTag(full, body));
+  let result = source.replace(/<(?![!/])([^<>]*)>/g, (full, body) => migrateTag(full, body));
+  // WPF-style pages receive SafeArea from Runtime. Existing Viewbox roots are
+  // unwrapped without altering their authored inner Grid/Canvas layout.
+  result = result.replace(/<页面([^>]*)>\s*<安全区[^>]*>\s*<视图框[^>]*>([\s\S]*?)<\/视图框>\s*<\/安全区>/g, "<页面$1>$2");
+  result = result.replace(/<组件(?=[\s>])/g, "<控件").replace(/<\/组件>/g, "</控件>");
+  result = result.replace(/<插槽(?=[\s/>])([^>]*)\/>/g, (_all, attributes) => `<内容呈现器${attributes.replace(/\s+插槽名=(['"])Content\1/, "")} />`);
+  // A legacy transparent condition becomes WPF Visibility on its direct
+  // visual child. Existing project conditions have one direct child.
+  result = result.replace(/<条件\s+条件=(['"])(.*?)\1>\s*(<[^/!][^\s/>]*)([^>]*>)/g, (_all, quote, test, child, rest) => {
+    const selfClosing = /\/\s*>$/.test(rest); const open = rest.replace(/\s*\/?>$/, "");
+    return `${child}${open} 可见性=${quote}{绑定 ${test.replace(/^\{绑定\s+|\}$/g, "").split(",")[0].trim()}, 模式=单向, 更新源触发=默认}${quote}${selfClosing ? " />" : ">"}`;
+  });
+  result = result.replace(/<\/条件>/g, "");
+  return result;
 }
 
 const target = resolve(process.argv[2] ?? process.cwd());
@@ -68,4 +81,4 @@ for (const file of await luiFiles(target)) {
   if (write) await writeFile(file, after, "utf8");
   console.log(`${write ? "已迁移" : "将迁移"} ${file}`);
 }
-console.log(`LUI 0.7 迁移${write ? "完成" : "预览"}：${changed} 个文件。`);
+console.log(`LUI 0.8 迁移${write ? "完成" : "预览"}：${changed} 个文件。`);

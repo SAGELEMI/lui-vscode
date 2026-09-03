@@ -48,6 +48,15 @@ test("Grid and Canvas validate their dedicated layout attributes", () => {
   assert.ok(invalid.diagnostics.some((item) => item.message.includes("网格")));
 });
 
+test("WPF layout roots accept star tracks, alignment, visibility and one ContentPresenter", () => {
+  const valid = parseLui('<控件 名称="卡片壳"><边框 内边距="8"><网格 行定义="自动,*" 列定义="2*,*"><内容呈现器 水平对齐="拉伸" 垂直对齐="居中" 可见性="显示" 网格.行="1" /></网格></边框></控件>');
+  assert.equal(valid.diagnostics.filter((item) => item.severity === "error").length, 0);
+  const invalid = parseLui('<控件 名称="卡片壳"><网格><内容呈现器 /><内容呈现器 /></网格></控件>');
+  assert.ok(invalid.diagnostics.some((item) => item.message.includes("最多只能包含一个")));
+  const boundLength = parseLui('<页面 名称="滚动页"><网格><滚动查看器 高度="{绑定 view.contentHeight, 模式=单向, 更新源触发=默认}" /></网格></页面>');
+  assert.equal(boundLength.diagnostics.filter((item) => item.severity === "error").length, 0);
+});
+
 test("Chinese enum values are accepted and legacy values receive migration diagnostics", () => {
   const current = parseLui('<页面 名称="Layout"><安全区><视图框 宽度="390" 高度="844"><按钮 名称="Confirm" 样式="主要" /></视图框></安全区></页面>');
   assert.equal(current.diagnostics.filter((item) => item.severity === "error").length, 0);

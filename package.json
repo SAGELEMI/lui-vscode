@@ -3,7 +3,7 @@
   "displayName": "LUI Studio",
   "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
   "icon": "icons/lui-studio.png",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "SAGELEMI",
   "license": "MIT",
   "repository": {
@@ -137,7 +137,7 @@
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",
-    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.7.0.vsix",
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.8.0.vsix",
     "watch": "node ./scripts/build.mjs --watch"
   },
   "devDependencies": {

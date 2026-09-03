@@ -174,12 +174,12 @@ function isDesignName(value: string): boolean { return value.trim().length > 0 &
 function isDirectory(value: string): boolean { return value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => part === "" || part === "." || part === ".."); }
 function isInteger(value: string): boolean { return /^\d+$/.test(value); }
 function isBinding(value: string): boolean { return /^\{(?:绑定|Binding)\s+[A-Za-z][A-Za-z0-9_.-]*\}$/.test(value.trim()); }
-function isLength(value: string): boolean { return isBinding(value) || /^-?\d+(?:\.\d+)?%?$/.test(value) || value === "自动"; }
+function isLength(value: string): boolean { return parseBinding(value) !== undefined || /^-?\d+(?:\.\d+)?%?$/.test(value) || value === "自动"; }
 function isThickness(value: string): boolean {
   const parts = value.split(",").map((part) => part.trim());
   return (parts.length === 1 || parts.length === 4) && parts.every((part) => /^-?\d+(?:\.\d+)?$/.test(part));
 }
-function isTrack(value: string): boolean { return value === "自动" || value === "填充" || /^\d+(?:\.\d+)?(?:%|填充)?$/.test(value); }
+function isTrack(value: string): boolean { return value === "自动" || value === "填充" || value === "*" || /^\d+(?:\.\d+)?(?:%|填充|\*)?$/.test(value); }
 function isTrackList(value: string): boolean { return value.split(",").map((part) => part.trim()).length > 0 && value.split(",").map((part) => part.trim()).every(isTrack); }
 function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
   const canonical = canonicalAttribute(attribute.name);
@@ -187,9 +187,9 @@ function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): v
   if (definition?.kind === "integer" && !isInteger(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是从 0 开始的整数。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "length" && !isLength(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是像素数、百分比或“自动”。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "thickness" && !isThickness(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是单值，或“左,上,右,下”四个数值。`, attribute.valueRange.start, attribute.valueRange.end);
-  if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”、“填充”或“2填充”。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”或 WPF 星号轨道（*、2*）。`, attribute.valueRange.start, attribute.valueRange.end);
   const options = enumOptions(canonical);
-  if (options && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (options && !parseBinding(attribute.value) && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
   else if (options && legacyEnumValue(canonical, attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 的旧值“${attribute.value}”请改为“${normalizedEnumValue(canonical, attribute.value)}”（旧“主要/次要”现称“高亮/常规”）。`, attribute.valueRange.start, attribute.valueRange.end, "warning");
 }
 
@@ -270,16 +270,24 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
       const alias = sourceTag!.slice(0, separator);
       if (!imports.has(alias)) fail(diagnostics, `组件 <${sourceTag}> 未导入目录别名 ${alias}。`, node.range.start, node.openTagEnd);
     }
-    // 条件、循环和插槽只控制是否/如何产生子项，不是布局容器；其子项
+    // 旧条件、循环和内容呈现器只控制是否/如何产生子项，不是布局容器；其子项
     // 仍视为最近网格或画布的直接可定位子项。
     const childParent = canonical === "lui:If" || canonical === "lui:For" || canonical === "lui:Slot" ? parentTag : canonical;
     for (const child of node.children) visit(child, childParent);
   };
   visit(root);
-  if (canonicalTag(root.tag) === "lui:Page") {
-    const safeArea = root.children.find((node) => node.kind === "element" && canonicalTag(node.tag) === "SafeArea");
-    const hosts = safeArea?.children.filter((node) => node.kind === "element" && !["lui:Preview", "lui:Set"].includes(canonicalTag(node.tag) ?? "")) ?? [];
-    if (hosts.length !== 1 || !["Grid", "Viewbox"].includes(canonicalTag(hosts[0]?.tag) ?? "")) fail(diagnostics, "<页面> 的安全区内必须恰好包含一个 <网格> 或 <视图框> 底层容器。", root.range.start, root.openTagEnd);
+  if (canonicalTag(root.tag) === "lui:Page" || canonicalTag(root.tag) === "lui:Component") {
+    const hosts = root.children.filter((node) => node.kind === "element" && !["lui:Preview", "lui:Set"].includes(canonicalTag(node.tag) ?? ""));
+    if (hosts.length !== 1) fail(diagnostics, `<${chineseTag(canonicalTag(root.tag) ?? "lui:Page")}> 必须恰好包含一个布局根；页面安全区由 Runtime 自动提供。`, root.range.start, root.openTagEnd);
+  }
+  if (root.tag === "控件" || root.tag === "组件" || canonicalTag(root.tag) === "lui:Component") {
+    let presenters = 0;
+    const countPresenters = (node: LuiNode) => {
+      if (node.tag === "内容呈现器" || node.tag === "插槽" || canonicalTag(node.tag) === "lui:Slot") presenters += 1;
+      for (const child of node.children) countPresenters(child);
+    };
+    countPresenters(root);
+    if (presenters > 1) fail(diagnostics, "<控件> 最多只能包含一个 <内容呈现器 />。", root.range.start, root.openTagEnd);
   }
   return diagnostics;
 }
