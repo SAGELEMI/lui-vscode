@@ -1,13 +1,17 @@
 import { createHash, randomBytes } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve, relative, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { deployGuidance } from "./lib/guidance.mjs";
+import { guidanceNodeIO } from "./lib/guidance-node.mjs";
 
 const targetArgument = process.argv[2];
 if (!targetArgument) throw new Error("用法：node scripts/deploy-runtime.mjs <项目根目录>");
 const projectRoot = resolve(targetArgument);
 const scriptsRoot = join(projectRoot, "scripts");
 if (!(await stat(scriptsRoot)).isDirectory()) throw new Error("目标不是包含 scripts 目录的项目：" + projectRoot);
-const sourceRoot = resolve("packages/runtime-urhox-lua/adapter");
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const sourceRoot = join(repositoryRoot, "packages/runtime-urhox-lua/adapter");
 const targetRoot = join(scriptsRoot, "LUI");
 const backupRoot = join(targetRoot, ".backup-last");
 const knownUuids = new Set();
@@ -136,5 +140,8 @@ await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
 await stampLayoutContract();
 if (!backupPrepared) await completeBackup();
-await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
+if (await pathExists(join(scriptsRoot, "Presentation"))) await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
+const guidance = await deployGuidance(repositoryRoot, projectRoot, guidanceNodeIO);
+if (guidance.preserved.length) console.warn(`LUI 已保留用户修改的资料：${guidance.preserved.join("、")}`);
+console.log(`已交付 LUI ${guidance.version} 文档、示例与 AI skills。`);
 console.log(`已部署 LUI UrhoX/Lua 运行时：${targetRoot}`);

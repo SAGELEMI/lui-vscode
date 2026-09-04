@@ -10,7 +10,7 @@ async function findLua(directory) {
   const out = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const full = join(directory, entry.name);
-    if (entry.isDirectory()) out.push(...await findLua(full));
+    if (entry.isDirectory() && entry.name !== ".backup-last") out.push(...await findLua(full));
     else if (entry.name.endsWith(".lua")) out.push(full);
   }
   return out;

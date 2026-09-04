@@ -3,18 +3,34 @@ local Parser = {}
 local Controls = require("LUI.Controls")
 
 local tags = {
-    ["页面"] = "lui:Page", ["控件"] = "lui:Component", ["组件"] = "lui:Component", ["条件"] = "lui:If", ["循环"] = "lui:For", ["内容呈现器"] = "lui:Slot", ["插槽"] = "lui:Slot", ["预览"] = "lui:Preview", ["设值"] = "lui:Set",
-    ["网格"] = "Grid", ["画布"] = "Canvas", ["视图框"] = "Viewbox", ["堆叠面板"] = "StackPanel", ["换行面板"] = "WrapPanel", ["停靠面板"] = "DockPanel", ["均分网格"] = "UniformGrid", ["边框"] = "Border", ["内容控件"] = "ContentControl", ["面板"] = "Panel", ["横排"] = "Row", ["文本"] = "Text", ["按钮"] = "Button", ["卡片"] = "Card", ["滚动区"] = "Scroll", ["滚动查看器"] = "Scroll", ["进度条"] = "Progress", ["开关"] = "Toggle", ["滑块"] = "Slider", ["安全区"] = "SafeArea", ["弹窗"] = "Modal", ["分区"] = "Section", ["提示"] = "Notice", ["屏幕"] = "Screen", ["固定屏幕"] = "FixedScreen",
+    ["页面"] = "lui:Page", ["控件"] = "lui:Component", ["组件"] = "lui:Component", ["条件"] = "lui:If", ["重复项"] = "lui:For", ["循环"] = "lui:For", ["内容呈现器"] = "lui:Slot", ["插槽"] = "lui:Slot", ["预览"] = "lui:Preview", ["设值"] = "lui:Set",
+    ["容器"] = "Container", ["网格"] = "Grid", ["画布"] = "Canvas", ["视图框"] = "Viewbox", ["堆叠面板"] = "StackPanel", ["换行面板"] = "WrapPanel", ["停靠面板"] = "DockPanel", ["均分网格"] = "UniformGrid", ["边框"] = "Border", ["内容控件"] = "ContentControl", ["面板"] = "Panel", ["横排"] = "Row", ["文本"] = "Text", ["按钮"] = "Button", ["卡片"] = "Card", ["滚动区"] = "Scroll", ["滚动查看器"] = "Scroll", ["进度条"] = "Progress", ["开关"] = "Toggle", ["滑块"] = "Slider", ["安全区"] = "SafeArea", ["弹窗"] = "Modal", ["分区"] = "Section", ["提示"] = "Notice", ["屏幕"] = "Screen", ["固定屏幕"] = "FixedScreen",
 }
 local components = {
-    Header = "页眉", EquipmentSlots = "装备槽", PageShell = "页面外壳", ScrollRegion = "滚动区域", InformationPanel = "信息面板", SelectionList = "选择列表", TabView = "页签视图",
+    Header = "页眉", EquipmentSlots = "装备槽", ScrollRegion = "滚动区域", InformationPanel = "信息面板", SelectionList = "选择列表", TabView = "页签视图",
 }
 local attributeAliases = {
-    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["裁剪超出"] = "ClipToBounds", ["水平对齐"] = "HorizontalAlignment", ["垂直对齐"] = "VerticalAlignment", ["可见性"] = "Visibility", ["停靠"] = "Dock", ["最后子项填充"] = "LastChildFill", ["层级"] = "ZIndex", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["外观"] = "Variant", ["可见"] = "Visible", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["提交"] = "Submit", ["选择"] = "Select", ["打开"] = "Open", ["获得焦点"] = "Focus", ["失去焦点"] = "Blur", ["完成"] = "Complete", ["拖动开始"] = "DragStart", ["拖动结束"] = "DragEnd", ["拖动取消"] = "DragCancel", ["关闭"] = "Close", ["禁用"] = "Disabled", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["步长"] = "Step", ["占位文本"] = "Placeholder", ["项目"] = "Items", ["数据"] = "Data", ["选项"] = "Options", ["图标"] = "Icon", ["图片"] = "Image", ["资源"] = "Source", ["方向"] = "Orientation", ["列数"] = "Columns", ["行数"] = "Rows", ["间距"] = "Gap", ["类型"] = "Type", ["条件"] = "Test", ["集合"] = "In", ["循环项"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
+    ["名称"] = "x:Name", ["副名称"] = "x:DisplayName", ["引用"] = "x:Ref", ["宽度"] = "Width", ["高度"] = "Height", ["最小宽度"] = "MinWidth", ["最小高度"] = "MinHeight", ["最大宽度"] = "MaxWidth", ["最大高度"] = "MaxHeight", ["外边距"] = "Margin", ["内边距"] = "Padding", ["裁剪超出"] = "ClipToBounds", ["水平对齐"] = "HorizontalAlignment", ["垂直对齐"] = "VerticalAlignment", ["可见性"] = "Visibility", ["停靠"] = "Dock", ["最后子项填充"] = "LastChildFill", ["流向"] = "FlowDirection", ["层级"] = "ZIndex", ["渲染变换"] = "RenderTransform", ["渲染变换原点"] = "RenderTransformOrigin", ["布局变换"] = "LayoutTransform", ["行定义"] = "RowDefinitions", ["列定义"] = "ColumnDefinitions", ["行间距"] = "RowSpacing", ["列间距"] = "ColumnSpacing", ["网格.行"] = "Grid.Row", ["网格.列"] = "Grid.Column", ["网格.跨行"] = "Grid.RowSpan", ["网格.跨列"] = "Grid.ColumnSpan", ["画布.左"] = "Canvas.Left", ["画布.上"] = "Canvas.Top", ["画布.右"] = "Canvas.Right", ["画布.下"] = "Canvas.Bottom", ["背景"] = "Background", ["颜色"] = "Color", ["不透明度"] = "Opacity", ["圆角"] = "BorderRadius", ["样式"] = "Variant", ["外观"] = "Variant", ["可见"] = "Visible", ["文本"] = "Text", ["标题"] = "Title", ["副标题"] = "Subtitle", ["角标"] = "Corner", ["状态"] = "Status", ["说明"] = "Description", ["提示"] = "Hint", ["操作项"] = "ActionItems", ["字号"] = "FontSize", ["点击"] = "Click", ["变更"] = "Change", ["提交"] = "Submit", ["选择"] = "Select", ["打开"] = "Open", ["获得焦点"] = "Focus", ["失去焦点"] = "Blur", ["完成"] = "Complete", ["拖动开始"] = "DragStart", ["拖动结束"] = "DragEnd", ["拖动取消"] = "DragCancel", ["关闭"] = "Close", ["禁用"] = "Disabled", ["值"] = "Value", ["最大值"] = "Max", ["最小值"] = "Min", ["步长"] = "Step", ["占位文本"] = "Placeholder", ["项目"] = "Items", ["数据"] = "Data", ["选项"] = "Options", ["图标"] = "Icon", ["图片"] = "Image", ["资源"] = "Source", ["方向"] = "Orientation", ["列数"] = "Columns", ["行数"] = "Rows", ["间距"] = "Gap", ["类型"] = "Type", ["条件"] = "Test", ["集合"] = "In", ["循环项"] = "Each", ["路径"] = "Path", ["插槽名"] = "Name", ["错误"] = "Error", ["设置"] = "Settings", ["返回"] = "Back", ["武器文本"] = "WeaponText", ["护甲文本"] = "ArmorText", ["选择武器"] = "SelectWeapon", ["选择护甲"] = "SelectArmor", ["点击遮罩关闭"] = "CloseOnOverlay", ["显示关闭按钮"] = "ShowCloseButton", ["安全边"] = "Edges", ["安全区模式"] = "Mode", ["原生菜单安全区"] = "NativeMenuInset", ["锚点"] = "Anchor", ["左侧"] = "Left", ["顶部"] = "Top", ["右侧"] = "Right", ["底部"] = "Bottom", ["子项间距"] = "Gap", ["弹性增长"] = "FlexGrow", ["弹性基准"] = "FlexBasis", ["交叉轴对齐"] = "Align", ["主轴对齐"] = "Justify",
 }
 
+-- LUI 2.0 universal layout-host attributes.  Kept separate from the legacy
+-- aliases above so old source remains readable without advertising it.
+attributeAliases["子项排列"] = "ChildLayout"
+attributeAliases["允许换行"] = "Wrap"
+attributeAliases["固定子项宽度"] = "ChildWidth"
+attributeAliases["固定子项高度"] = "ChildHeight"
+attributeAliases["水平间隔"] = "HorizontalGap"
+attributeAliases["垂直间隔"] = "VerticalGap"
+attributeAliases["填充"] = "Fill"
+attributeAliases["边框宽度"] = "BorderWidth"
+attributeAliases["边框颜色"] = "BorderColor"
+attributeAliases["滚动条颜色"] = "ScrollbarColor"
+attributeAliases["水平滚动条可见性"] = "HorizontalScrollBarVisibility"
+attributeAliases["垂直滚动条可见性"] = "VerticalScrollBarVisibility"
+
 for internalName, descriptor in pairs(Controls) do
-    tags[descriptor.name] = internalName
+    -- 根与结构标签优先，不能被同名 UI.Widget（“控件”）覆盖。
+    tags[descriptor.name] = tags[descriptor.name] or internalName
     tags[internalName] = internalName
 end
 
@@ -60,8 +76,9 @@ local function readName(text, index)
     return text:sub(start, index - 1), index
 end
 
-local function parseAttributes(text, start, finish)
+local function parseAttributes(text, start, finish, imported)
     local parsedAttributes = {}
+    local rawAttributes = {}
     local index = start
     while index <= finish do
         index = skipSpace(text, index)
@@ -77,12 +94,14 @@ local function parseAttributes(text, start, finish)
         local valueStart = index + 1
         local close = text:find(quote, valueStart, true)
         if not close or close > finish + 1 then return nil, "LUI 属性没有结束引号：" .. name end
+        if rawAttributes[name] ~= nil then return nil, "LUI 属性重复：" .. name end
+        rawAttributes[name] = text:sub(valueStart, close - 1)
         name = canonicalAttr(name)
-        if parsedAttributes[name] ~= nil then return nil, "LUI 属性重复：" .. name end
+        if parsedAttributes[name] ~= nil and not imported then return nil, "LUI 属性重复：" .. name end
         parsedAttributes[name] = text:sub(valueStart, close - 1)
         index = close + 1
     end
-    return parsedAttributes
+    return parsedAttributes, nil, rawAttributes
 end
 
 local function makeSymbolPool()
@@ -146,11 +165,11 @@ function Parser.Parse(text, path)
                 local node = table.remove(stack)
                 if not node or node.tag ~= tag then return nil, string.format("%s:%d LUI 结束标签不匹配：%s", path, openStart, tag) end
             else
-                local nodeAttributes, attrErr = parseAttributes(text, index, attrFinish)
+                local nodeAttributes, attrErr, rawAttributes = parseAttributes(text, index, attrFinish, tag:find(":", 1, true) and tag:sub(1,4) ~= "lui:")
                 if not nodeAttributes then return nil, string.format("%s:%d %s", path, openStart, attrErr) end
                 local valid, message = validateDesignName(nodeAttributes, path, openStart)
                 if not valid then return nil, message end
-                local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = nodeAttributes, attrSymbols = {}, children = {}, sourcePath = path }
+                local node = { kind = "Element", tag = tag, tagSymbol = pool:Intern(tag), attrs = nodeAttributes, rawAttrs = rawAttributes, attrSymbols = {}, children = {}, sourcePath = path }
                 for name in pairs(nodeAttributes) do node.attrSymbols[pool:Intern(name)] = true end
                 if not root then root = node elseif #stack == 0 then return nil, string.format("%s:%d LUI 只能有一个根元素。", path, openStart) end
                 if #stack > 0 then stack[#stack].children[#stack[#stack].children + 1] = node end

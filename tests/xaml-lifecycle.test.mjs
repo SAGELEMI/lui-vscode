@@ -1,0 +1,34 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+test("templates and runtime use same-name InitializeComponent classes and pure markup rendering", async () => {
+  const host = await readFile("src/extension.ts", "utf8");
+  const runtime = await readFile("packages/runtime-urhox-lua/adapter/Runtime.lua", "utf8");
+  const vocabulary = await readFile("packages/spec/src/vocabulary.ts", "utf8");
+  const spec = await readFile("packages/spec/src/index.ts", "utf8");
+  const designer = await readFile("src/webview/designer.ts", "utf8");
+  assert.match(host, /function luaClassName/);
+  assert.match(host, /InitializeComponent/);
+  assert.match(host, /只渲染同名 \.lui/);
+  assert.doesNotMatch(host.slice(host.indexOf("function templateFor"), host.indexOf("async function createLuiPair")), /\.Build\(/);
+  assert.match(runtime, /function Runtime:CreateRegistered/);
+  assert.match(runtime, /function Runtime:RenderMarkup/);
+  assert.match(runtime, /function Runtime:CreateComponent/);
+  assert.match(runtime, /local alias, componentName/);
+  assert.match(runtime, /for attributeName, attributeValue in pairs\(attrs\)/);
+  assert.match(runtime, /instanceErr or \("LUI 组件实例化失败："/);
+  assert.match(runtime, /GetRoot = function\(\) return fallbackRoot end/);
+  assert.doesNotMatch(runtime, /local alias, name = tag:match/);
+  assert.doesNotMatch(runtime, /GetRoot = function\(self\)/);
+  assert.match(runtime, /local function commandSpec/);
+  assert.match(vocabulary, /export interface LuiCommand/);
+  assert.match(spec, /function validateCommand/);
+  assert.match(host, /id="fit"/);
+  assert.match(designer, /function fitArtboard/);
+  assert.match(designer, /ResizeObserver/);
+  assert.doesNotMatch(designer, /autoFitArtboard/);
+  assert.doesNotMatch(designer, /new ResizeObserver\(resize\)\.observe\(stage\)/);
+  assert.match(designer, /designerEditResult/);
+  assert.match(host, /id="source-maximize"/);
+});

@@ -7,7 +7,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 
 const tagMap = {
-  "lui:Page": "页面", "lui:Component": "组件", "lui:If": "条件", "lui:For": "循环", "lui:Slot": "插槽", "lui:Preview": "预览", "lui:Set": "设值",
+  "lui:Page": "页面", "lui:Component": "组件", "lui:If": "条件", "lui:For": "重复项", "lui:Slot": "插槽", "lui:Preview": "预览", "lui:Set": "设值",
   Panel: "面板", Row: "横排", Text: "文本", Button: "按钮", Card: "卡片", Scroll: "滚动区", Progress: "进度条", Toggle: "开关", Slider: "滑块", SafeArea: "安全区", Modal: "弹窗", Section: "分区", Notice: "提示", Screen: "屏幕", FixedScreen: "固定屏幕"
 };
 const attributeMap = {

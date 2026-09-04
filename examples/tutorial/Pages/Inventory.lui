@@ -1,0 +1,15 @@
+<页面 目录:积木="Presentation/Components" 名称="Inventory" 副名称="物品示例" 宽度="390" 高度="844">
+  <容器 子项排列="垂直" 内边距="20" 垂直间隔="12">
+    <积木:操作卡 标题="选择一个物品" 确认="{动作 Confirm}" 条目="{绑定 view.rows, 预览内容='[{&quot;id&quot;:&quot;potion&quot;,&quot;title&quot;:&quot;药水&quot;},{&quot;id&quot;:&quot;key&quot;,&quot;title&quot;:&quot;钥匙&quot;}]'}">
+      <滚动查看器 高度="240" 水平滚动条可见性="禁用" 垂直滚动条可见性="自动">
+        <容器 子项排列="垂直" 垂直间隔="8">
+          <重复项 项目="row" 集合="{绑定 props['条目']}">
+            <按钮 文本="{绑定 row.title}" 点击="{动作 Select}" />
+          </重复项>
+        </容器>
+      </滚动查看器>
+    </积木:操作卡>
+    <文本 引用="DetailText" 文本="{绑定 view.detail, 预览内容='请选择物品'}" />
+    <按钮 文本="返回" 点击="{动作 Back}" />
+  </容器>
+</页面>

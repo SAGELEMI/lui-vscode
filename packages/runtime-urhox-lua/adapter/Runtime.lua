@@ -2,6 +2,10 @@ local UI = require("urhox-libs/UI")
 local Parser = require("LUI.Parser")
 local Components = require("Presentation.Components")
 local Controls = require("LUI.Controls")
+local Alignment = require("LUI.Alignment")
+local Paths = require("LUI.Paths")
+local Properties = require("LUI.Properties")
+local Scrollbars = require("LUI.Scrollbars")
 
 -- LUI.Runtime 将纯声明式节点映射到 UrhoX UI。所有业务代码必须留在同名 .lui.lua。
 local Runtime = {}
@@ -47,12 +51,14 @@ local function bindingSpec(value)
     local parts, current, quote = {}, "", nil
     for index = 1, #body do
         local char = body:sub(index, index)
-        if (char == "'" or char == "\"") and (not quote or quote == char) then quote = quote and nil or char end
+        if (char == "'" or char == "\"") and (not quote or quote == char) then
+            if quote then quote = nil else quote = char end
+        end
         if char == "," and not quote then table.insert(parts, current); current = "" else current = current .. char end
     end
     table.insert(parts, current)
-    local path = (parts[1] or ""):match("^%s*([A-Za-z][A-Za-z0-9_.%-]*)%s*$")
-    if not path then return nil end
+    local path = (parts[1] or ""):match("^%s*(.-)%s*$")
+    if not Paths.Keys(path) then return nil end
     local spec = { path = path, mode = "单向", updateSourceTrigger = "默认" }
     for index = 2, #parts do
         local key, option = parts[index]:match("^%s*([^=]+)%s*=%s*(.-)%s*$")
@@ -70,16 +76,28 @@ local function bindingPath(value)
 end
 
 local function actionName(value)
-    return type(value) == "string" and (value:match("^{动作%s+([A-Za-z][A-Za-z0-9_.%-]*)}$") or value:match("^{Action%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")) or nil
+    if type(value) ~= "string" then return nil end
+    -- Component loops may bind an action key from a view-model item.  It is
+    -- still resolved only against context.actions; no Lua source is evaluated.
+    return value:match("^{动作%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")
+        or value:match("^{Action%s+([A-Za-z][A-Za-z0-9_.%-]*)}$")
+        or value:match("^([A-Za-z][A-Za-z0-9_.%-]*)$")
+end
+
+local function commandSpec(value)
+    if type(value) ~= "string" then return nil end
+    local body = value:match("^{命令%s+(.+)}$")
+    if not body then return nil end
+    local name = body:match("^([^,%s]+)")
+    local allowed = { ["设值"] = true, ["可见性"] = true, ["页签"] = true, ["导航"] = true, ["关闭"] = true }
+    if not allowed[name] then return { invalid = true, name = name } end
+    local args = {}
+    for key, quote, raw in body:gmatch(",%s*([^=,%s]+)%s*=%s*(['\"])(.-)%2") do args[key] = raw end
+    return { name = name, args = args }
 end
 
 local function resolvePath(context, path)
-    local value = context
-    for key in tostring(path or ""):gmatch("[^%.]+") do
-        if type(value) ~= "table" then return nil end
-        value = value[key]
-    end
-    return value
+    return Paths.Get(context, path)
 end
 
 local function resolve(value, context)
@@ -96,21 +114,11 @@ local function setPath(context, path, value)
     -- Old designs addressed the view-model at the context root.  Keep that
     -- source compatible while canonical LUI 0.7 writes explicit view.* paths.
     local rawPath = tostring(path or "")
-    if not rawPath:find("%.") and type(context.view) == "table" and rawget(context, rawPath) == nil then
+    if not rawPath:find("%.") and not rawPath:find("[", 1, true) and type(context.view) == "table" and rawget(context, rawPath) == nil then
         context.view[rawPath] = value
         return true
     end
-    local parent, last = context, nil
-    for key in rawPath:gmatch("[^%.]+") do
-        if last then
-            if type(parent[last]) ~= "table" then return false end
-            parent = parent[last]
-        end
-        last = key
-    end
-    if not last or type(parent) ~= "table" then return false end
-    parent[last] = value
-    return true
+    return Paths.Set(context, rawPath, value)
 end
 
 local function color(value)
@@ -159,6 +167,37 @@ local function thicknessParts(value)
     return values[4] or 0, values[1] or 0, values[2] or 0, values[3] or 0
 end
 
+-- Compact LUI transform grammar: 缩放(1.1);旋转(15);平移(8,0);倾斜(0,0).
+-- UrhoX UI owns rendering and hit testing for scale/rotate/translate.  Skew is
+-- retained in the descriptor for Studio parity; current public UI.Widget has no
+-- skew primitive, so it intentionally remains a layout-only bounding-box input.
+local function transformSpec(value)
+    local result = { scale = 1, rotate = 0, translateX = 0, translateY = 0, skewX = 0, skewY = 0 }
+    for kind, raw in tostring(value or ""):gmatch("([^%(;]+)%s*%(([^%)]*)%)") do
+        local values = {}
+        for part in raw:gmatch("[^,]+") do values[#values + 1] = tonumber(part:match("^%s*(.-)%s*$")) or 0 end
+        kind = kind:match("^%s*(.-)%s*$")
+        if kind == "缩放" then result.scale = values[1] == 0 and 1 or values[1]
+        elseif kind == "旋转" then result.rotate = values[1] or 0
+        elseif kind == "平移" then result.translateX, result.translateY = values[1] or 0, values[2] or 0
+        elseif kind == "倾斜" then result.skewX, result.skewY = values[1] or 0, values[2] or 0 end
+    end
+    return result
+end
+
+local function transformOrigin(value)
+    local x, y = tostring(value or "0,0"):match("^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
+    if x and y then return { x = tonumber(x) or 0, y = tonumber(y) or 0 } end
+    return "top-left"
+end
+
+local function transformedBounds(width, height, transform)
+    local scale = math.abs(transform.scale or 1)
+    local radians = math.rad(transform.rotate or 0)
+    local cosine, sine = math.abs(math.cos(radians)), math.abs(math.sin(radians))
+    return (width * scale * cosine) + (height * scale * sine), (width * scale * sine) + (height * scale * cosine)
+end
+
 local function propsFor(attrs, context)
     local props = {}
     local numeric = { Width = "width", Height = "height", MinWidth = "minWidth", MinHeight = "minHeight", MaxWidth = "maxWidth", MaxHeight = "maxHeight", FontSize = "fontSize", Opacity = "opacity", BorderRadius = "borderRadius", ZIndex = "zIndex" }
@@ -169,6 +208,8 @@ local function propsFor(attrs, context)
     if attrs.Margin ~= nil then props.margin = thickness(resolve(attrs.Margin, context)) end
     if attrs.Padding ~= nil then props.padding = thickness(resolve(attrs.Padding, context)) end
     if attrs.Background then props.backgroundColor = color(resolve(attrs.Background, context)) end
+    if attrs.BorderWidth then props.borderWidth = tonumber(resolve(attrs.BorderWidth, context)) or 0 end
+    if attrs.BorderColor then props.borderColor = color(resolve(attrs.BorderColor, context)) end
     if attrs.Color then props.fontColor = color(resolve(attrs.Color, context)) end
     if attrs.Variant then props.variant = enumValue("Variant", resolve(attrs.Variant, context)) end
     if attrs.Disabled then local value = enumValue("Disabled", resolve(attrs.Disabled, context)); props.disabled = value == true or value == "true" end
@@ -200,6 +241,19 @@ local function propsFor(attrs, context)
         local value = resolve(attrs.Visibility, context)
         props.visible = not isCollapsed(value) and value ~= "隐藏"
     end
+    local render = transformSpec(resolve(attrs.RenderTransform, context))
+    if attrs.RenderTransform ~= nil then
+        props.scale, props.rotate = render.scale, render.rotate
+        props.translateX, props.translateY = render.translateX, render.translateY
+        props.transformOrigin = transformOrigin(resolve(attrs.RenderTransformOrigin, context))
+    end
+    -- LayoutTransform is visually applied too, but arrangement below uses its
+    -- transformed bounds. WPF ignores TranslateTransform in LayoutTransform.
+    if attrs.LayoutTransform ~= nil then
+        local layout = transformSpec(resolve(attrs.LayoutTransform, context))
+        props.scale, props.rotate = layout.scale, layout.rotate
+        props.transformOrigin = transformOrigin(resolve(attrs.RenderTransformOrigin, context))
+    end
     return props
 end
 
@@ -208,12 +262,41 @@ local function invokeAction(context, key, ...)
     local callback = context.actions and context.actions[key]
     if callback then return callback(...) end
 end
+local function invokeCommand(context, spec)
+    if not spec or spec.invalid then return false end
+    local args = spec.args or {}
+    if spec.name == "设值" or spec.name == "可见性" then
+        local path, value = args["路径"], args["值"]
+        if type(path) ~= "string" or not path:match("^view%.[A-Za-z][A-Za-z0-9_.-]*$") then return false end
+        if not setPath(context, path, value) then return false end
+        if context.bindings then context.bindings:Notify(path) end
+        if context.presentation and context.presentation.Render then context.presentation:Render() end
+        return true
+    elseif spec.name == "页签" then
+        if context.presentation and context.presentation.SetComponentTab and args["键"] and args["值"] then
+            context.presentation:SetComponentTab(args["键"], args["值"])
+            if context.presentation.Render then context.presentation:Render() end
+            return true
+        end
+    elseif spec.name == "导航" then
+        if context.presentation and context.presentation.Navigate and args["目标"] then context.presentation:Navigate(args["目标"]); return true end
+    elseif spec.name == "关闭" then
+        local widget = args["目标"] and context.refs and context.refs[args["目标"]]
+        if widget and widget.Close then widget:Close(); return true end
+    end
+    return false
+end
 local function wireControlEvents(props, attrs, context, descriptor)
     for _, event in ipairs(descriptor.events or {}) do
-        local action = actionName(resolve(attrs[event], context))
-        if action then props[EVENT_CALLBACKS[event]] = function(_, ...)
-            return invokeAction(context, action, ...)
-        end end
+        local eventValue = resolve(attrs[event], context)
+        local action, command = actionName(eventValue), commandSpec(eventValue)
+        if action then
+            props[EVENT_CALLBACKS[event]] = function(_, ...)
+                return invokeAction(context, action, ...)
+            end
+        elseif command then
+            props[EVENT_CALLBACKS[event]] = function() return invokeCommand(context, command) end
+        end
     end
     local binding = descriptor.bindable and bindingSpec(attrs[descriptor.bindable]) or nil
     if binding and binding.mode ~= "单向" and binding.mode ~= "单次" then
@@ -282,7 +365,9 @@ local function trackSizes(definitions, total, gap, entries, axis)
         local start = axis == "row" and entry.row or entry.column
         local span = axis == "row" and entry.rowSpan or entry.columnSpan
         local layout = entry.widget:GetLayout()
-        local desired = axis == "row" and layout.h or layout.w
+        local transform = transformSpec(entry.attrs.LayoutTransform)
+        local transformedW, transformedH = transformedBounds(layout.w or 0, layout.h or 0, transform)
+        local desired = axis == "row" and transformedH or transformedW
         if span == 1 and definitions[start] and definitions[start].kind == "auto" then size[start] = math.max(size[start], desired or 0) end
     end
     for index, definition in ipairs(definitions) do if definition.kind == "auto" then occupied = occupied + size[index] end end
@@ -318,17 +403,18 @@ local function arrangeFrame(widget, x, y, width, height, attrs, context)
     width, height = math.max(0, width - left - right), math.max(0, height - top - bottom)
     local layout = widget:GetLayout()
     local desiredW, desiredH = layout.w or 0, layout.h or 0
-    local horizontal, vertical = resolve(attrs.HorizontalAlignment, context), resolve(attrs.VerticalAlignment, context)
-    if horizontal and horizontal ~= "拉伸" then
-        local actualW = math.min(width, tonumber(resolve(attrs.Width, context)) or desiredW)
-        if horizontal == "居中" then x = x + (width - actualW) * 0.5 elseif horizontal == "右" then x = x + width - actualW end
-        width = actualW
-    end
-    if vertical and vertical ~= "拉伸" then
-        local actualH = math.min(height, tonumber(resolve(attrs.Height, context)) or desiredH)
-        if vertical == "居中" then y = y + (height - actualH) * 0.5 elseif vertical == "下" then y = y + height - actualH end
-        height = actualH
-    end
+    local minW, minH = tonumber(resolve(attrs.MinWidth, context)) or 0, tonumber(resolve(attrs.MinHeight, context)) or 0
+    local maxW, maxH = tonumber(resolve(attrs.MaxWidth, context)), tonumber(resolve(attrs.MaxHeight, context))
+    desiredW, desiredH = math.max(minW, desiredW), math.max(minH, desiredH)
+    if maxW then desiredW = math.min(desiredW, maxW) end
+    if maxH then desiredH = math.min(desiredH, maxH) end
+    local layoutTransform = transformSpec(resolve(attrs.LayoutTransform, context))
+    local transformedW, transformedH = transformedBounds(desiredW, desiredH, layoutTransform)
+    local horizontal, vertical = resolve(attrs.VerticalAlignment, context), resolve(attrs.HorizontalAlignment, context)
+    local explicitW = numberOrPercent(resolve(attrs.Width, context), width)
+    local explicitH = numberOrPercent(resolve(attrs.Height, context), height)
+    x, width = Alignment.Axis(x, width, transformedW, explicitW, minW, maxW, horizontal)
+    y, height = Alignment.Axis(y, height, transformedH, explicitH, minH, maxH, vertical)
     applyFrame(widget, x, y, width, height)
 end
 
@@ -342,7 +428,15 @@ local function layoutPanel(props, entries, mode, attrs, context)
         local left, top, right, bottom = thicknessParts(resolve(attrs.Padding, context))
         local contentX, contentY = rect.x + left, rect.y + top
         local contentW, contentH = math.max(0, rect.w - left - right), math.max(0, rect.h - top - bottom)
-        if mode == "Canvas" then
+        if mode == "Free" then
+            -- LUI 2.0 free layout: every direct child receives the same content
+            -- rectangle.  Later children render above earlier children.
+            for index, entry in ipairs(entries) do
+                local child = entry.widget
+                if entry.attrs.ZIndex == nil then child.props.zIndex = index end
+                arrangeFrame(child, contentX, contentY, contentW, contentH, entry.attrs, context)
+            end
+        elseif mode == "Canvas" then
             for _, entry in ipairs(entries) do
                 local child = entry.widget; local layout = child:GetLayout()
                 local childW, childH = layout.w, layout.h
@@ -371,6 +465,112 @@ local function layoutPanel(props, entries, mode, attrs, context)
                 arrangeFrame(entry.widget, x, y, width, height, entry.attrs, context)
             end
         end
+        baseRender(self, nvg)
+    end
+    return panel
+end
+
+-- The one reusable LUI 2.0 host.  Free layout is measured/arranged manually
+-- to guarantee overlap semantics; flow layouts use the UI flex engine after
+-- applying the exact parent-owned spacing and direct-child size contract.
+local function flowSlot(entry, mode, attrs, context)
+    local child = entry.widget
+    local slotProps = { minWidth = 0, minHeight = 0, alignSelf = "stretch", alignItems = "flex-start", flexShrink = 0 }
+    local fill = resolve(entry.attrs.Fill, context) == "是"
+    if fill then slotProps.flexGrow, slotProps.flexShrink, slotProps.flexBasis = 1, 1, 0 end
+    local childAttrs = {}
+    for key, value in pairs(entry.attrs) do childAttrs[key] = value end
+    for key, dimension in pairs({ ChildWidth = "Width", ChildHeight = "Height" }) do
+        local fixed = resolve(attrs[key], context)
+        if fixed then childAttrs[dimension] = fixed; child:SetStyle({ [dimension == "Width" and "width" or "height"] = layoutValue(fixed) }) end
+    end
+    local main = mode == "水平" and "Width" or "Height"
+    local mainSize = resolve(childAttrs[main], context)
+    if type(mainSize) == "string" and mainSize:find("%%") and not fill then slotProps[main == "Width" and "width" or "height"] = mainSize end
+    slotProps.zIndex = child.props.zIndex
+    local slot = UI.Panel(slotProps)
+    slot:AddChild(child)
+    local baseRender = slot.Render
+    function slot:Render(nvg)
+        local rect = self:GetAbsoluteLayout()
+        arrangeFrame(child, rect.x, rect.y, rect.w, rect.h, childAttrs, context)
+        baseRender(self, nvg)
+    end
+    return slot
+end
+
+local function unifiedPanel(props, entries, attrs, context)
+    local mode = resolve(attrs.ChildLayout, context) or "自由"
+    if mode == "自由" then return layoutPanel(props, entries, "Free", attrs, context) end
+    props.children = {}
+    props.flexDirection = mode == "水平" and "row" or "column"
+    props.flexWrap = resolve(attrs.Wrap, context) == "是" and "wrap" or "nowrap"
+    props.gap = numberOrPercent(resolve(mode == "水平" and attrs.HorizontalGap or attrs.VerticalGap, context), 0) or 0
+    local panel = UI.Panel(props)
+    for index, entry in ipairs(entries) do
+        local child = entry.widget
+        local fixed = mode == "水平" and resolve(attrs.ChildWidth, context) or resolve(attrs.ChildHeight, context)
+        if fixed and fixed ~= "自动" then child.props[mode == "水平" and "width" or "height"] = layoutValue(fixed) end
+        if entry.attrs.ZIndex == nil then child.props.zIndex = index end
+        panel:AddChild(flowSlot(entry, mode, attrs, context))
+    end
+    return panel
+end
+
+-- Every paired visual tag may host authored child controls.  Widgets that are
+-- already interactive (notably Button) retain their visual and hit behavior;
+-- this only supplies the same direct-child flow contract used by <容器>.
+local function configureVisualHost(props, children, attrs, context)
+    if #children == 0 then return end
+    local mode = resolve(attrs.ChildLayout, context) or "自由"
+    -- Native controls use Yoga children. Composite controls should declare a
+    -- flow direction explicitly; keep a safe column fallback for older markup.
+    if mode == "自由" then mode = "垂直" end
+    props.flexDirection = mode == "水平" and "row" or "column"
+    props.flexWrap = resolve(attrs.Wrap, context) == "是" and "wrap" or "nowrap"
+    props.gap = numberOrPercent(resolve(mode == "水平" and attrs.HorizontalGap or attrs.VerticalGap, context), 0) or 0
+    if mode == "垂直" then props.alignItems = "flex-start" end
+end
+
+-- DockPanel owns the remaining rectangle, exactly like WPF: each direct child
+-- consumes one edge in declaration order; the final child fills by default.
+local function dockPanel(props, entries, attrs, context)
+    props.children = {}
+    local panel = UI.Panel(props)
+    for _, entry in ipairs(entries) do panel:AddChild(entry.widget) end
+    local baseRender = panel.Render
+    function panel:Render(nvg)
+        local rect = self:GetAbsoluteLayout()
+        local leftPadding, topPadding, rightPadding, bottomPadding = thicknessParts(resolve(attrs.Padding, context))
+        local left, top = rect.x + leftPadding, rect.y + topPadding
+        local right, bottom = rect.x + math.max(0, rect.w - rightPadding), rect.y + math.max(0, rect.h - bottomPadding)
+        local fillLast = resolve(attrs.LastChildFill, context) ~= "否"
+        for index, entry in ipairs(entries) do
+            local last = index == #entries
+            if last and fillLast then
+                arrangeFrame(entry.widget, left, top, math.max(0, right - left), math.max(0, bottom - top), entry.attrs, context)
+            else
+                local layout = entry.widget:GetLayout()
+                local marginLeft, marginTop, marginRight, marginBottom = thicknessParts(resolve(entry.attrs.Margin, context))
+                local desiredW = math.max(0, (layout.w or 0) + marginLeft + marginRight)
+                local desiredH = math.max(0, (layout.h or 0) + marginTop + marginBottom)
+                local dock = resolve(entry.attrs.Dock, context) or "左"
+                if dock == "右" then
+                    local width = math.min(math.max(0, right - left), desiredW)
+                    right = right - width; arrangeFrame(entry.widget, right, top, width, math.max(0, bottom - top), entry.attrs, context)
+                elseif dock == "上" then
+                    local height = math.min(math.max(0, bottom - top), desiredH)
+                    arrangeFrame(entry.widget, left, top, math.max(0, right - left), height, entry.attrs, context); top = top + height
+                elseif dock == "下" then
+                    local height = math.min(math.max(0, bottom - top), desiredH)
+                    bottom = bottom - height; arrangeFrame(entry.widget, left, bottom, math.max(0, right - left), height, entry.attrs, context)
+                else
+                    local width = math.min(math.max(0, right - left), desiredW)
+                    arrangeFrame(entry.widget, left, top, width, math.max(0, bottom - top), entry.attrs, context); left = left + width
+                end
+            end
+        end
+        self.luiLayoutProbe_ = { kind = "DockPanel", x = rect.x, y = rect.y, width = rect.w, height = rect.h, contentWidth = math.max(0, right - left), contentHeight = math.max(0, bottom - top) }
         baseRender(self, nvg)
     end
     return panel
@@ -500,6 +700,39 @@ function Runtime:LoadCode(path)
     return code, nil
 end
 
+-- Build a single binding context for both WPF-style instances and the legacy
+-- Build adapter.  The markup renderer never loads code; a component instance
+-- supplies its already-created declaration here instead.
+function Runtime:CreateMarkupContext(document, declaration, inherited)
+    local imports, importsErr = self:ImportsFor(document)
+    if not imports then return nil, importsErr end
+    declaration = declaration or {}
+    local view = declaration.view or {}
+    local context = setmetatable({ view = view }, { __index = inherited or view })
+    context.actions = declaration.actions or (inherited and inherited.actions) or {}
+    context.refs = declaration.refs or (inherited and inherited.refs) or {}
+    context.props = declaration.props or (inherited and inherited.props) or {}
+    context.slots = declaration.slots or (inherited and inherited.slots) or {}
+    context.imports = imports
+    context.componentStack = declaration.componentStack or (inherited and inherited.componentStack) or {}
+    context.presentation = declaration.presentation or (inherited and inherited.presentation)
+    context.owner = declaration.owner
+    context.bindings = { pending = {} }
+    function context.bindings:Notify(path)
+        if declaration.OnBindingChanged then declaration.OnBindingChanged(path, context)
+        elseif context.owner and context.owner.OnBindingChanged then context.owner:OnBindingChanged(path, context) end
+    end
+    function context.bindings:Commit(path)
+        local value = self.pending[path]
+        if value == nil then return false end
+        self.pending[path] = nil
+        if not setPath(context, path, value) then return false end
+        self:Notify(path)
+        return true
+    end
+    return context, nil
+end
+
 function Runtime:LoadLegacyComponent(name)
     local descriptor = (self.config_.documents or {})[name]
     if not descriptor then return nil, nil end
@@ -531,7 +764,8 @@ function Runtime:LoadDirectoryComponent(directory, name)
     if not descriptor then return nil, "LUI 目录 " .. directory .. " 未登记组件：" .. tostring(name) end
     local path = type(descriptor) == "table" and descriptor.markup or descriptor
     if type(path) ~= "string" or not inAllowedRoot(path, self.config_.sourceRoots) then return nil, "LUI 组件路径不在白名单内：" .. tostring(path) end
-    return self:LoadDocument(path)
+    local document, err = self:LoadDocument(path)
+    return document, err, path
 end
 
 function Runtime:HasRegisteredComponentName(name)
@@ -561,6 +795,61 @@ local function hasContentPresenter(node)
     return false
 end
 
+function Runtime:RenderMarkup(markupPath, declaration, inherited)
+    local document, documentErr = self:LoadDocument(markupPath)
+    if not document then return nil, documentErr end
+    local context, contextErr = self:CreateMarkupContext(document, declaration, inherited)
+    if not context then return nil, contextErr end
+    local root = self:BuildNode(document, context)
+    if document.tag == "lui:Page" and root then root = UI.SafeAreaView { width = "100%", height = "100%", children = { root } } end
+    local afterMount = declaration and declaration.AfterMount
+    if afterMount then afterMount(root, context) end
+    local owner = declaration and declaration.owner
+    if owner and owner.OnLoaded then owner:OnLoaded(root, context) end
+    return root, context
+end
+
+-- Imported controls are real instances too.  Their class receives the parent
+-- binding context, resolved props and authored content, then renders only its
+-- own markup through RenderMarkup.
+function Runtime:CreateComponent(markupPath, parentContext, properties, slots, rawProperties, propertyExpressions)
+    local descriptor = { markup = markupPath, code = markupPath .. ".lua" }
+    local code, codeErr = self:LoadCode(descriptor.code)
+    if not code then return nil, codeErr end
+    properties = Properties.Apply(code.Properties, code.Properties and (rawProperties or properties) or properties)
+    if code.Properties and propertyExpressions then
+        local values, bindings = properties, {}
+        for propertyName in pairs(code.Properties) do
+            local binding = bindingSpec(propertyExpressions[propertyName])
+            if binding and binding.mode ~= "单次" then bindings[propertyName] = binding end
+        end
+        properties = setmetatable({}, {
+            __index = function(_, propertyName)
+                local binding = bindings[propertyName]
+                if binding and binding.mode ~= "单向到源" then
+                    local value = resolvePath(parentContext, binding.path)
+                    if value ~= nil then return value end
+                end
+                return values[propertyName]
+            end,
+            __newindex = function(_, propertyName, value)
+                values[propertyName] = value
+                local binding = bindings[propertyName]
+                if binding and (binding.mode == "双向" or binding.mode == "单向到源") then
+                    if setPath(parentContext, binding.path, value) and parentContext.bindings then parentContext.bindings:Notify(binding.path) end
+                end
+            end,
+            __pairs = function() return pairs(values) end,
+        })
+    end
+    if type(code.New) == "function" then return code.New(parentContext, self, descriptor, properties, slots) end
+    -- Compatibility for an external pre-2.1 component. It is intentionally
+    -- not emitted by Studio templates or this project's migrated files.
+    local declaration = code.Build and code.Build(parentContext) or { view = {}, actions = {} }
+    declaration.props, declaration.slots = properties, slots
+    return self:RenderMarkup(markupPath, declaration, parentContext)
+end
+
 -- Grid/Canvas own their children's placement. This keeps the layout declaration in
 -- .lui while preserving the regular builder for controls and imported components.
 function Runtime:BuildLayoutEntries(nodes, context)
@@ -578,7 +867,7 @@ function Runtime:BuildLayoutEntries(nodes, context)
         if node.tag == "lui:For" then
             local path = bindingPath(attrs.In) or ""
             local values = resolvePath(activeContext, path) or {}
-            local name = attrs.Each or "item"
+            local name = attrs.Items or attrs.Each or "item"
             for index, value in ipairs(values) do
                 local nextContext = setmetatable({ [name] = value, item = value, index = index }, { __index = activeContext })
                 for _, child in ipairs(visualChildren) do appendNode(child, nextContext) end
@@ -625,7 +914,7 @@ function Runtime:BuildNode(node, context)
     if tag == "lui:For" then
         local path = bindingPath(attrs.In) or ""
         local values = resolvePath(context, path) or {}
-        local name = attrs.Each or "item"
+        local name = attrs.Items or attrs.Each or "item"
         local items = {}
         for index, value in ipairs(values) do
             local nextContext = setmetatable({ [name] = value, item = value, index = index }, { __index = context })
@@ -643,13 +932,13 @@ function Runtime:BuildNode(node, context)
     if tag == "lui:Component" then
         return controlSurface(self:BuildChildren(visualChildren, context), attrs, context)
     end
-    local component, componentErr, componentKey = nil, nil, nil
-    local alias, name = tag:match("^([^:]+):(.+)$")
+    local component, componentErr, componentKey, componentPath = nil, nil, nil, nil
+    local alias, componentName = tag:match("^([^:]+):(.+)$")
     if alias and alias ~= "lui" then
-        local directory = context.imports and context.imports[alias]
-        if not directory then error("LUI 组件 " .. tostring(tag) .. " 未在当前根节点导入目录别名 " .. tostring(alias) .. "。") end
-        component, componentErr = self:LoadDirectoryComponent(directory, name)
-        componentKey = directory .. ":" .. name
+        local importDirectory = context.imports and context.imports[alias] or nil
+        if not importDirectory then error("LUI 组件 " .. tostring(tag) .. " 未在当前根节点导入目录别名 " .. tostring(alias) .. "。") end
+        component, componentErr, componentPath = self:LoadDirectoryComponent(importDirectory, componentName)
+        componentKey = importDirectory .. ":" .. componentName
     elseif self.isV2_ and self:HasRegisteredComponentName(tag) then
         error("LUI v3 组件必须使用目录别名：<目录别名:" .. tostring(tag) .. ">。")
     elseif not self.isV2_ then
@@ -658,6 +947,7 @@ function Runtime:BuildNode(node, context)
     end
     if componentErr then error(componentErr) end
     if component then
+        if not componentKey then error("LUI 组件缺少稳定加载键：" .. tostring(tag)) end
         local componentStack = context.componentStack or {}
         if componentStack[componentKey] then error("LUI 组件循环依赖：" .. componentKey) end
         componentStack[componentKey] = true
@@ -665,16 +955,26 @@ function Runtime:BuildNode(node, context)
             componentStack[componentKey] = nil
             error("LUI 控件 <" .. tostring(tag) .. "> 未声明 <内容呈现器 />，不能传入子内容。")
         end
-        local componentImports, importsErr = self:ImportsFor(component)
-        if not componentImports then componentStack[componentKey] = nil; error(importsErr) end
-        local properties = {}
-        for name, value in pairs(attrs) do properties[name] = resolve(value, context) end
-        local componentContext = setmetatable({
-            props = properties, actions = context.actions, slots = { Content = visualChildren }, refs = context.refs,
-            imports = componentImports, componentStack = componentStack,
-        }, { __index = context })
-        local rendered = self:BuildNode(component, componentContext)
+        local propertyValues = {}
+        for attributeName, attributeValue in pairs(attrs) do propertyValues[attributeName] = resolve(attributeValue, context) end
+        local componentContext = setmetatable({ props = propertyValues, slots = { Content = visualChildren }, componentStack = componentStack }, { __index = context })
+        local instance, instanceErr
+        if componentPath then
+            local rawValues = {}
+            for name, value in pairs(node.rawAttrs or attrs) do rawValues[name] = resolve(value, context) end
+            instance, instanceErr = self:CreateComponent(componentPath, context, propertyValues, { Content = visualChildren }, rawValues, node.rawAttrs or attrs)
+        else
+            -- Legacy document descriptors do not provide a paired class.
+            local componentImports, importsErr = self:ImportsFor(component)
+            if not componentImports then componentStack[componentKey] = nil; error(importsErr or ("LUI 组件导入失败：" .. tostring(tag))) end
+            componentContext.imports = componentImports
+            instance = self:BuildNode(component, componentContext)
+        end
         componentStack[componentKey] = nil
+        if not instance then error(instanceErr or ("LUI 组件实例化失败：" .. tostring(tag))) end
+        local rendered = instance
+        if type(instance) == "table" and type(instance.GetRoot) == "function" then rendered = instance:GetRoot() end
+        if not rendered then error("LUI 组件未返回根节点：" .. tostring(tag)) end
         local ref = attrs["x:Ref"]
         if ref and context.refs then
             if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end
@@ -685,24 +985,44 @@ function Runtime:BuildNode(node, context)
     local props = propsFor(attrs, context)
     local text = resolve(attrs.Text, context)
     local widget = nil
-    if tag == "Grid" or tag == "Canvas" then
+    if tag == "Container" then
+        widget = unifiedPanel(props, self:BuildLayoutEntries(visualChildren, context), attrs, context)
+    elseif tag == "Grid" or tag == "Canvas" then
         widget = layoutPanel(props, self:BuildLayoutEntries(visualChildren, context), tag, attrs, context)
+    elseif tag == "DockPanel" then
+        widget = dockPanel(props, self:BuildLayoutEntries(visualChildren, context), attrs, context)
     elseif tag == "Viewbox" then
         widget = viewbox(self:BuildChildren(visualChildren, context), attrs, context)
     else
-        local children = self:BuildChildren(visualChildren, context)
+        local entries = self:BuildLayoutEntries(visualChildren, context)
+        local children = {}
+        local childMode = resolve(attrs.ChildLayout, context) or "自由"
+        for _, entry in ipairs(entries) do
+            children[#children + 1] = childMode ~= "自由" and flowSlot(entry, childMode, attrs, context) or entry.widget
+        end
+        configureVisualHost(props, children, attrs, context)
         if tag == "Text" then
         local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
         innerProps.text = tostring(text or "")
         widget = applyWrapper(UI.Label(innerProps), wrapperProps)
     elseif tag == "Button" then
-        props.text = tostring(text or "按钮")
+        configureVisualHost(props, children, attrs, context)
+        -- A composite button owns the full interaction surface while its child
+        -- labels render the authored title/subtitle. Keep the historical label
+        -- fallback only for the self-closing, single-text form.
+        props.text = #children > 0 and (text ~= nil and tostring(text) or nil) or tostring(text or "按钮")
         local action = actionName(resolve(attrs.Click, context))
-        if action then props.onClick = function(_, event)
-            local callback = context.actions and context.actions[action]
-            if callback then callback(context.item, event) end
-        end end
+        if action then
+            props.onClick = function(_, event)
+                local callback = context.actions and context.actions[action]
+                if callback then callback(context.item, event) end
+            end
+        else
+            local command = commandSpec(resolve(attrs.Click, context))
+            if command then props.onClick = function() return invokeCommand(context, command) end end
+        end
         widget = UI.Button(props)
+        appendChildren(widget, children)
     elseif tag == "Progress" then
         props.value = tonumber(resolve(attrs.Value, context)) or 0
         props.max = math.max(1, tonumber(resolve(attrs.Max, context)) or 1)
@@ -711,22 +1031,33 @@ function Runtime:BuildNode(node, context)
         local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
         innerProps.value = resolve(attrs.Value, context) == true
         local action = actionName(resolve(attrs.Change, context))
-        if action then innerProps.onChange = function(_, value)
-            local callback = context.actions and context.actions[action]
-            if callback then callback(value) end
-        end end
+        if action then
+            innerProps.onChange = function(_, value)
+                local callback = context.actions and context.actions[action]
+                if callback then callback(value) end
+            end
+        else
+            local command = commandSpec(resolve(attrs.Change, context))
+            if command then innerProps.onChange = function() return invokeCommand(context, command) end end
+        end
         widget = applyWrapper(UI.Toggle(innerProps), wrapperProps)
     elseif tag == "Slider" then
         props.value = tonumber(resolve(attrs.Value, context)) or 0
         props.min, props.max = tonumber(attrs.Min) or 0, tonumber(attrs.Max) or 100
         local action = actionName(resolve(attrs.Change, context))
-        if action then props.onChange = function(_, value)
-            local callback = context.actions and context.actions[action]
-            if callback then callback(value) end
-        end end
+        if action then
+            props.onChange = function(_, value)
+                local callback = context.actions and context.actions[action]
+                if callback then callback(value) end
+            end
+        else
+            local command = commandSpec(resolve(attrs.Change, context))
+            if command then props.onChange = function() return invokeCommand(context, command) end end
+        end
         widget = UI.Slider(props)
-    elseif tag == "Row" or tag == "StackPanel" or tag == "WrapPanel" or tag == "DockPanel" then
+    elseif tag == "Row" or tag == "StackPanel" or tag == "WrapPanel" then
         props.flexDirection = (tag == "Row" or resolve(attrs.Orientation, context) == "水平") and "row" or "column"
+        if resolve(attrs.FlowDirection, context) == "从右到左" and props.flexDirection == "row" then props.flexDirection = "row-reverse" end
         if tag == "WrapPanel" then props.flexWrap = "wrap" end
         props.children = children; widget = UI.Panel(props)
     elseif tag == "UniformGrid" then
@@ -735,7 +1066,22 @@ function Runtime:BuildNode(node, context)
     elseif tag == "Border" or tag == "ContentControl" then
         props.children = children; widget = UI.Panel(props)
     elseif tag == "Scroll" then
-        props.scrollY, props.showScrollbar = true, false; props.children = children; widget = UI.ScrollView(props)
+        local function scrollAxis(visibility, legacy)
+            local value = resolve(visibility, context) or legacy
+            if value == "禁用" then return false, false, false end
+            if value == "隐藏" then return true, false, false end
+            if value == "显示" then return true, true, true end
+            -- 自动：内容溢出时显示，不强制常驻交互轨道。
+            return true, true, false
+        end
+        props.scrollX, props.showScrollbar, props.scrollbarInteractive = scrollAxis(attrs.HorizontalScrollBarVisibility, "禁用")
+        local scrollY, showVertical, interactiveVertical = scrollAxis(attrs.VerticalScrollBarVisibility, "隐藏")
+        props.scrollY = scrollY
+        props.showScrollbar = props.showScrollbar or showVertical
+        props.scrollbarInteractive = props.scrollbarInteractive or interactiveVertical
+        props.children = children; widget = UI.ScrollView(props)
+        Scrollbars.Attach(widget, resolve(attrs.HorizontalScrollBarVisibility, context) or "禁用",
+            resolve(attrs.VerticalScrollBarVisibility, context) or "隐藏", color(resolve(attrs.ScrollbarColor, context)))
     elseif tag == "SafeArea" then
         local innerProps, wrapperProps = splitProps(props, WRAP_KEYS)
         innerProps.children = children; widget = applyWrapper(UI.SafeAreaView(innerProps), wrapperProps)
@@ -804,46 +1150,36 @@ function Runtime:LayoutProbe(root)
 end
 
 function Runtime:Render(markupPath, codePath, presentation)
-    local document, documentErr = self:LoadDocument(markupPath)
-    if not document then return nil, documentErr end
     local code, codeErr = self:LoadCode(codePath)
     if not code then return nil, codeErr end
     local result = code.Build and code.Build(presentation) or { view = {}, actions = {} }
     if type(result) ~= "table" then return nil, "LUI Build 必须返回 table。" end
-    local imports, importsErr = self:ImportsFor(document)
-    if not imports then return nil, importsErr end
-    -- `view` is the stable MVVM root.  The metatable keeps legacy bare paths
-    -- readable without making new templates depend on the compatibility form.
-    local view = result.view or {}
-    local context = setmetatable({ view = view }, { __index = view })
-    context.actions = result.actions or {}; context.refs = {}; context.imports = imports; context.componentStack = {}
-    -- Bindings remain plain Lua data. View-model authors call Notify after a
-    -- mutation, or Commit to flush a binding that requested explicit update.
-    context.bindings = { pending = {} }
-    function context.bindings:Notify(path)
-        if result.OnBindingChanged then result.OnBindingChanged(path, context) end
-    end
-    function context.bindings:Commit(path)
-        local value = self.pending[path]
-        if value == nil then return false end
-        self.pending[path] = nil
-        if not setPath(context, path, value) then return false end
-        self:Notify(path)
-        return true
-    end
-    local root = self:BuildNode(document, context)
-    -- Only a Page receives a SafeArea host. A Control is reusable content and
-    -- must measure inside its parent without acquiring device semantics.
-    if document.tag == "lui:Page" and root then root = UI.SafeAreaView { width = "100%", height = "100%", children = { root } } end
-    if result.AfterMount then result.AfterMount(root, context) end
-    return root, nil
+    result.presentation = presentation
+    return self:RenderMarkup(markupPath, result)
 end
 
--- Registered names are the stable Lua-facing discovery surface. Markup paths
--- remain validated by Render, so the registry never expands code-loading scope.
-function Runtime:RenderRegistered(name, presentation)
+-- New WPF-style discovery surface.  A registered module owns its constructor
+-- and InitializeComponent call; Runtime only supplies an already validated
+-- descriptor and the pure markup renderer.
+function Runtime:CreateRegistered(name, presentation, properties, slots)
     local registry = require("LUI.Registry")
-    return registry:Render(self, name, presentation)
+    local item = registry:Get(name)
+    if not item then return nil, "LUI 未登记页面或控件：" .. tostring(name) end
+    if registry.controls and registry.controls[name] then return self:CreateComponent(item.markup, presentation, properties or {}, slots or {}) end
+    local code, codeErr = self:LoadCode(item.code)
+    if not code then return nil, codeErr end
+    if type(code.New) == "function" then return code.New(presentation, self, item) end
+    local root, err = self:Render(item.markup, item.code, presentation)
+    if not root then return nil, err end
+    local fallbackRoot = root
+    return { root_ = fallbackRoot, GetRoot = function() return fallbackRoot end, Dispose = function() end }, nil
+end
+
+-- Compatibility return shape used by existing callers outside the project.
+function Runtime:RenderRegistered(name, presentation)
+    local instance, err = self:CreateRegistered(name, presentation)
+    if not instance then return nil, err end
+    return instance.GetRoot and instance:GetRoot() or instance, nil
 end
 
 return Runtime

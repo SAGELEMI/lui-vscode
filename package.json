@@ -3,7 +3,7 @@
   "displayName": "LUI Studio",
   "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
   "icon": "icons/lui-studio.png",
-  "version": "0.9.0",
+  "version": "2.4.3",
   "publisher": "SAGELEMI",
   "license": "MIT",
   "repository": {
@@ -76,7 +76,7 @@
       },
       {
         "command": "lui.generateActionStub",
-        "title": "LUI: 生成带副名称注释的动作桩"
+        "title": "LUI: 生成动作桩"
       },
       {
         "command": "lui.createPair",
@@ -112,8 +112,8 @@
     },
     "configurationDefaults": {
       "[lui]": {
-        "editor.formatOnPaste": true,
-        "editor.formatOnType": true
+        "editor.formatOnPaste": false,
+        "editor.formatOnType": false
       }
     }
   },
@@ -125,7 +125,10 @@
     "language-configuration.json",
     "runtime/**",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/**",
+    "skills/**",
+    "examples/tutorial/**"
   ],
   "workspaces": [
     "packages/*"
@@ -137,8 +140,13 @@
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",
-    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-0.9.0.vsix",
-    "watch": "node ./scripts/build.mjs --watch"
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-2.4.3.vsix",
+    "test:vscode": "node scripts/test-vscode-document.mjs",
+    "test:browser": "node scripts/test-workspace-browser.mjs",
+    "watch": "node ./scripts/build.mjs --watch",
+    "check:types": "tsc --noEmit",
+    "docs:generate": "node scripts/generate-reference.mjs",
+    "check:docs": "node scripts/generate-reference.mjs --check && node scripts/check-docs.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

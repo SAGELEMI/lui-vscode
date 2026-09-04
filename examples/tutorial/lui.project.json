@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 3,
+  "adapter": "urhox-lua",
+  "sourceRoots": ["Presentation"],
+  "componentDirectories": {
+    "Presentation/Components": {
+      "操作卡": {
+        "markup": "Presentation/Components/ActionCard.lui",
+        "code": "Presentation/Components/ActionCard.lui.lua"
+      }
+    }
+  }
+}

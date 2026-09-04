@@ -1,0 +1,18 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, stat, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
+import { createWriteStream } from 'node:fs';
+const profile = await mkdtemp(join(tmpdir(), 'lui-host-232-'));
+const workspace = join(profile,'project'); await mkdir(workspace);
+const command = process.env.VSCODE_EXECUTABLE;
+if (!command) throw new Error('Set VSCODE_EXECUTABLE to Code.exe');
+const started = Date.now();
+const log = createWriteStream(join(profile, 'test-host.log'));
+const child = spawn(command, [workspace, '--no-sandbox', '--disable-gpu', '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', profile, '--extensions-dir', join(profile, 'extensions'), '--extensionDevelopmentPath', resolve('.'), '--extensionTestsPath', resolve('tests/vscode-document-browser.cjs')], { windowsHide: true, env: {...process.env,LUI_TEST_PROJECT:workspace}, stdio: ['ignore', 'pipe', 'pipe'] });
+child.stdout.pipe(log); child.stderr.pipe(log);
+const code = await new Promise((done, reject) => { child.on('error', reject); child.on('exit', done); });
+const report = resolve('artifacts/vscode-document-2.4.0.json');
+if (code !== 0 || (await stat(report)).mtimeMs < started) throw new Error(`VS Code test did not complete: ${code}; logs: ${profile}`);
+const result = JSON.parse(await readFile(report, 'utf8'));
+console.log(JSON.stringify({ passed: result.passed, checks: result.checks, alignmentCases: result.alignment.length, report, log: join(profile, 'test-host.log') }, null, 2));

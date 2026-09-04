@@ -1,11 +1,15 @@
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, type Completion, type CompletionContext } from "@codemirror/autocomplete";
-import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentWithTab, moveLineDown, moveLineUp, toggleComment } from "@codemirror/commands";
+import { autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completionKeymap, type Completion, type CompletionContext } from "@codemirror/autocomplete";
+import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, isolateHistory, indentWithTab, moveLineDown, moveLineUp, toggleComment } from "@codemirror/commands";
 import { bracketMatching, foldGutter, foldKeymap, indentUnit, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
-import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import { EditorSelection, EditorState, Transaction, type Extension } from "@codemirror/state";
+import { sourcePatch, rebaseSourcePatch, rebaseSourceChanges, applySourceChanges, type SourcePatch } from "./sourceSync.js";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
+import { readPath } from '../../packages/spec/src/paths.js';
+import { isLayoutProperty, type ComponentProperties } from '../../packages/spec/src/properties.js';
+import { displayNameOf, parseLui, provideLuiCompletions, type LuiCompletionImport, type LuiNode } from "../../packages/spec/src/index.js";
 import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, UI_CONTROL_DEFINITIONS, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, controlDefinition, directoryAlias, enumOptions, isBinding, parseBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
 
 interface DiagnosticInfo { message: string; severity: "error" | "warning"; range: { start: number; end: number }; }
@@ -15,32 +19,66 @@ interface SerializableNode {
   text?: string;
   start: number;
   end: number;
+  openTagEnd?: number;
+  closeTagStart?: number;
   source: string;
+  nodePath: number[];
   displayName: string;
   attrs: Record<string, string>;
   children: SerializableNode[];
+  properties?: ComponentProperties;
+  propertiesError?: string;
+  codeSource?: string;
 }
 interface SourcePayload { source: string; version: number; text: string; displayPath: string; diagnostics: DiagnosticInfo[]; }
 interface ModelPayload {
   type: "model";
+  generation: number;
   model: { root?: SerializableNode; diagnostics: DiagnosticInfo[] };
   catalog: Record<string, Record<string, SerializableNode>>;
   sources: Record<string, SourcePayload>;
+  completionImports: LuiCompletionImport[];
+  actionSymbols: Record<string, string[]>;
   rootSource: string;
   device: string;
 }
-interface SourceReloadPayload { type: "source"; source: SourcePayload; }
-interface PickedNode { start: number; end: number; source: string; }
+interface SourceReloadPayload { type: "source"; source: SourcePayload; origin?: "native-undo" | "native-redo" | "document"; }
+interface SourceEditResultPayload {
+  type: "sourceEditResult";
+  requestId: number;
+  success: boolean;
+  status: "applied" | "noop" | "conflict" | "failed";
+  source: SourcePayload;
+  message?: string;
+}
+interface DesignerEditResultPayload {
+  type: "designerEditResult";
+  requestId: number;
+  success: boolean;
+  source?: SourcePayload;
+  message?: string;
+}
+interface SaveSourceResultPayload {
+  type: "saveSourceResult";
+  requestId: number;
+  success: boolean;
+  status: "saved" | "noop" | "conflict" | "failed";
+  source: SourcePayload;
+  message?: string;
+}
+interface PickedNode { start: number; end: number; source: string; version: number; nodePath: number[]; instancePath?: string; }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 const vscode = acquireVsCodeApi();
-const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
+const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => name !== "循环" && /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
-  ["LUI 名称", ["x:Name", "x:DisplayName"]],
-  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Dock", "LastChildFill", "ZIndex"]],
-  ["外观", ["Background", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
-  ["内容与数据", ["Text", "Title", "Subtitle", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
+  ["标识", ["x:Name", "x:DisplayName"]],
+  ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "VerticalAlignment", "HorizontalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill"]],
+  ["滚动", ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility", "ScrollbarColor"]],
+  ["变换", ["RenderTransform", "RenderTransformOrigin", "LayoutTransform"]],
+  ["外观", ["Background", "BorderWidth", "BorderColor", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
+  ["内容与数据", ["Text", "Title", "Subtitle", "Corner", "Status", "Description", "Hint", "ActionItems", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
   ["交互", ["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel", "Disabled"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
 ];
@@ -50,21 +88,54 @@ const collapsedCategories = new Set<string>(JSON.parse(localStorage.getItem(PROP
 let model: ModelPayload["model"] | undefined;
 let catalog: ModelPayload["catalog"] = {};
 let sources: Record<string, SourcePayload> = {};
+let completionImports: LuiCompletionImport[] = [];
+let actionSymbols: Record<string, string[]> = {};
 let rootSource = "";
 let selected: PickedNode | undefined;
 let hovered: PickedNode | undefined;
 let editor: EditorView | undefined;
 let activeSource: SourcePayload | undefined;
 let sourceTimer: ReturnType<typeof setTimeout> | undefined;
+interface PendingSourceEdit { baseText: string; text: string; changes: SourcePatch[]; origin: string; }
+const pendingSourceEdits: PendingSourceEdit[] = [];
+let previewFrame: number | undefined;
 let writingSource = false;
-let inFlight: { source: string; version: number; text: string } | undefined;
-let controlAvailableWidth = "";
-let controlAvailableHeight = "";
-interface LayoutData { x: number; y: number; width: number; height: number; parentX: number; parentY: number; contentWidth: number; contentHeight: number; margin: string; padding: string; }
+let inFlight: { id: number; source: string; version: number; baseText: string; text: string } | undefined;
+let inFlightTimer: ReturnType<typeof setTimeout> | undefined;
+let nextSourceEditId = 1;
+let deferredSource: SourcePayload | undefined;
+let sourceDirty = false;
+let sourceEditError = "";
+let saveRequested = false;
+let saveInFlight: { id: number; source: string } | undefined;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let nextSaveId = 1;
+let lastModelGeneration = 0;
+const treeVersions = new Map<string, number>();
+const treeTexts = new Map<string, string>();
+type DesignerEdit = { id: number; type: "setAttribute" | "resetAttribute" | "setTag"; source: string; start: number; path?: number[]; name: string; value?: string };
+const queuedDesignerEdits: DesignerEdit[] = [];
+let designerEditInFlight: DesignerEdit | undefined;
+let designerEditTimer: ReturnType<typeof setTimeout> | undefined;
+let nextDesignerEditId = 1;
+let designerEditError = "";
+let canvasZoom = 1;
+let initialFitSource = "";
+interface BoxEdges { left: number; top: number; right: number; bottom: number; }
+interface LayoutData { x: number; y: number; width: number; height: number; parentX: number; parentY: number; contentWidth: number; contentHeight: number; availableWidth: number; availableHeight: number; desiredWidth: number; desiredHeight: number; margin: BoxEdges; border: BoxEdges; padding: BoxEdges; }
 const layouts = new Map<string, LayoutData>();
 
 const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const text = (value: unknown): string => String(value ?? "");
+
+function serializeDraftNode(node: LuiNode, source: string, nodePath: number[] = []): SerializableNode {
+  return {
+    kind: node.kind, tag: node.tag, text: node.text, start: node.range.start, end: node.range.end,
+    openTagEnd: node.openTagEnd, closeTagStart: node.closeTagStart, source, nodePath,
+    displayName: displayNameOf(node), attrs: Object.fromEntries(node.attrs.map((attribute) => [attribute.name, attribute.value])),
+    children: node.children.map((child, index) => serializeDraftNode(child, source, [...nodePath, index]))
+  };
+}
 
 function nodeFrom(root: SerializableNode | undefined, start: number, source: string): SerializableNode | undefined {
   if (!root) return undefined;
@@ -74,6 +145,12 @@ function nodeFrom(root: SerializableNode | undefined, start: number, source: str
     if (hit) return hit;
   }
   return undefined;
+}
+
+function nodeAtPath(root: SerializableNode | undefined, path: readonly number[]): SerializableNode | undefined {
+  let current = root;
+  for (const index of path) current = current?.children[index];
+  return current;
 }
 
 function nodeContaining(root: SerializableNode | undefined, offset: number, source: string): SerializableNode | undefined {
@@ -92,6 +169,10 @@ function allRoots(): SerializableNode[] {
   return roots;
 }
 
+function rootForSource(source: string): SerializableNode | undefined {
+  return allRoots().find((root) => root.source === source);
+}
+
 function getNode(start: number, source: string): SerializableNode | undefined {
   for (const root of allRoots()) {
     const hit = nodeFrom(root, start, source);
@@ -108,38 +189,36 @@ function getNodeContaining(offset: number, source: string): SerializableNode | u
   return undefined;
 }
 
-function nodeRef(node: SerializableNode): PickedNode { return { start: node.start, end: node.end, source: node.source }; }
+function nodePath(target: SerializableNode): number[] | undefined {
+  return target.nodePath;
+}
+
+function nodeRef(node: SerializableNode, instancePath?: string): PickedNode {
+  return { start: node.start, end: node.end, source: node.source, version: treeVersions.get(node.source) ?? sources[node.source]?.version ?? 0, nodePath: [...node.nodePath], instancePath };
+}
+function definitionMatches(left: PickedNode | undefined, right: PickedNode | undefined): boolean {
+  return !!left && !!right && left.source === right.source && left.nodePath.join(".") === right.nodePath.join(".");
+}
 function sameNode(left: PickedNode | undefined, right: PickedNode | undefined): boolean {
-  return !!left && !!right && left.start === right.start && left.source === right.source;
+  if (!definitionMatches(left, right)) return false;
+  // Source/tree selection has definition identity only and may highlight its
+  // rendered occurrence. A canvas selection has an instance identity and must
+  // never light up sibling occurrences of the same imported definition.
+  if (!left?.instancePath) return true;
+  return left.instancePath === right?.instancePath;
 }
-
-function previews(node: SerializableNode | undefined, out: SerializableNode[] = []): SerializableNode[] {
-  if (!node) return out;
-  if (node.kind === "element" && canonicalTag(node.tag) === "lui:Preview") out.push(node);
-  for (const child of node.children ?? []) previews(child, out);
-  return out;
-}
-
-function previewValues(): Record<string, string> {
-  const select = byId<HTMLSelectElement>("preview");
-  const state = previews(model?.root).find((item) => item.start === Number(select.value));
-  const values: Record<string, string> = {};
-  for (const child of state?.children ?? []) {
-    if (canonicalTag(child.tag) !== "lui:Set") continue;
-    const path = sourceValue(child, "Path");
-    if (path) values[path] = sourceValue(child, "Value") ?? "";
-  }
-  return values;
+function resolvePicked(picked: PickedNode | undefined): SerializableNode | undefined {
+  if (!picked || treeVersions.get(picked.source) !== picked.version) return undefined;
+  const node = nodeAtPath(rootForSource(picked.source), picked.nodePath);
+  return node?.kind === "element" ? node : undefined;
 }
 
 function getPath(value: unknown, path: string): unknown {
-  let result = value as Record<string, unknown> | undefined;
-  for (const key of String(path ?? "").split(".")) {
-    if (result === undefined || result === null) return undefined;
-    result = result[key] as Record<string, unknown> | undefined;
-  }
-  return result;
+  return readPath(value, path);
 }
+
+function declaredProperties(node: SerializableNode): ComponentProperties | undefined { return componentTemplate(node)?.template.properties; }
+function attributeKey(node: SerializableNode, name: string): string { return declaredProperties(node) && !isLayoutProperty(name) ? name : canonicalAttribute(name); }
 
 function resolve(value: string | undefined, scope: Record<string, unknown>): string | undefined {
   const binding = parseBinding(value);
@@ -147,8 +226,6 @@ function resolve(value: string | undefined, scope: Record<string, unknown>): str
   if (!path) return value;
   const fromScope = getPath(scope, path);
   if (fromScope !== undefined) return binding?.stringFormat?.replace("{0}", String(fromScope)) ?? String(fromScope);
-  const fromPreview = getPath(previewValues(), path);
-  if (fromPreview !== undefined) return binding?.stringFormat?.replace("{0}", String(fromPreview)) ?? String(fromPreview);
   if (binding?.previewContent !== undefined) return binding.stringFormat?.replace("{0}", binding.previewContent) ?? binding.previewContent;
   const samples: Record<string, string> = {
     title: "无尽塔", enemyText: "塔层守卫 · Lv.1", playerText: "冒险者 · Lv.1", logText: "战斗记录将在这里显示。",
@@ -162,7 +239,7 @@ function effective(node: SerializableNode, scope: Record<string, unknown>): Reco
   const attrs: Record<string, string | undefined> = {};
   const previews: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(node.attrs ?? {})) {
-    const canonical = canonicalAttribute(name);
+    const canonical = attributeKey(node, name);
     if (canonical.startsWith("Preview.")) previews[canonical.slice(8)] = value; else attrs[canonical] = value;
   }
   const owner = `${canonicalTag(node.tag) ?? String(node.tag)}.`;
@@ -202,27 +279,103 @@ function cssTracks(value: unknown): string {
 }
 function bool(value: unknown): boolean { return value !== false && value !== undefined && value !== null && value !== "" && value !== "false" && value !== "否" && value !== 0; }
 
-function decorate(element: HTMLElement, node: SerializableNode): void {
+/** LUI keeps transforms compact in source but preserves their declared order. */
+function cssTransform(value: string | undefined): string {
+  if (!value) return "";
+  const result: string[] = [];
+  const pattern = /(平移|缩放|旋转|倾斜)\s*\(([^)]*)\)/g;
+  for (const match of value.matchAll(pattern)) {
+    const values = match[2].split(",").map((part) => Number(part.trim()));
+    if (match[1] === "平移") result.push(`translate(${values[0] || 0}px, ${values[1] || 0}px)`);
+    if (match[1] === "缩放") result.push(values.length > 1 ? `scale(${values[0] || 1}, ${values[1] || 1})` : `scale(${values[0] || 1})`);
+    if (match[1] === "旋转") result.push(`rotate(${values[0] || 0}deg)`);
+    if (match[1] === "倾斜") result.push(`skew(${values[0] || 0}deg, ${values[1] || 0}deg)`);
+  }
+  return result.join(" ");
+}
+
+/** True DockPanel Arrange pass for the browser preview. */
+function arrangeDockPanel(panel: HTMLElement, attrs: Record<string, string | undefined>): void {
+  const arrange = () => {
+    const children = [...panel.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains("lui-node"));
+    if (!children.length) return;
+    const width = panel.clientWidth; const height = panel.clientHeight;
+    if (!width && !height) return;
+    let left = 0; let top = 0; let right = width; let bottom = height;
+    const fillLast = attrs.LastChildFill !== "否";
+    children.forEach((child, index) => {
+      const last = index === children.length - 1;
+      const style = getComputedStyle(child);
+      const marginLeft = Number.parseFloat(style.marginLeft) || 0; const marginTop = Number.parseFloat(style.marginTop) || 0;
+      const marginRight = Number.parseFloat(style.marginRight) || 0; const marginBottom = Number.parseFloat(style.marginBottom) || 0;
+      child.style.position = "absolute";
+      const desiredWidth = child.offsetWidth + marginLeft + marginRight;
+      const desiredHeight = child.offsetHeight + marginTop + marginBottom;
+      if (last && fillLast) {
+        child.style.left = `${left}px`; child.style.top = `${top}px`;
+        child.style.width = `${Math.max(0, right - left - marginLeft - marginRight)}px`;
+        child.style.height = `${Math.max(0, bottom - top - marginTop - marginBottom)}px`;
+        return;
+      }
+      const dock = child.dataset.luiDock || "左";
+      if (dock === "右") { right -= desiredWidth; child.style.left = `${right + marginLeft}px`; child.style.top = `${top + marginTop}px`; child.style.height = `${Math.max(0, bottom - top - marginTop - marginBottom)}px`; }
+      else if (dock === "上") { child.style.left = `${left + marginLeft}px`; child.style.top = `${top + marginTop}px`; child.style.width = `${Math.max(0, right - left - marginLeft - marginRight)}px`; top += desiredHeight; }
+      else if (dock === "下") { bottom -= desiredHeight; child.style.left = `${left + marginLeft}px`; child.style.top = `${bottom + marginTop}px`; child.style.width = `${Math.max(0, right - left - marginLeft - marginRight)}px`; }
+      else { child.style.left = `${left + marginLeft}px`; child.style.top = `${top + marginTop}px`; child.style.height = `${Math.max(0, bottom - top - marginTop - marginBottom)}px`; left += desiredWidth; }
+    });
+  };
+  const observer = new ResizeObserver(arrange); observer.observe(panel); requestAnimationFrame(arrange);
+}
+
+function decorate(element: HTMLElement, node: SerializableNode, instancePath: string): void {
   element.dataset.start = String(node.start);
   element.dataset.source = node.source;
+  element.dataset.nodePath = node.nodePath.join(".");
+  element.dataset.instancePath = instancePath;
   element.classList.add("lui-node");
-  element.onmouseenter = () => { hovered = nodeRef(node); applyHighlights(); };
+  element.onmouseenter = () => { hovered = nodeRef(node, instancePath); applyHighlights(); };
   element.onmouseleave = () => { hovered = undefined; applyHighlights(); };
-  element.onclick = (event) => { event.stopPropagation(); pick(node); };
+}
+
+/**
+ * One canvas-level hit test avoids nested DOM listeners fighting each other.
+ * `composedPath` is ordered from the visual leaf upward, so a label inside a
+ * button resolves to the label and a bare part of the button resolves to the
+ * button.  Imported component wrappers are therefore only selected when their
+ * own surface was actually clicked.
+ */
+function pickVisualTarget(event: MouseEvent): void {
+  for (const entry of event.composedPath()) {
+    if (!(entry instanceof HTMLElement)) continue;
+    const start = Number(entry.dataset.start);
+    const source = entry.dataset.source;
+    const path = (entry.dataset.nodePath ?? "").split(".").filter(Boolean).map(Number);
+    const instancePath = entry.dataset.instancePath;
+    if (!Number.isFinite(start) || !source) continue;
+    const node = nodeAtPath(rootForSource(source), path) ?? getNode(start, source);
+    if (node) { pick(node, instancePath); return; }
+  }
 }
 
 function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, string | undefined>): void {
   const sizes: Record<string, string> = { Width: "width", Height: "height", MinWidth: "minWidth", MinHeight: "minHeight", MaxWidth: "maxWidth", MaxHeight: "maxHeight" };
   for (const [attribute, style] of Object.entries(sizes)) if (attrs[attribute] !== undefined) (element.style as unknown as Record<string, string>)[style] = cssSize(attrs[attribute]);
   if (attrs.Background !== undefined) element.style.background = attrs.Background;
+  if (attrs.BorderWidth !== undefined) { element.style.borderWidth = cssSize(attrs.BorderWidth); element.style.borderStyle = "solid"; }
+  if (attrs.BorderColor !== undefined) element.style.borderColor = attrs.BorderColor;
   if (attrs.Color !== undefined) element.style.color = attrs.Color;
   if (attrs.Opacity !== undefined) element.style.opacity = attrs.Opacity;
   if (attrs.BorderRadius !== undefined) element.style.borderRadius = cssSize(attrs.BorderRadius);
   if (attrs.Margin !== undefined) element.style.margin = cssThickness(attrs.Margin);
   if (attrs.Padding !== undefined) element.style.padding = cssThickness(attrs.Padding);
   if (attrs.ClipToBounds !== undefined) element.style.overflow = bool(attrs.ClipToBounds) ? "hidden" : "visible";
-  const horizontal = attrs.HorizontalAlignment;
-  const vertical = attrs.VerticalAlignment;
+  const visualTransform = cssTransform(attrs.RenderTransform);
+  if (visualTransform) element.style.transform = visualTransform;
+  if (attrs.RenderTransformOrigin) element.style.transformOrigin = attrs.RenderTransformOrigin.split(",").map((part) => `${Number(part.trim()) * 100}%`).join(" ");
+  // Project terminology: VerticalAlignment is the left/right (X) axis;
+  // HorizontalAlignment is the up/down (Y) axis. Glyphs remain unchanged.
+  const horizontal = attrs.VerticalAlignment;
+  const vertical = attrs.HorizontalAlignment;
   if (horizontal) element.style.justifySelf = ({ "左": "start", "居中": "center", "右": "end", "拉伸": "stretch" } as Record<string, string>)[horizontal] ?? "stretch";
   if (vertical) element.style.alignSelf = ({ "上": "start", "居中": "center", "下": "end", "拉伸": "stretch" } as Record<string, string>)[vertical] ?? "stretch";
   const visibility = attrs.Visibility;
@@ -236,10 +389,10 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
     element.style.columnGap = cssSize(attrs.ColumnSpacing ?? "0");
   }
   if (tag === "Canvas") element.style.position = "relative";
-  if (tag === "StackPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "水平" ? "row" : "column"; }
-  if (tag === "WrapPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "垂直" ? "column" : "row"; element.style.flexWrap = "wrap"; }
+  if (tag === "StackPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "水平" ? (attrs.FlowDirection === "从右到左" ? "row-reverse" : "row") : "column"; element.style.gap = attrs.Gap ? cssSize(attrs.Gap) : ""; }
+  if (tag === "WrapPanel") { element.style.display = "flex"; element.style.flexDirection = attrs.Orientation === "垂直" ? "column" : (attrs.FlowDirection === "从右到左" ? "row-reverse" : "row"); element.style.flexWrap = "wrap"; element.style.gap = attrs.Gap ? cssSize(attrs.Gap) : ""; }
   if (tag === "UniformGrid") { element.style.display = "grid"; element.style.gridTemplateColumns = `repeat(${Math.max(1, Number(attrs.Columns) || 1)}, minmax(0, 1fr))`; }
-  if (tag === "DockPanel") { element.style.display = "flex"; element.style.flexDirection = "column"; }
+  if (tag === "DockPanel") { element.style.display = "block"; element.style.position = "relative"; element.style.minWidth = "0"; element.style.minHeight = "0"; }
   if (tag === "Viewbox") {
     // The design canvas is its own coordinate system.  The parent stage only
     // supplies a viewport; it never changes the page definition.
@@ -249,6 +402,8 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
   if (attrs["Grid.Row"] !== undefined) element.style.gridRow = `${Number(attrs["Grid.Row"]) + 1} / span ${attrs["Grid.RowSpan"] ?? "1"}`;
   if (attrs["Grid.Column"] !== undefined) element.style.gridColumn = `${Number(attrs["Grid.Column"]) + 1} / span ${attrs["Grid.ColumnSpan"] ?? "1"}`;
   if (attrs.ZIndex !== undefined) element.style.zIndex = attrs.ZIndex;
+  if (attrs.Fill !== undefined) element.dataset.luiFill = attrs.Fill;
+  if (attrs.Dock !== undefined) element.dataset.luiDock = attrs.Dock;
   if (attrs["Canvas.Left"] !== undefined || attrs["Canvas.Top"] !== undefined || attrs["Canvas.Right"] !== undefined || attrs["Canvas.Bottom"] !== undefined) {
     element.style.position = "absolute";
     if (attrs["Canvas.Left"] !== undefined) element.style.left = cssSize(attrs["Canvas.Left"]);
@@ -258,9 +413,75 @@ function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, st
   }
 }
 
-function fragmentChildren(nodes: SerializableNode[], scope: Record<string, unknown>, trace: string[]): DocumentFragment {
+function applyScrollPresentation(element: HTMLElement, attrs: Record<string, string | undefined>): void {
+  const overflow = (value: string | undefined, legacy: "禁用" | "隐藏"): "auto" | "scroll" | "hidden" => {
+    const visibility = value ?? legacy;
+    if (visibility === "禁用") return "hidden";
+    return visibility === "显示" ? "scroll" : "auto";
+  };
+  const horizontal = attrs.HorizontalScrollBarVisibility ?? "禁用";
+  const vertical = attrs.VerticalScrollBarVisibility ?? "隐藏";
+  element.style.overflowX = overflow(horizontal, "禁用");
+  element.style.overflowY = overflow(vertical, "隐藏");
+  element.classList.toggle("scrollbar-hidden-x", horizontal === "隐藏");
+  element.classList.toggle("scrollbar-hidden-y", vertical === "隐藏");
+  if (attrs.ScrollbarColor) element.style.setProperty("--lui-scrollbar-color", attrs.ScrollbarColor);
+  element.classList.toggle("scrollbar-always-y", vertical === "显示");
+}
+
+/** LUI 2.0: every paired visual node is a layout host.  CSS only draws the
+ * already uniform contract; free placement deliberately overlays children. */
+function applyChildLayout(host: HTMLElement, attrs: Record<string, string | undefined>): void {
+  // Visibility wins over the host's grid/flex display. Hidden nodes must not
+  // acquire layout slots (especially Fill slots) from their parent either.
+  if (["折叠", "否", "false"].includes(attrs.Visibility ?? "")) {
+    host.style.display = "none";
+    return;
+  }
+  const mode = attrs.ChildLayout ?? "自由";
+  host.style.position ||= "relative";
+  host.style.minWidth ||= "0";
+  host.style.minHeight ||= "0";
+  if (mode === "自由") {
+    host.style.display = "grid";
+    host.style.gridAutoRows = "minmax(0, 1fr)";
+  } else {
+    host.style.display = "flex";
+    host.style.flexDirection = mode === "水平" ? "row" : "column";
+    host.style.flexWrap = attrs.Wrap === "是" ? "wrap" : "nowrap";
+    host.style.columnGap = cssSize(attrs.HorizontalGap ?? "0");
+    host.style.rowGap = cssSize(attrs.VerticalGap ?? "0");
+    // A composite button is a compact content card: its authored text children
+    // are left-aligned while the button itself keeps its normal hit surface.
+    host.style.alignItems = "stretch";
+  }
+  const children = [...host.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains("lui-node") && child.style.display !== "none");
+  children.forEach((child, index) => {
+    if (mode === "自由") { child.style.gridArea = "1 / 1"; child.style.zIndex ||= String(index); }
+    child.style.minWidth ||= "0";
+    child.style.minHeight ||= "0";
+    if (attrs.ChildWidth !== undefined) child.style.width = cssSize(attrs.ChildWidth);
+    if (attrs.ChildHeight !== undefined) child.style.height = cssSize(attrs.ChildHeight);
+    if (mode !== "自由") {
+      // Flex only allocates slots. The inner grid aligns the visual on fixed
+      // X/Y axes, independent of the parent's flow direction.
+      const slot = document.createElement("div"); slot.className = "lui-layout-slot";
+      child.replaceWith(slot); slot.append(child); child.style.gridArea = "1 / 1";
+      slot.style.zIndex = child.style.zIndex || String(index);
+      if (child.dataset.luiFill === "是") {
+        slot.style.flexGrow = "1"; slot.style.flexShrink = "1"; slot.style.flexBasis = "0";
+      } else slot.style.flexShrink = "0";
+      // Percentages need a definite flow slot, but explicit pixels remain on
+      // the visual so an aligned fill item need not stretch its own bounds.
+      const mainSize = mode === "水平" ? "width" : "height";
+      if (child.style[mainSize].endsWith("%")) slot.style[mainSize] = child.style[mainSize];
+    }
+  });
+}
+
+function fragmentChildren(nodes: SerializableNode[], scope: Record<string, unknown>, trace: string[], parentInstancePath: string): DocumentFragment {
   const fragment = document.createDocumentFragment();
-  for (const child of nodes) fragment.append(renderNode(child, scope, trace));
+  nodes.forEach((child, index) => fragment.append(renderNode(child, scope, trace, `${parentInstancePath}/${index}`)));
   return fragment;
 }
 
@@ -272,7 +493,7 @@ function componentTemplate(node: SerializableNode): { directory: string; name: s
   return directory && name && template ? { directory, name, template } : undefined;
 }
 
-function renderComponent(node: SerializableNode, scope: Record<string, unknown>, trace: string[]): Node {
+function renderComponent(node: SerializableNode, scope: Record<string, unknown>, trace: string[], instancePath: string): Node {
   const component = componentTemplate(node);
   if (!component) return document.createComment(`组件未登记：${node.tag}`);
   const { directory, name, template } = component;
@@ -280,19 +501,24 @@ function renderComponent(node: SerializableNode, scope: Record<string, unknown>,
   if (trace.includes(key)) return document.createComment(`组件循环：${key}`);
   const wrapper = document.createElement("div");
   wrapper.className = "lui-component-instance";
-  decorate(wrapper, node);
+  decorate(wrapper, node, instancePath);
   // The component instance is the direct Grid/Canvas child. Its internals stay
   // folded in the page inspector, while its declared layout remains effective.
   applyLayout(wrapper, "Component", effective(node, scope));
-  const props = { ...(scope.props as Record<string, unknown> | undefined) };
-  for (const [property, value] of Object.entries(effective(node, scope))) props[property] = value;
-  wrapper.append(fragmentChildren(visualChildren(template), { ...scope, props, slots: { Content: visualChildren(node) } }, [...trace, key]));
-  // Imported markup is visual only in a page inspector: any click belongs to its page-side component instance.
-  wrapper.addEventListener("click", (event) => { event.stopImmediatePropagation(); pick(node); }, true);
+  const props: Record<string, unknown> = {};
+  for (const [key, definition] of Object.entries(template.properties ?? {})) if (definition.default !== undefined) props[key] = structuredClone(definition.default);
+  for (const [property, value] of Object.entries(effective(node, scope))) if (value !== undefined) props[template.properties && isLayoutProperty(property) ? sourceAttribute(property) : property] = value;
+  if (template.properties) for (const [key, raw] of Object.entries(node.attrs)) {
+    const binding = parseBinding(raw); const value = binding ? getPath(scope, binding.path) : undefined;
+    if (value !== undefined) props[isLayoutProperty(key) ? sourceAttribute(canonicalAttribute(key)) : key] = value;
+  }
+  wrapper.append(fragmentChildren(visualChildren(template), { ...scope, props, slots: { Content: visualChildren(node) } }, [...trace, key], `${instancePath}/component:${key}`));
+  applyChildLayout(wrapper, effective(node, scope));
   return wrapper;
 }
 
-function renderNode(node: SerializableNode, scope: Record<string, unknown> = {}, trace: string[] = []): Node {
+function renderNode(node: SerializableNode, scope: Record<string, unknown> = {}, trace: string[] = [], instancePath = "root"): Node {
+  if (node.properties && !scope.props) scope = { ...scope, props: Object.fromEntries(Object.entries(node.properties).filter(([,p]) => p.default !== undefined).map(([k,p]) => [k, structuredClone(p.default)])) };
   if (node.kind === "text") { const span = document.createElement("span"); span.textContent = node.text ?? ""; return span; }
   if (node.kind === "comment") return document.createComment(node.text ?? "");
   const tag = canonicalTag(node.tag) ?? "Panel";
@@ -300,33 +526,46 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     const placeholder = document.createElement("button");
     placeholder.className = "lui-node placeholder";
     placeholder.textContent = "<> 选择标签类型";
-    decorate(placeholder, node);
+    decorate(placeholder, node, instancePath);
     return placeholder;
   }
   if (tag === "lui:Preview" || tag === "lui:Set") return document.createDocumentFragment();
-  if (tag === "lui:If") return bool(effective(node, scope).Test) ? fragmentChildren(visualChildren(node), scope, trace) : document.createDocumentFragment();
+  if (tag === "lui:If") return bool(effective(node, scope).Test) ? fragmentChildren(visualChildren(node), scope, trace, instancePath) : document.createDocumentFragment();
   if (tag === "lui:For") {
     const attrs = effective(node, scope);
+    const binding = parseBinding(sourceValue(node, 'In')); let values = binding && getPath(scope, binding.path);
+    const previewText = typeof values === 'string' ? values : values === undefined ? binding?.previewContent : undefined;
+    if (previewText !== undefined) {
+      try {
+        const preview = JSON.parse(previewText.replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&"));
+        if (Array.isArray(preview)) values = preview;
+      } catch { /* JSON only; never execute preview code. */ }
+    }
+    if (values && typeof values === 'object') {
+      const fragment = document.createDocumentFragment();
+      Object.values(values).forEach((item, index) => fragment.append(fragmentChildren(visualChildren(node), { ...scope, [attrs.Items ?? attrs.Each ?? 'item']: item, item, index: index + 1 }, trace, `${instancePath}/item:${index}`)));
+      return fragment;
+    }
     const sample = { label: "示例项目", name: "示例项目", text: "示例内容" };
-    return fragmentChildren(visualChildren(node), { ...scope, [attrs.Each ?? "item"]: sample, item: sample, index: 1 }, trace);
+    return fragmentChildren(visualChildren(node), { ...scope, [attrs.Items ?? attrs.Each ?? "item"]: sample, item: sample, index: 1 }, trace, `${instancePath}/item:0`);
   }
   if (tag === "lui:Slot") {
     const content = (scope.slots as Record<string, SerializableNode[]> | undefined)?.Content ?? [];
-    if (content.length) return fragmentChildren(content, scope, trace);
+    if (content.length) return fragmentChildren(content, scope, trace, `${instancePath}/slot`);
     const placeholder = document.createElement("div"); placeholder.className = "content-presenter-placeholder"; placeholder.textContent = "调用处内容"; return placeholder;
   }
-  if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace);
+  if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace, instancePath);
   const attrs = effective(node, scope);
   if (tag === "lui:Page") {
-    const viewport = document.createElement("div"); decorate(viewport, node); viewport.classList.add("lui-node", "page-root");
+    const viewport = document.createElement("div"); decorate(viewport, node, instancePath); viewport.classList.add("lui-node", "page-root");
     const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
     const design = document.createElement("div"); design.className = "lui-page-design";
     design.style.width = `${designWidth}px`; design.style.height = `${designHeight}px`; design.style.transformOrigin = "top left";
     if (attrs.Padding !== undefined) design.style.padding = cssThickness(attrs.Padding);
     design.style.overflow = bool(attrs.ClipToBounds) ? "hidden" : "visible";
-    design.append(fragmentChildren(visualChildren(node), scope, trace)); viewport.append(design);
+    design.append(fragmentChildren(visualChildren(node), scope, trace, instancePath)); applyChildLayout(design, attrs); viewport.append(design);
     const applyScale = () => {
-      const rect = viewport.getBoundingClientRect(); const margin = thicknessParts(attrs.Margin);
+      const rect = { width: viewport.clientWidth, height: viewport.clientHeight }; const margin = thicknessParts(attrs.Margin);
       const left = Number(margin[0]) || 0; const top = Number(margin[1]) || 0; const right = Number(margin[2]) || 0; const bottom = Number(margin[3]) || 0;
       const availableWidth = Math.max(0, rect.width - left - right); const availableHeight = Math.max(0, rect.height - top - bottom);
       const scale = Math.min(availableWidth / designWidth, availableHeight / designHeight);
@@ -340,16 +579,17 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     return viewport;
   }
   if (tag === "lui:Component") {
-    const element = document.createElement("div"); decorate(element, node); element.classList.add("lui-node", "control-root");
-    applyLayout(element, "Component", attrs); element.append(fragmentChildren(visualChildren(node), scope, trace)); return element;
+    const element = document.createElement("div"); decorate(element, node, instancePath); element.classList.add("lui-node", "control-root");
+    applyLayout(element, "Component", attrs);
+    element.append(fragmentChildren(visualChildren(node), scope, trace, instancePath)); applyChildLayout(element, attrs); return element;
   }
   if (tag === "Viewbox") {
-    const viewport = document.createElement("div"); decorate(viewport, node); viewport.classList.add("lui-node", "viewbox");
+    const viewport = document.createElement("div"); decorate(viewport, node, instancePath); viewport.classList.add("lui-node", "viewbox");
     const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
     const design = document.createElement("div"); design.className = "lui-viewbox-design";
     design.style.width = `${designWidth}px`; design.style.height = `${designHeight}px`;
     design.style.transformOrigin = "top left";
-    design.append(fragmentChildren(visualChildren(node), scope, trace)); viewport.append(design);
+    design.append(fragmentChildren(visualChildren(node), scope, trace, instancePath)); viewport.append(design);
     const applyScale = () => {
       const rect = viewport.getBoundingClientRect(); const scale = Math.min(rect.width / designWidth, rect.height / designHeight);
       design.style.transform = `scale(${Number.isFinite(scale) ? scale : 1})`;
@@ -361,14 +601,14 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     return viewport;
   }
   const element = document.createElement("div");
-  decorate(element, node);
+  decorate(element, node, instancePath);
   element.classList.add(`tag-${tag.replace(/[^A-Za-z0-9_-]/g, "-")}`);
   applyLayout(element, tag, attrs);
   if (tag === "Grid" || tag === "UniformGrid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Viewbox") element.classList.add("viewbox"); else if (tag === "Row" || tag === "StackPanel" || tag === "WrapPanel" || tag === "DockPanel") element.classList.add("row"); else element.classList.add("panel");
-  if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
+  if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "常规" || attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
   else if (tag === "Text") { element.classList.add("text"); element.style.fontSize = attrs.FontSize ? cssSize(attrs.FontSize) : ""; element.textContent = text(attrs.Text); }
   else if (tag === "Card") element.classList.add("card");
-  else if (tag === "Scroll") element.classList.add("scroll");
+  else if (tag === "Scroll") { element.classList.add("scroll"); applyScrollPresentation(element, attrs); }
   else if (tag === "SafeArea") element.classList.add("safe-area");
   else if (tag === "Modal") element.classList.add("modal");
   else if (tag === "Progress") {
@@ -376,7 +616,11 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     const maximum = Math.max(1, Number(attrs.Max) || 100); fill.style.width = `${Math.max(0, Math.min(100, (Number(attrs.Value) || 0) / maximum * 100))}%`; track.append(fill); element.append(track);
   } else if (tag === "Toggle") { element.classList.add("toggle"); element.textContent = bool(attrs.Value) ? "开启" : "关闭"; }
   else if (tag === "Slider") { element.classList.add("slider"); const input = document.createElement("input"); input.type = "range"; input.min = attrs.Min ?? "0"; input.max = attrs.Max ?? "100"; input.value = attrs.Value ?? "0"; element.append(input); }
-  if (!["Button", "Text", "Progress", "Toggle", "Slider"].includes(tag)) element.append(fragmentChildren(visualChildren(node), scope, trace));
+  // Text and input controls keep their own visual layer, then host authored
+  // child controls in the same content rectangle just like any paired tag.
+  element.append(fragmentChildren(visualChildren(node), scope, trace, instancePath));
+  applyChildLayout(element, attrs);
+  if (tag === "DockPanel") arrangeDockPanel(element, attrs);
   return element;
 }
 
@@ -385,18 +629,25 @@ function outline(node: SerializableNode, host: HTMLElement, depth = 0): void {
   const row = document.createElement("button");
   row.className = "outline-row";
   row.style.marginLeft = `${depth * 12}px`;
-  row.textContent = node.displayName || node.tag || "节点";
+  const tag = String(node.tag ?? "节点"); const raw = declaredProperties(node) ? sourceValue(node,'文本') ?? sourceValue(node,'标题') : sourceValue(node, "Text") ?? sourceValue(node, "Title"); const binding = parseBinding(raw);
+  const summary = binding?.path ?? (raw && !raw.startsWith("{") ? raw.replace(/\s+/g, " ").slice(0, 22) : "");
+  row.textContent = summary ? `${tag} · ${summary}` : tag;
+  row.title = node.displayName || tag;
   row.onclick = () => pick(node);
+  if (componentTemplate(node)) row.ondblclick = (event) => { event.preventDefault(); vscode.postMessage({ type: "openComponent", source: componentTemplate(node)?.template.source }); };
   row.onmouseenter = () => { hovered = nodeRef(node); applyHighlights(); };
   row.onmouseleave = () => { hovered = undefined; applyHighlights(); };
   row.dataset.start = String(node.start);
   row.dataset.source = node.source;
+  row.dataset.nodePath = node.nodePath.join(".");
   host.append(row);
-  for (const child of visualChildren(node)) outline(child, host, depth + 1);
+  // A page tree shows only authored structure. Imported implementations are
+  // opened explicitly with a double click instead of flooding the parent tree.
+  for (const child of node.children ?? []) if (child.kind === "element" && canonicalTag(child.tag) !== "lui:Preview" && canonicalTag(child.tag) !== "lui:Set") outline(child, host, depth + 1);
 }
 
 function sourceValue(node: SerializableNode, canonical: string): string | undefined {
-  return Object.entries(node.attrs ?? {}).reverse().find(([name]) => canonicalAttribute(name) === canonical)?.[1];
+  return Object.entries(node.attrs ?? {}).reverse().find(([name]) => attributeKey(node, name) === canonical)?.[1];
 }
 
 function parentOf(target: SerializableNode): SerializableNode | undefined {
@@ -411,8 +662,81 @@ function parentOf(target: SerializableNode): SerializableNode | undefined {
   return undefined;
 }
 
+function sourceHasUncommittedDraft(source: string): boolean {
+  return activeSource?.source === source && !!editor && (sourceDirty || !!sourceTimer || !!inFlight || editor.state.doc.toString() !== activeSource.text);
+}
+
+function pumpDocumentWork(): void {
+  if (inFlight || designerEditInFlight || saveInFlight || sourceTimer) return;
+  if (activeSource && editor && (sourceDirty || editor.state.doc.toString() !== activeSource.text)) {
+    sendSourceEdit();
+    return;
+  }
+  if (queuedDesignerEdits.length) {
+    const next = queuedDesignerEdits.shift()!;
+    designerEditInFlight = next;
+    designerEditTimer = setTimeout(() => {
+      if (designerEditInFlight?.id !== next.id) return;
+      designerEditInFlight = undefined;
+      queuedDesignerEdits.length = 0;
+      designerEditError = "属性写入超时，已解除锁定；请重试本次修改。";
+      draw();
+    }, 5000);
+    vscode.postMessage({ type: next.type, requestId: next.id, version: sources[next.source]?.version, start: next.start, path: next.path, source: next.source, name: next.name, value: next.value });
+    return;
+  }
+  if (saveRequested && activeSource) {
+    saveRequested = false;
+    const request = { id: nextSaveId++, source: activeSource.source };
+    saveInFlight = request;
+    saveTimer = setTimeout(() => {
+      if (saveInFlight?.id !== request.id) return;
+      saveInFlight = undefined;
+      sourceEditError = "保存超时，已解除锁定；请再次按 Ctrl+S。";
+      draw();
+    }, 5000);
+    vscode.postMessage({ type: "saveSource", requestId: request.id, source: activeSource.source, version: activeSource.version });
+  }
+}
+
+function flushDesignerEdits(): void {
+  if (sourceTimer) { clearTimeout(sourceTimer); sourceTimer = undefined; }
+  pumpDocumentWork();
+}
+
+function editNode(node: SerializableNode, type: DesignerEdit["type"], name: string, value?: string): void {
+  // Capture the structural path when the intent is made.  A pending source edit
+  // recreates the parsed nodes and can shift offsets, but this path still points
+  // at the element the designer user actually selected.
+  designerEditError = "";
+  queuedDesignerEdits.push({ id: nextDesignerEditId++, type, source: node.source, start: node.start, path: nodePath(node), name, value });
+  flushDesignerEdits();
+}
+
 function writeAttribute(node: SerializableNode, key: string, value: string): void {
-  vscode.postMessage({ type: "setAttribute", start: node.start, source: node.source, name: sourceAttribute(key), value });
+  editNode(node, "setAttribute", declaredProperties(node)?.[key] ? key : sourceAttribute(key), value);
+}
+
+function defaultValue(node: SerializableNode, key: string): string {
+  if (declaredProperties(node)?.[key]) return String(declaredProperties(node)![key]!.default ?? '');
+  if (key === "Width" || key === "Height") return "自动";
+  if (key === "MinWidth" || key === "MinHeight" || key === "Margin" || key === "Padding" || key === "HorizontalGap" || key === "VerticalGap") return "0";
+  if (key === "MaxWidth" || key === "MaxHeight") return "无限";
+  if (key === "HorizontalAlignment" || key === "VerticalAlignment") return "拉伸";
+  if (key === "ClipToBounds") return canonicalTag(node.tag) === "lui:Page" ? "是" : "否";
+  if (key === "ChildLayout") return "自由";
+  if (key === "Wrap" || key === "Fill") return "否";
+  if (key === "ChildWidth" || key === "ChildHeight") return "自动";
+  if (key === "ZIndex") return "自动（源码顺序）";
+  return "";
+}
+
+function resetAttribute(node: SerializableNode, key: string): void {
+  if (canonicalTag(node.tag) === "lui:Page" && key === "Margin") {
+    writeAttribute(node, key, "0");
+    return;
+  }
+  editNode(node, "resetAttribute", declaredProperties(node)?.[key] ? key : sourceAttribute(key));
 }
 
 function thicknessParts(value: string | undefined): string[] {
@@ -422,15 +746,23 @@ function thicknessParts(value: string | undefined): string[] {
 
 function propertyInput(host: HTMLElement, node: SerializableNode, key: string): void {
   const label = document.createElement("label");
-  label.textContent = ATTRIBUTE_LABELS[key] ?? key;
-  const definition = attributeDefinition(key);
-  const value = sourceValue(node, key) ?? "";
+  const custom = declaredProperties(node)?.[key];
+  label.textContent = custom ? key : ATTRIBUTE_LABELS[key] ?? key;
+  const definition = custom ? { kind: custom.type === 'number' ? 'number' : custom.type === 'boolean' ? 'enum' : 'text', options: custom.type === 'boolean' ? ['true','false'] : undefined } : attributeDefinition(key);
+  const explicit = sourceValue(node, key);
+  const value = explicit ?? defaultValue(node, key);
   let input: HTMLInputElement | HTMLSelectElement;
   if (key === "HorizontalAlignment" || key === "VerticalAlignment") {
-    const buttons = document.createElement("div"); buttons.className = "alignment-buttons";
-    const values = key === "HorizontalAlignment" ? [["左", "↤"], ["居中", "↔"], ["右", "↦"], ["拉伸", "↹"]] : [["上", "↥"], ["居中", "↕"], ["下", "↧"], ["拉伸", "↕"]];
-    for (const [option, glyph] of values) {
-      const button = document.createElement("button"); button.type = "button"; button.textContent = glyph; button.title = `${option}（${key === "HorizontalAlignment" ? "HorizontalAlignment" : "VerticalAlignment"}）`; button.classList.toggle("is-active", value === option || (!value && option === "拉伸"));
+    const buttons = document.createElement("div"); buttons.className = "alignment-buttons"; buttons.setAttribute("role", "radiogroup"); buttons.setAttribute("aria-label", ATTRIBUTE_LABELS[key] ?? key);
+    // Keep source values on their semantic axis.  The glyphs intentionally follow the
+    // designer's requested visual matrix, including its explicit quarter-turn arrows.
+    const values = key === "VerticalAlignment"
+      ? [{ option: "左", glyph: "↥", rotation: -90 }, { option: "居中", glyph: "↔", rotation: 0 }, { option: "右", glyph: "↧", rotation: -90 }, { option: "拉伸", glyph: "↹", rotation: 0 }]
+      : [{ option: "上", glyph: "↥", rotation: 0 }, { option: "居中", glyph: "↔", rotation: 90 }, { option: "下", glyph: "↧", rotation: 0 }, { option: "拉伸", glyph: "↹", rotation: 90 }];
+    for (const { option, glyph, rotation } of values) {
+      const active = value === option || (!value && option === "拉伸");
+      const button = document.createElement("button"); button.type = "button"; button.classList.add("alignment-icon"); button.setAttribute("role", "radio"); button.setAttribute("aria-label", option); button.setAttribute("aria-checked", String(active)); button.title = `${ATTRIBUTE_LABELS[key] ?? key}：${option}`; button.classList.toggle("is-active", active);
+      const arrow = document.createElement("span"); arrow.className = "alignment-arrow"; arrow.textContent = glyph; arrow.setAttribute("aria-hidden", "true"); arrow.style.setProperty("--alignment-arrow-rotation", `${rotation}deg`); button.append(arrow);
       button.onclick = () => writeAttribute(node, key, option); buttons.append(button);
     }
     label.append(buttons); host.append(label); return;
@@ -445,7 +777,7 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   } else if (definition?.kind === "enum") {
     const select = document.createElement("select");
     const empty = document.createElement("option"); empty.value = ""; empty.textContent = "未设置"; select.append(empty);
-    for (const optionValue of enumOptions(key) ?? []) { const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; select.append(option); }
+    for (const optionValue of (custom ? definition.options : enumOptions(key)) ?? []) { const option = document.createElement("option"); option.value = optionValue; option.textContent = optionValue; option.selected = optionValue === value; select.append(option); }
     select.value = value; select.onchange = () => writeAttribute(node, key, select.value); input = select;
   } else if (definition?.kind === "thickness") {
     const grid = document.createElement("div"); grid.className = "thickness-editor";
@@ -464,7 +796,9 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
     field.value = value; field.placeholder = ATTRIBUTE_LABELS[key] ?? key;
     field.onchange = () => writeAttribute(node, key, field.value); input = field;
   }
-  label.append(input); host.append(label);
+  label.append(input);
+  if (explicit !== undefined) { const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "重置"; reset.title = `删除源码属性并恢复${value}默认值`; reset.onclick = () => resetAttribute(node, key); label.append(reset); }
+  host.append(label);
   const binding = parseBinding(value);
   if (binding) {
     const bindingSection = document.createElement("fieldset"); bindingSection.className = "binding-options";
@@ -497,28 +831,45 @@ function tagChoices(node: SerializableNode): string[] {
   return [...BUILTIN_TAGS.filter((tag) => !["lui:Page", "lui:Component", "页面", "控件", "组件"].includes(tag)), ...imported];
 }
 
+/** Imported components publish exactly the props they consume. */
+function componentPublicProperties(node: SerializableNode): string[] {
+  const component = componentTemplate(node);
+  if (!component) return [];
+  if (component.template.properties) return Object.keys(component.template.properties);
+  const fields = new Set<string>();
+  const visit = (current: SerializableNode) => {
+    for (const value of Object.values(current.attrs)) {
+      const path = parseBinding(value)?.path;
+      const match = /^props\.([A-Za-z][A-Za-z0-9_-]*)$/.exec(path ?? "");
+      if (match) fields.add(match[1]!);
+    }
+    for (const child of current.children) visit(child);
+  };
+  visit(component.template);
+  return [...fields];
+}
+
 function attributesFor(node: SerializableNode): string[] {
   const tag = canonicalTag(node.tag);
   if (tag === "__placeholder__") return [];
-  if (tag === "lui:Page") return ["x:Name", "x:DisplayName", "Width", "Height", "Margin", "Padding", "ClipToBounds"];
-  if (tag === "lui:Component") return ["x:Name", "x:DisplayName", "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding"];
-  let parent = parentOf(node);
-  while (parent && ["lui:If", "lui:For", "lui:Slot"].includes(canonicalTag(parent.tag) ?? "")) parent = parentOf(parent);
-  const parentTag = canonicalTag(parent?.tag);
+  const identity = isDocumentRoot(node) || sourceValue(node, "x:Name") !== undefined ? ["x:Name"] : [];
+  if (sourceValue(node, "x:DisplayName") !== undefined) identity.push("x:DisplayName");
+  if (tag === "lui:Page") return [...identity, "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
+  if (tag === "lui:Component") return [...identity, "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
   const structural = ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"];
-  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "HorizontalAlignment", "VerticalAlignment", "Visibility"];
-  const surface = ["Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag ?? "") ? ["Background", "Opacity", "BorderRadius"] : [];
+  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "Visibility", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
+  const surface = ["Container", "Panel", "Button", "Text", "Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag ?? "") ? ["Background", "BorderWidth", "BorderColor", "Opacity", "BorderRadius"] : [];
   const specific: Record<string, string[]> = {
-    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], DockPanel: ["LastChildFill"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Each", "In"], "lui:Slot": [], "lui:Set": ["Path", "Value"]
+    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], DockPanel: ["LastChildFill"], StackPanel: ["Orientation", "FlowDirection", "Gap"], WrapPanel: ["Orientation", "FlowDirection", "Gap"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Scroll: ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Items", "In"], "lui:Slot": [], "lui:Set": ["Path", "Value"]
   };
   const control = controlDefinition(tag);
+  if (tag === "Scroll") specific.Scroll!.push("ScrollbarColor");
   if (control) {
     const declarative = ["Text", "Title", "Subtitle", "Value", "Min", "Max", "Step", "Placeholder", "Items", "Data", "Options", "Icon", "Image", "Source", "Orientation", "Columns", "Rows", "Gap", "Type", "Visible", ...(control.events ?? [])];
     if (control.bindable && !declarative.includes(control.bindable)) declarative.push(control.bindable);
     specific[tag ?? ""] = [...(specific[tag ?? ""] ?? []), ...declarative];
   }
-  const attached = parentTag === "Grid" ? ["Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "ZIndex"] : parentTag === "Canvas" ? ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "ZIndex"] : parentTag === "DockPanel" ? ["Dock"] : [];
-  return [...new Set(["x:Name", "x:DisplayName", ...layout, ...surface, ...(specific[tag ?? ""] ?? []), ...attached])];
+  return [...new Set([...identity, ...layout, ...surface, ...componentPublicProperties(node), ...(specific[tag ?? ""] ?? [])])];
 }
 
 function collapsibleSection(title: string): HTMLElement {
@@ -533,20 +884,39 @@ function collapsibleSection(title: string): HTMLElement {
   return section;
 }
 
+function layoutKey(source: string, path: readonly number[], instancePath = ""): string { return `${source}|${path.join(".")}|${instancePath}`; }
+
 function layoutResult(host: HTMLElement, node: SerializableNode): void {
-  const result = layouts.get(`${node.source}:${node.start}`);
-  const section = document.createElement("section"); const heading = document.createElement("h3"); heading.textContent = "布局结果"; section.append(heading);
+  const prefix = `${node.source}|${node.nodePath.join(".")}|`;
+  const result = layouts.get(layoutKey(node.source, node.nodePath, selected?.instancePath)) ?? [...layouts].find(([key]) => key.startsWith(prefix))?.[1];
+  const section = document.createElement("section"); section.className = "layout-result";
+  section.addEventListener("selectstart", event => event.preventDefault());
+  const heading = document.createElement("h3"); heading.textContent = "布局结果"; section.append(heading);
   if (!result) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = "等待预览完成布局计算。"; section.append(note); host.append(section); return; }
-  const note = document.createElement("p"); note.className = "property-note"; note.textContent = `父级 ${result.parentX}, ${result.parentY} · 坐标 ${result.x}, ${result.y} · 尺寸 ${result.width} × ${result.height} · 内容 ${result.contentWidth} × ${result.contentHeight}`; section.append(note);
-  const box = document.createElement("p"); box.className = "property-note"; box.textContent = `外边距 ${result.margin} · 内边距 ${result.padding}`; section.append(box);
-  if (node.source === rootSource && model?.root?.start === node.start) {
-    const table = document.createElement("div"); table.className = "layout-table";
-    for (const [key, data] of [...layouts].filter(([entry]) => entry.startsWith(`${rootSource}:`)).sort(([left], [right]) => left.localeCompare(right))) {
-      const target = getNode(Number(key.slice(key.lastIndexOf(":") + 1)), rootSource); if (!target) continue;
-      const row = document.createElement("button"); row.textContent = `${target.displayName || target.tag} · ${data.x},${data.y} · ${data.width}×${data.height}`; row.onclick = () => pick(target); table.append(row);
+  const measure = (value: number) => `${Math.round(value * 10) / 10}`;
+  const edgeLabel = (name: string, edges: BoxEdges, className: string, inner?: HTMLElement): HTMLElement => {
+    const layer = document.createElement("div"); layer.className = `box-model-layer ${className}`;
+    const caption = document.createElement("span"); caption.className = "box-model-caption"; caption.textContent = name; layer.append(caption);
+    for (const [side, value] of Object.entries(edges)) {
+      const sideValue = document.createElement("span"); sideValue.className = `box-model-edge box-model-edge-${side}`; sideValue.textContent = measure(value); layer.append(sideValue);
     }
-    section.append(table);
-  }
+    if (inner) layer.append(inner);
+    return layer;
+  };
+  const content = document.createElement("div"); content.className = "box-model-content"; content.textContent = `内容区域\n${measure(result.contentWidth)} × ${measure(result.contentHeight)}`;
+  const padding = edgeLabel("内边距", result.padding, "box-model-padding", content);
+  const boundary = document.createElement("div"); boundary.className = "box-model-layer box-model-boundary";
+  const boundaryCaption = document.createElement("span"); boundaryCaption.className = "box-model-caption"; boundaryCaption.textContent = "控件边界";
+  boundary.append(boundaryCaption, padding);
+  const margin = edgeLabel("外边距", result.margin, "box-model-margin", boundary);
+  const position = document.createElement("div"); position.className = "box-model-position";
+  const positionLabel = document.createElement("span"); positionLabel.className = "box-model-caption"; positionLabel.textContent = "位置";
+  const coordinate = document.createElement("span"); coordinate.className = "box-model-coordinate"; coordinate.textContent = `${measure(result.x)}, ${measure(result.y)}`;
+  position.append(positionLabel, coordinate, margin); section.append(position);
+  const note = document.createElement("p"); note.className = "layout-self-note";
+  const clipped = sourceValue(node, "裁剪超出") || (canonicalTag(node.tag ?? "") === "lui:Page" ? "是" : "否");
+  note.textContent = `自身尺寸：${measure(result.width)} × ${measure(result.height)}　裁剪超出：${clipped}`;
+  section.append(note);
   host.append(section);
 }
 
@@ -555,12 +925,10 @@ function properties(node: SerializableNode | undefined): void {
   if (!node) { const paragraph = document.createElement("p"); paragraph.textContent = "在组件树、画布或源码中选择一个节点。"; host.append(paragraph); return; }
   const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型";
   const category = document.createElement("select");
-  const categories = ["全部", "基础", "布局", "输入", "导航", "数据", "展示", "反馈", "媒体", "交互", "组合", "已导入组件", "结构"];
-  for (const value of categories) { const option = document.createElement("option"); option.value = value; option.textContent = value; category.append(option); }
-  const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "搜索中文名称、内部类型或已导入组件";
+  const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "搜索中文名称、内部类型或目录组件";
   const select = document.createElement("select"); const rawTag = node.tag ?? "";
   const tagCategory = (tag: string): string => {
-    if (tag.includes(":")) return "已导入组件";
+    if (tag.includes(":")) return `目录:${tag.split(":", 1)[0]}`;
     const canonical = canonicalTag(tag) ?? tag;
     const definition = controlDefinition(canonical);
     if (definition?.category) return definition.category;
@@ -575,33 +943,82 @@ function properties(node: SerializableNode | undefined): void {
     const canonical = canonicalTag(tag) ?? tag; const definition = controlDefinition(canonical);
     return [tag, canonical, definition?.name, definition?.ui, definition?.category].filter(Boolean).join(" ").toLowerCase();
   };
+  const choices = tagChoices(node);
+  const categoryLabel = (value: string): string => value.startsWith("目录:") ? value.slice(3) : value;
+  const refreshCategories = () => {
+    const current = category.value;
+    const visible = ["全部", ...[...new Set(choices.map(tagCategory))]];
+    category.innerHTML = "";
+    for (const value of visible) { const option = document.createElement("option"); option.value = value; option.textContent = categoryLabel(value); category.append(option); }
+    category.value = visible.includes(current) ? current : "全部";
+  };
   const fillTags = () => {
     const query = filter.value.trim().toLowerCase(); select.innerHTML = "";
     if (rawTag === "__placeholder__") { const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "请选择标签类型"; placeholder.selected = true; select.append(placeholder); }
-    for (const tag of tagChoices(node).filter((item) => (category.value === "全部" || tagCategory(item) === category.value) && tagSearchText(item).includes(query))) {
+    for (const tag of choices.filter((item) => (category.value === "全部" || tagCategory(item) === category.value) && tagSearchText(item).includes(query))) {
       const option = document.createElement("option"); option.value = tag; option.textContent = `${tag} · ${canonicalTag(tag) ?? tag}`; option.selected = tag === rawTag; select.append(option);
     }
   };
-  fillTags(); filter.oninput = fillTags; category.onchange = fillTags;
-  select.onchange = () => { if (select.value) vscode.postMessage({ type: "setTag", start: node.start, source: node.source, name: select.value }); };
+  refreshCategories(); fillTags(); filter.oninput = fillTags; category.onchange = fillTags;
+  select.onchange = () => { if (select.value) editNode(node, "setTag", select.value); };
   tagLabel.append(category, filter, select); host.append(tagLabel);
   const available = new Set(attributesFor(node));
+  const declared = declaredProperties(node);
+  if (declared) {
+    const section = collapsibleSection('组件公开属性');
+    for (const [key, definition] of Object.entries(declared)) {
+      propertyInput(section, node, key);
+      const meta = document.createElement('div'); meta.className = 'public-property-meta';
+      const note = document.createElement('small'); note.textContent = `${definition.type}${definition.description ? ' · '+definition.description : ''}`; meta.append(note);
+      const link = document.createElement('button'); link.textContent = '转到声明'; link.onclick = () => vscode.postMessage({ type: 'openProperty', source: componentTemplate(node)?.template.source, name: key }); meta.append(link); section.append(meta);
+    }
+    host.append(section);
+  }
+  const declarationError = node.propertiesError ?? componentTemplate(node)?.template.propertiesError;
+  if (declarationError) { const warning = document.createElement('p'); warning.textContent = declarationError; host.append(warning); }
   for (const [title, keys] of CATEGORIES) {
-    const valid = keys.filter((key) => available.has(key)); if (!valid.length) continue;
+    const valid = keys.filter((key) => available.has(key) && !declared?.[key]); if (!valid.length) continue;
     const section = collapsibleSection(title);
     for (const key of valid) propertyInput(section, node, key);
     host.append(section);
   }
-  const illegal = Object.keys(node.attrs ?? {}).map(canonicalAttribute).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
+  const illegal = Object.keys(node.attrs ?? {}).map(name => attributeKey(node, name)).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
   if (illegal.length) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = `源代码保留 ${[...new Set(illegal)].map(sourceAttribute).join("、")}；这些属性不适用于当前标签，诊断中可定位并手动删除或迁移。`; host.append(note); }
   layoutResult(host, node);
 }
 
 function applyHighlights(): void {
-  for (const element of document.querySelectorAll<HTMLElement>("[data-start][data-source]")) {
-    const candidate: PickedNode = { start: Number(element.dataset.start), end: Number(element.dataset.start), source: element.dataset.source ?? "" };
-    element.classList.toggle("is-selected", sameNode(selected, candidate));
-    element.classList.toggle("is-hovered", sameNode(hovered, candidate));
+  for (const element of document.querySelectorAll<HTMLElement>("[data-node-path][data-source]")) {
+    const source = element.dataset.source ?? "";
+    const candidate: PickedNode = { start: Number(element.dataset.start), end: Number(element.dataset.start), source, version: treeVersions.get(source) ?? 0, nodePath: (element.dataset.nodePath ?? "").split(".").filter(Boolean).map(Number), instancePath: element.dataset.instancePath };
+    const definitionOnly = element.classList.contains("outline-row");
+    element.classList.toggle("is-selected", definitionOnly ? definitionMatches(selected, candidate) : sameNode(selected, candidate));
+    element.classList.toggle("is-hovered", definitionOnly ? definitionMatches(hovered, candidate) : sameNode(hovered, candidate));
+  }
+  updateSelectionOverlay();
+}
+
+function updateSelectionOverlay(): void {
+  let layer = document.getElementById('selection-overlay');
+  if (!layer) { layer = document.createElement('div'); layer.id = 'selection-overlay'; document.body.append(layer); }
+  const stage = byId('stage').getBoundingClientRect();
+  layer.style.cssText = `position:fixed;left:${stage.left}px;top:${stage.top}px;width:${stage.width}px;height:${stage.height}px;overflow:hidden;pointer-events:none;z-index:30`;
+  layer.replaceChildren();
+  for (const [className, color] of [['is-hovered','#bda7df'],['is-selected','#e7c46d']]) {
+    const element = document.querySelector<HTMLElement>(`#canvas .${className}[data-node-path]`);
+    if (!element) continue;
+    const rect = element.getBoundingClientRect(); const box = document.createElement('div');
+    let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom;
+    // Respect clipping ancestors, but never inherit the selected widget's own radius.
+    for (let ancestor = element.parentElement; ancestor && ancestor.id !== 'stage'; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor); const bounds = ancestor.getBoundingClientRect();
+      if (style.overflowX !== 'visible') { left = Math.max(left,bounds.left); right = Math.min(right,bounds.right); }
+      if (style.overflowY !== 'visible') { top = Math.max(top,bounds.top); bottom = Math.min(bottom,bounds.bottom); }
+    }
+    if (right <= left || bottom <= top) continue;
+    box.className = `selection-rectangle ${className}`;
+    box.style.cssText = `position:absolute;box-sizing:border-box;border:2px solid ${color};border-radius:0;left:${left-stage.left}px;top:${top-stage.top}px;width:${right-left}px;height:${bottom-top}px;pointer-events:none`;
+    layer.append(box);
   }
 }
 
@@ -614,34 +1031,91 @@ function chooseSource(source: string): SourcePayload | undefined { return source
 function sendSourceEdit(): void {
   if (!editor || !activeSource || inFlight) return;
   const payload = activeSource;
-  const nextText = editor.state.doc.toString();
-  inFlight = { source: payload.source, version: payload.version, text: nextText };
-  vscode.postMessage({ type: "sourceEdit", source: payload.source, version: payload.version, text: nextText });
+  const transaction = pendingSourceEdits[0];
+  const nextText = transaction?.text ?? editor.state.doc.toString();
+  if (transaction && nextText === payload.text) {
+    pendingSourceEdits.shift();
+    sourceDirty = pendingSourceEdits.length > 0 || editor.state.doc.toString() !== payload.text;
+    pumpDocumentWork(); return;
+  }
+  if (transaction) {
+    // Rebase only actual external changes; acknowledgements never rewrite the editor.
+    const changes = rebaseSourceChanges(transaction.baseText, payload.text, transaction.changes);
+    if (!changes) { sourceEditError = "外部修改与待提交操作重叠；当前草稿保留，请核对后继续编辑。"; return; }
+    transaction.baseText = payload.text;
+    transaction.changes = changes;
+    transaction.text = applySourceChanges(payload.text, changes);
+  }
+  const targetText = transaction?.text ?? nextText;
+  if (targetText === payload.text) { if (transaction) pendingSourceEdits.shift(); sourceDirty = pendingSourceEdits.length > 0; pumpDocumentWork(); return; }
+  const patch = sourcePatch(payload.text, targetText);
+  if (!patch) return;
+  const id = nextSourceEditId++;
+  sourceDirty = false;
+  inFlight = { id, source: payload.source, version: payload.version, baseText: payload.text, text: targetText };
+  inFlightTimer = setTimeout(() => {
+    if (inFlight?.id !== id) return;
+    inFlight = undefined;
+    sourceDirty = true;
+    sourceEditError = "源码写入超时，已解除锁定；继续输入或修改属性即可重试。";
+    draw();
+  }, 5000);
+  vscode.postMessage({ type: "sourceEdit", requestId: id, source: payload.source, version: payload.version, baseText: payload.text, changes: transaction?.changes ?? [patch], origin: transaction?.origin ?? "rebase", patch });
+}
+
+function scheduleSourceEdit(): void {
+  sourceDirty = true;
+  // Microtask allows CodeMirror to finish its transaction, not a stop-typing debounce.
+  queueMicrotask(pumpDocumentWork);
+}
+
+function requestSave(): boolean {
+  if (!activeSource) return true;
+  saveRequested = true;
+  sourceEditError = "";
+  if (sourceTimer) { clearTimeout(sourceTimer); sourceTimer = undefined; }
+  pumpDocumentWork();
+  return true;
+}
+
+/** Parse and paint the current draft inside the webview, without waiting for
+ * the VS Code WorkspaceEdit round trip or a full component-catalog refresh. */
+function scheduleOptimisticPreview(): void {
+  if (previewFrame !== undefined) cancelAnimationFrame(previewFrame);
+  previewFrame = requestAnimationFrame(() => {
+    previewFrame = undefined;
+    if (!editor || !activeSource || activeSource.source !== rootSource) return;
+    const draft = editor.state.doc.toString();
+    const parsed = parseLui(draft);
+    if (!parsed.root) return;
+    const root = serializeDraftNode(parsed.root, activeSource.source);
+    // Declaration metadata belongs to the companion file, not the markup AST.
+    if (model?.root?.source === root.source) {
+      root.properties = model.root.properties; root.propertiesError = model.root.propertiesError; root.codeSource = model.root.codeSource;
+    }
+    model = { root, diagnostics: parsed.diagnostics };
+    treeVersions.set(activeSource.source, activeSource.version);
+    treeTexts.set(activeSource.source, draft);
+    if (selected?.source === activeSource.source) {
+      const latest = nodeAtPath(root, selected.nodePath);
+      selected = latest?.kind === "element" ? nodeRef(latest, selected.instancePath) : undefined;
+    }
+    draw(false);
+  });
 }
 
 function sourceCompletions(context: CompletionContext) {
-  const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos);
-  const value = /([^\s=]+)\s*=\s*["']([^"']*)$/.exec(before);
-  if (value) {
-    const canonical = canonicalAttribute(value[1]!);
-    const options = enumOptions(canonical) ?? (attributeDefinition(canonical)?.kind === "tracks" ? ["自动", "填充", "2填充"] : undefined);
-    if (options) return { from: context.pos - value[2]!.length, options: options.map((label) => ({ label, type: "enum", apply: label, detail: `${sourceAttribute(canonical)} 可选值` })) };
-  }
-  const tag = context.matchBefore(/<[\w:\-\u0080-\uffff]*/);
-  if (tag) {
-    const imported = Object.keys((model?.root?.attrs ?? {})).filter((key) => directoryAlias(key)).flatMap((key) => {
-      const alias = directoryAlias(key)?.alias ?? ""; const directory = model?.root?.attrs[key]; return Object.keys(catalog[directory ?? ""] ?? {}).map((name) => `${alias}:${name}`);
-    });
-    const options: Completion[] = [...BUILTIN_TAGS, ...imported].map((label) => ({ label, type: "class", apply: `${label} 名称=\"${label.includes(":") ? "组件实例" : "设计节点"}\" />` }));
-    return { from: tag.from + 1, options };
-  }
-  const binding = context.matchBefore(/\{(?:绑定|动作)?\s*[A-Za-z0-9_.-]*/);
-  if (binding) return { from: binding.from, options: [{ label: "{绑定 view.path}", type: "keyword", apply: "{绑定 view.path}" }, { label: "{动作 ActionKey}", type: "keyword", apply: "{动作 ActionKey}" }] };
-  if (before.lastIndexOf("<") > before.lastIndexOf(">")) {
-    const attribute = context.matchBefore(/[\w:\-\u0080-\uffff]*/);
-    if (attribute) return { from: attribute.from, options: ATTRIBUTE_NAMES.map((name) => ({ label: name, type: "property", apply: name === "目录:积木" ? '目录:积木="Presentation/Components"' : `${name}=\"\"` })) };
-  }
-  return null;
+  const source = context.state.doc.toString();
+  const candidates = provideLuiCompletions({ source, position: context.pos, imports: completionImports, properties: model?.root?.properties, actions: actionSymbols[activeSource?.source ?? rootSource] ?? [] });
+  if (!candidates.length) return null;
+  const type = (kind: string): Completion["type"] => kind === "tag" ? "class" : kind === "attribute" ? "property" : kind === "value" ? "enum" : "keyword";
+  const rank = (group: string) => ["根节点", "当前标签", "布局", "内容与数据", "交互", "绑定路径", "内置命令"].indexOf(group) + 1;
+  return {
+    from: candidates[0]!.from,
+    to: candidates[0]!.to,
+    filter: false,
+    options: candidates.map((candidate) => ({ label: candidate.label, type: type(candidate.kind), apply: candidate.insertText, detail: candidate.detail, info: candidate.documentation, section: { name: candidate.group, rank: rank(candidate.group) < 1 ? 99 : rank(candidate.group) } }))
+  };
 }
 
 function sourceExtensions(): Extension[] {
@@ -651,17 +1125,34 @@ function sourceExtensions(): Extension[] {
     return true;
   };
   return [
-    lineNumbers(), foldGutter(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(), history(), indentUnit.of("  "), xml(), syntaxHighlighting(defaultHighlightStyle), closeBrackets(), bracketMatching(), search({ top: true }), highlightSelectionMatches(),
-    keymap.of([{ key: "Mod-c", run: copySelection }, { key: "Mod-Alt-ArrowUp", run: copyLineUp }, { key: "Mod-Alt-ArrowDown", run: copyLineDown }, { key: "Alt-ArrowUp", run: moveLineUp }, { key: "Alt-ArrowDown", run: moveLineDown }, { key: "Mod-/", run: toggleComment }, ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, ...foldKeymap, ...searchKeymap, indentWithTab]),
-    autocompletion({ override: [sourceCompletions], activateOnTyping: true }),
+    lineNumbers(), foldGutter(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(), history({ newGroupDelay: 500 }), indentUnit.of("  "), xml(), syntaxHighlighting(defaultHighlightStyle), closeBrackets(), bracketMatching(), search({ top: true }), highlightSelectionMatches(),
+    EditorState.transactionExtender.of(tr => {
+      const event = tr.annotation(Transaction.userEvent) ?? "";
+      let newline = false;
+      tr.changes.iterChanges((_a, _b, _c, _d, inserted) => { if (inserted.lines > 1) newline = true; });
+      if (!writingSource && ((tr.selection && !tr.docChanged) || newline || /paste|complete|drop/.test(event))) return { annotations: isolateHistory.of("full") };
+      return null;
+    }),
+    keymap.of([{ key: "Mod-s", preventDefault: true, run: requestSave }, { key: "Mod-c", run: copySelection }, { key: "Mod-Alt-ArrowUp", run: copyLineUp }, { key: "Mod-Alt-ArrowDown", run: copyLineDown }, { key: "Alt-ArrowUp", run: moveLineUp }, { key: "Alt-ArrowDown", run: moveLineDown }, { key: "Mod-/", run: toggleComment }, ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, ...foldKeymap, ...searchKeymap, indentWithTab]),
+    // Completion is available while typing, but moving the caret by click must
+    // close the previous list.  Otherwise CodeMirror can retain its old anchor
+    // and make a suggestion list appear far away from the newly clicked token.
+    autocompletion({ override: [sourceCompletions], activateOnTyping: true, closeOnBlur: true }),
     linter(() => activeSource ? sourceDiagnostics(activeSource) : []),
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !writingSource) {
-        if (sourceTimer) clearTimeout(sourceTimer);
-        sourceTimer = setTimeout(sendSourceEdit, 140);
+        for (const tr of update.transactions) {
+          if (!tr.docChanged) continue;
+          const changes: SourcePatch[] = [];
+          tr.changes.iterChanges((from, to, _newFrom, _newTo, inserted) => changes.push({ from, to, insert: inserted.toString() }));
+          pendingSourceEdits.push({ baseText: tr.startState.doc.toString(), text: tr.newDoc.toString(), changes, origin: tr.annotation(Transaction.userEvent) ?? "input" });
+        }
+        scheduleOptimisticPreview();
+        scheduleSourceEdit();
       }
+      if (update.selectionSet && !update.docChanged && !writingSource) closeCompletion(update.view);
       if (update.selectionSet && !writingSource && activeSource) {
-        const node = getNodeContaining(update.state.selection.main.head, activeSource.source);
+        const node = treeTexts.get(activeSource.source) === editor?.state.doc.toString() ? getNodeContaining(update.state.selection.main.head, activeSource.source) : undefined;
         if (node) { selected = nodeRef(node); properties(node); applyHighlights(); }
       }
     }),
@@ -671,7 +1162,10 @@ function sourceExtensions(): Extension[] {
       ".cm-gutters": { backgroundColor: "#170f27", color: "#a895c6", borderRight: "1px solid #4c3568" },
       ".cm-activeLine": { backgroundColor: "#2a194466" }, ".cm-activeLineGutter": { backgroundColor: "#2a1944" },
       ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#8b5cf6aa" },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#ffe16b" }, ".cm-content": { caretColor: "#ffe16b" }, ".cm-matchingBracket": { backgroundColor: "#d5b56d44", outline: "1px solid #ffe16b" }
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#ffe16b" }, ".cm-content": { caretColor: "#ffe16b" }, ".cm-matchingBracket": { backgroundColor: "#d5b56d44", outline: "1px solid #ffe16b" },
+      ".cm-tooltip-autocomplete": { backgroundColor: "#1a102a", color: "#f4ecff", border: "1px solid #7855aa", borderRadius: "6px", boxShadow: "0 10px 28px #000a", maxHeight: "260px" },
+      ".cm-tooltip-autocomplete > ul": { fontFamily: "Consolas, 'Microsoft YaHei Mono', monospace" },
+      ".cm-tooltip-autocomplete > ul > li": { color: "#f4ecff" }, ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "#51367c", color: "#fff" }
     })
   ];
 }
@@ -687,101 +1181,279 @@ function setEditorSelection(node: PickedNode): void {
 function activateSource(source: string, selection?: PickedNode): void {
   const payload = chooseSource(source);
   if (!payload) return;
+  if (activeSource?.source === source && editor && sourceHasUncommittedDraft(source)) {
+    if (selection) setEditorSelection(selection);
+    return;
+  }
   activeSource = payload;
+  sourceDirty = false;
   if (!editor) {
     editor = new EditorView({ state: EditorState.create({ doc: payload.text, extensions: sourceExtensions() }), parent: byId("source-editor") });
   } else if (editor.state.doc.toString() !== payload.text) {
     writingSource = true;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: payload.text } });
+    const patch = sourcePatch(editor.state.doc.toString(), payload.text);
+    if (patch) editor.dispatch({ changes: patch, annotations: Transaction.addToHistory.of(false) });
     writingSource = false;
   }
   editor.dispatch(setDiagnostics(editor.state, sourceDiagnostics(payload)));
   if (selection) setEditorSelection(selection);
 }
 
-/** Apply a host revision. A matching in-flight revision is an acknowledgement, not an external overwrite. */
-function reconcileSource(payload: SourcePayload): void {
+/** Apply an external host revision without treating model traffic as an edit acknowledgement. */
+function reconcileSource(payload: SourcePayload, propertyEdit = !!designerEditInFlight): void {
+  const known = sources[payload.source];
+  if (known && payload.version < known.version) return;
   sources[payload.source] = payload;
-  if (!activeSource || activeSource.source !== payload.source || !editor) { activateSource(payload.source); return; }
-  const currentText = editor.state.doc.toString();
-  const acknowledged = !!inFlight && inFlight.source === payload.source && inFlight.text === payload.text;
-  if (!acknowledged) { activateSource(payload.source, selected?.source === payload.source ? selected : undefined); return; }
-  inFlight = undefined;
-  activeSource = { ...payload, text: currentText };
-  editor.dispatch(setDiagnostics(editor.state, sourceDiagnostics(payload)));
-  if (currentText !== payload.text) {
-    if (sourceTimer) clearTimeout(sourceTimer);
-    sourceTimer = setTimeout(sendSourceEdit, 0);
+  if (!activeSource || activeSource.source !== payload.source || !editor) return;
+  if (payload.version < activeSource.version) return;
+  if (inFlight) {
+    if (!deferredSource || payload.version >= deferredSource.version) deferredSource = payload;
+    return;
   }
+  const current = editor.state.doc.toString();
+  let merged = payload.text;
+  const local = sourcePatch(activeSource.text, current);
+  if (local && current !== payload.text) {
+    const rebased = rebaseSourcePatch(activeSource.text, payload.text, local);
+    if (!rebased) { sourceEditError = "外部修改与当前输入重叠；草稿已保留，请核对后继续编辑。"; return; }
+    merged = payload.text.slice(0, rebased.from) + rebased.insert + payload.text.slice(rebased.to);
+  }
+  activeSource = payload;
+  const patch = sourcePatch(current, merged);
+  writingSource = true;
+  try {
+    if (patch) editor.dispatch({ changes: patch, annotations: propertyEdit
+      ? [Transaction.addToHistory.of(true), isolateHistory.of("full")]
+      : Transaction.addToHistory.of(false) });
+    editor.dispatch(setDiagnostics(editor.state, sourceDiagnostics(payload)));
+  } finally { writingSource = false; }
+  sourceDirty = merged !== payload.text;
+  sourceEditError = "";
+  scheduleOptimisticPreview();
+}
+
+function applySourceEditResult(payload: SourceEditResultPayload): void {
+  if (!inFlight || payload.requestId !== inFlight.id) return;
+  const completed = inFlight;
+  inFlight = undefined;
+  if (inFlightTimer) { clearTimeout(inFlightTimer); inFlightTimer = undefined; }
+  const known = sources[payload.source.source];
+  if (!known || payload.source.version >= known.version) sources[payload.source.source] = payload.source;
+  if (activeSource?.source === payload.source.source && editor) {
+    if (payload.source.version >= activeSource.version) activeSource = payload.source;
+    editor.dispatch(setDiagnostics(editor.state, sourceDiagnostics(payload.source)));
+    const currentText = editor.state.doc.toString();
+    if (payload.success) {
+      pendingSourceEdits.shift();
+      sourceEditError = "";
+      if (treeTexts.get(payload.source.source) === payload.source.text) {
+        treeVersions.set(payload.source.source, payload.source.version);
+        if (selected?.source === payload.source.source) selected.version = payload.source.version;
+      }
+      if (pendingSourceEdits.length || currentText !== payload.source.text || sourceDirty || currentText !== completed.text) sourceDirty = true;
+      else sourceDirty = false;
+    } else {
+      sourceDirty = currentText !== payload.source.text;
+      sourceEditError = payload.message || "源码写入失败；当前草稿已保留。";
+    }
+  }
+  const pending = deferredSource; deferredSource = undefined;
+  if (pending) reconcileSource(pending);
+  draw();
+  if (payload.success) pumpDocumentWork();
 }
 
 function collectLayoutData(): void {
   layouts.clear();
   const canvas = byId("canvas"); const canvasRect = canvas.getBoundingClientRect();
-  for (const element of canvas.querySelectorAll<HTMLElement>("[data-start][data-source]")) {
+  for (const element of canvas.querySelectorAll<HTMLElement>("[data-node-path][data-source]")) {
+    if (element.classList.contains("scroll")) element.classList.toggle("scrollbar-empty-y", element.scrollHeight <= element.clientHeight);
     const start = Number(element.dataset.start); const source = element.dataset.source ?? "";
     if (!Number.isFinite(start) || !source) continue;
     const rect = element.getBoundingClientRect(); const parent = element.parentElement?.getBoundingClientRect() ?? canvasRect; const style = getComputedStyle(element);
+    const page = element.closest<HTMLElement>(".page-root"); const design = page?.querySelector<HTMLElement>(":scope > .lui-page-design");
+    const isPageRoot = element === page; const pageScale = page ? Number(page.dataset.pageScale) || 1 : 1;
+    const logicalScale = canvasZoom * (isPageRoot ? 1 : pageScale); const logicalOrigin = isPageRoot || !design ? canvasRect : design.getBoundingClientRect();
     const pixel = (value: string) => Number.isFinite(Number.parseFloat(value)) ? Number.parseFloat(value) : 0;
-    const paddingX = pixel(style.paddingLeft) + pixel(style.paddingRight);
-    const paddingY = pixel(style.paddingTop) + pixel(style.paddingBottom);
-    layouts.set(`${source}:${start}`, {
-      x: Math.round((rect.left - canvasRect.left) * 10) / 10, y: Math.round((rect.top - canvasRect.top) * 10) / 10,
-      width: Math.round(rect.width * 10) / 10, height: Math.round(rect.height * 10) / 10,
-      parentX: Math.round((parent.left - canvasRect.left) * 10) / 10, parentY: Math.round((parent.top - canvasRect.top) * 10) / 10,
-      contentWidth: Math.max(0, Math.round((rect.width - paddingX) * 10) / 10), contentHeight: Math.max(0, Math.round((rect.height - paddingY) * 10) / 10),
-      margin: `${style.marginLeft},${style.marginTop},${style.marginRight},${style.marginBottom}`,
-      padding: `${style.paddingLeft},${style.paddingTop},${style.paddingRight},${style.paddingBottom}`
+    const margin = { left: pixel(style.marginLeft), top: pixel(style.marginTop), right: pixel(style.marginRight), bottom: pixel(style.marginBottom) };
+    const border = { left: pixel(style.borderLeftWidth), top: pixel(style.borderTopWidth), right: pixel(style.borderRightWidth), bottom: pixel(style.borderBottomWidth) };
+    const padding = { left: pixel(style.paddingLeft), top: pixel(style.paddingTop), right: pixel(style.paddingRight), bottom: pixel(style.paddingBottom) };
+    const width = element.offsetWidth; const height = element.offsetHeight;
+    const path = (element.dataset.nodePath ?? "").split(".").filter(Boolean).map(Number);
+    layouts.set(layoutKey(source, path, element.dataset.instancePath), {
+      x: Math.round((rect.left - logicalOrigin.left) / logicalScale * 10) / 10, y: Math.round((rect.top - logicalOrigin.top) / logicalScale * 10) / 10,
+      width, height,
+      parentX: Math.round((parent.left - canvasRect.left) / canvasZoom * 10) / 10, parentY: Math.round((parent.top - canvasRect.top) / canvasZoom * 10) / 10,
+      contentWidth: Math.max(0, Math.round((width - padding.left - padding.right - border.left - border.right) * 10) / 10), contentHeight: Math.max(0, Math.round((height - padding.top - padding.bottom - border.top - border.bottom) * 10) / 10),
+      availableWidth: Math.round(parent.width * 10) / 10, availableHeight: Math.round(parent.height * 10) / 10,
+      desiredWidth: Math.round(element.scrollWidth * 10) / 10, desiredHeight: Math.round(element.scrollHeight * 10) / 10,
+      margin, border, padding
     });
   }
 }
 
-function draw(): void {
-  const canvas = byId("canvas"); const tree = byId("outline"); canvas.innerHTML = ""; tree.innerHTML = "";
+function draw(refreshChrome = true): void {
+  const canvas = byId("canvas"); const tree = byId("outline"); canvas.innerHTML = "";
+  if (refreshChrome) tree.innerHTML = "";
   if (!model?.root) return;
   const isPage = canonicalTag(model.root.tag) === "lui:Page";
-  byId("device-label").style.display = isPage ? "" : "none";
-  byId("control-constraints").style.display = isPage ? "none" : "";
   canvas.classList.toggle("control-preview", !isPage);
-  if (isPage) {
-    const [width, height] = byId<HTMLSelectElement>("device").value.split("x");
-    canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; canvas.style.minHeight = `${height}px`;
-  } else {
-    canvas.style.width = controlAvailableWidth ? `${controlAvailableWidth}px` : "fit-content";
-    canvas.style.height = controlAvailableHeight ? `${controlAvailableHeight}px` : "fit-content";
-    canvas.style.minHeight = controlAvailableHeight ? `${controlAvailableHeight}px` : "0";
-  }
-  const select = byId<HTMLSelectElement>("preview"); const states = previews(model.root); const previous = select.value; select.innerHTML = "";
-  for (const state of states) { const option = document.createElement("option"); option.value = String(state.start); option.textContent = state.displayName || "预览状态"; select.append(option); }
-  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
-  byId("preview-label").style.display = states.length ? "" : "none";
-  outline(model.root, tree); canvas.append(renderNode(model.root));
-  properties(selected ? getNode(selected.start, selected.source) : undefined);
+  byId("device-label").hidden = !isPage;
+  const [width, height] = byId<HTMLSelectElement>("device").value.split("x");
+  canvas.style.width = isPage ? `${width}px` : "max-content";
+  canvas.style.height = isPage ? `${height}px` : "auto";
+  canvas.style.minHeight = isPage ? `${height}px` : "0";
+  if (refreshChrome) outline(model.root, tree);
+  canvas.append(renderNode(model.root));
+  if (!isPage) measureControlPreview(canvas);
+  if (refreshChrome) properties(resolvePicked(selected));
   const diagnostics = byId("diagnostics"); diagnostics.innerHTML = "";
   for (const issue of model.diagnostics ?? []) { const item = document.createElement("p"); item.textContent = `⚠ ${issue.message}`; diagnostics.append(item); }
+  if (sourceEditError) { const item = document.createElement("p"); item.textContent = `⚠ 源码同步未完成：${sourceEditError}`; diagnostics.append(item); }
+  if (designerEditError) { const item = document.createElement("p"); item.textContent = `⚠ 属性修改未完成：${designerEditError}`; diagnostics.append(item); }
   applyHighlights();
-  requestAnimationFrame(() => { collectLayoutData(); properties(selected ? getNode(selected.start, selected.source) : undefined); });
+  requestAnimationFrame(() => { collectLayoutData(); if (refreshChrome) properties(resolvePicked(selected)); updateArtboard(); });
 }
 
-function pick(node: SerializableNode): void {
-  selected = nodeRef(node); draw(); activateSource(rootSource, selected.source === rootSource ? selected : undefined);
+function clampZoom(value: number): number { return Math.max(.05, Math.min(64, value)); }
+
+/** Intrinsic pass: percentages have no parent size yet. Freeze the measured
+ * root, then restore percentages against that size (never the device viewport). */
+function measureControlPreview(canvas: HTMLElement): void {
+  const root = canvas.firstElementChild as HTMLElement | null;
+  if (!root) return;
+  const restored: Array<() => void> = [];
+  for (const node of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
+    for (const property of ["width", "height"] as const) {
+      const value = node.style[property];
+      if (value.endsWith("%")) { node.style[property] = "auto"; restored.push(() => { node.style[property] = value; }); }
+    }
+    if (node.style.flexBasis === "0px" || node.style.flexBasis === "0%" || node.style.flexBasis === "0") {
+      const basis = node.style.flexBasis; node.style.flexBasis = "auto";
+      restored.push(() => { node.style.flexBasis = basis; });
+    }
+  }
+  const width = root.offsetWidth; const height = root.offsetHeight;
+  restored.forEach((restore) => restore());
+  root.style.width = `${width}px`; root.style.height = `${height}px`;
+  const style = getComputedStyle(root);
+  const number = (value: string) => Number.parseFloat(value) || 0;
+  canvas.style.width = `${Math.max(1, width + number(style.marginLeft) + number(style.marginRight))}px`;
+  canvas.style.height = `${Math.max(1, height + number(style.marginTop) + number(style.marginBottom))}px`;
+}
+
+function updateArtboard(): void {
+  const canvas = byId("canvas"); const artboard = byId("artboard"); const stage = byId("stage"); const content = byId("stage-content");
+  const width = canvas.offsetWidth || 1; const height = canvas.offsetHeight || 1;
+  const scaledWidth = Math.max(1, width * canvasZoom); const scaledHeight = Math.max(1, height * canvasZoom);
+  const viewportWidth = Math.max(1, stage.clientWidth - 48); const viewportHeight = Math.max(1, stage.clientHeight - 48);
+  content.style.width = `${Math.max(viewportWidth, scaledWidth)}px`; content.style.height = `${Math.max(viewportHeight, scaledHeight)}px`;
+  artboard.style.width = `${scaledWidth}px`; artboard.style.height = `${scaledHeight}px`;
+  artboard.style.marginLeft = `${Math.max(0, (viewportWidth - scaledWidth) / 2)}px`;
+  artboard.style.marginTop = `${Math.max(0, (viewportHeight - scaledHeight) / 2)}px`;
+  canvas.style.transform = `scale(${canvasZoom})`; byId("zoom-value").textContent = `${Math.round(canvasZoom * 100)}%`;
+  requestAnimationFrame(updateSelectionOverlay);
+}
+function fitArtboardToStage(): void {
+  const stage = byId("stage"); const canvas = byId("canvas"); const width = canvas.offsetWidth || 390; const height = canvas.offsetHeight || 844;
+  canvasZoom = clampZoom(Math.min((stage.clientWidth - 48) / width, (stage.clientHeight - 48) / height));
+  updateArtboard();
+}
+/** Fit is an explicit viewing command.  Workbench resizes never alter the user's zoom. */
+function fitArtboard(): void { fitArtboardToStage(); }
+
+function zoomAt(clientX: number, clientY: number, nextZoom: number): void {
+  const stage = byId("stage"); const canvas = byId("canvas"); const before = canvas.getBoundingClientRect();
+  const anchorX = (clientX - before.left) / canvasZoom; const anchorY = (clientY - before.top) / canvasZoom;
+  canvasZoom = clampZoom(nextZoom); updateArtboard();
+  const after = canvas.getBoundingClientRect();
+  stage.scrollLeft += after.left + anchorX * canvasZoom - clientX;
+  stage.scrollTop += after.top + anchorY * canvasZoom - clientY;
+}
+
+function pick(node: SerializableNode, instancePath?: string): void {
+  selected = nodeRef(node, instancePath); draw();
+  // The embedded editor remains bound to its document.  A user may explicitly
+  // locate a root-document node, but selecting an imported implementation never
+  // switches the source editor or opens a native editor group.
+  if (activeSource?.source === selected.source) setEditorSelection(selected);
 }
 
 function applyModel(payload: ModelPayload): void {
-  model = payload.model; catalog = payload.catalog ?? {}; sources = payload.sources ?? {}; rootSource = payload.rootSource;
+  if (payload.generation <= lastModelGeneration) return;
+  lastModelGeneration = payload.generation;
+  const rootIncoming = payload.sources?.[payload.rootSource];
+  const preserveDraft = !!editor && activeSource?.source === payload.rootSource && !!rootIncoming && editor.state.doc.toString() !== rootIncoming.text;
+  const draftRoot = preserveDraft ? model?.root : undefined;
+  const draftDiagnostics = preserveDraft ? model?.diagnostics : undefined;
+  model = preserveDraft ? { root: draftRoot, diagnostics: draftDiagnostics ?? [] } : payload.model;
+  catalog = payload.catalog ?? {}; completionImports = payload.completionImports ?? []; actionSymbols = payload.actionSymbols ?? {}; rootSource = payload.rootSource;
+  if (!preserveDraft) { treeVersions.clear(); treeTexts.clear(); }
+  for (const [source, incoming] of Object.entries(payload.sources ?? {})) {
+    if (!(preserveDraft && source === payload.rootSource)) {
+      treeVersions.set(source, incoming.version);
+      treeTexts.set(source, incoming.text);
+    }
+    const known = sources[source];
+    if (!known || incoming.version >= known.version) sources[source] = incoming;
+  }
+  if (selected) {
+    const latestVersion = treeVersions.get(selected.source);
+    const latestNode = nodeAtPath(rootForSource(selected.source), selected.nodePath);
+    selected = latestVersion !== undefined && latestNode?.kind === "element" ? { ...nodeRef(latestNode, selected.instancePath), version: latestVersion } : undefined;
+  }
   byId<HTMLSelectElement>("device").value = payload.device;
-  if (!activeSource || !sources[activeSource.source]) activateSource(rootSource, selected?.source === rootSource ? selected : undefined);
-  else reconcileSource(sources[activeSource.source]);
+  if (!activeSource || !sources[activeSource.source]) activateSource(rootSource);
+  else {
+    const incoming = payload.sources[activeSource.source];
+    if (incoming) reconcileSource(incoming);
+  }
   draw();
+  // Every new document starts at 100%. Subsequent layout,
+  // splitter and preview updates must never override the user's chosen zoom.
+  if (initialFitSource !== rootSource) {
+    initialFitSource = rootSource;
+    canvasZoom = 1; requestAnimationFrame(() => { updateArtboard(); updateSelectionOverlay(); });
+  }
+  if (!designerEditInFlight) flushDesignerEdits();
 }
 
 function applyReload(payload: SourceReloadPayload): void {
   reconcileSource(payload.source);
 }
 
+function applyDesignerEditResult(payload: DesignerEditResultPayload): void {
+  if (!designerEditInFlight || payload.requestId !== designerEditInFlight.id) return;
+  designerEditInFlight = undefined;
+  if (designerEditTimer) { clearTimeout(designerEditTimer); designerEditTimer = undefined; }
+  if (!payload.success) {
+    designerEditError = payload.message || "编辑器未能写入当前文档。";
+    queuedDesignerEdits.length = 0;
+    if (payload.source) reconcileSource(payload.source);
+    draw();
+    return;
+  }
+  designerEditError = "";
+  if (payload.source) reconcileSource(payload.source, true);
+  pumpDocumentWork();
+}
+
+function applySaveSourceResult(payload: SaveSourceResultPayload): void {
+  if (!saveInFlight || payload.requestId !== saveInFlight.id) return;
+  saveInFlight = undefined;
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
+  reconcileSource(payload.source);
+  sourceEditError = payload.success ? "" : (payload.message || "保存失败；当前草稿仍已保留。");
+  draw();
+  // Saving is not an edit lock.  A genuine disk error leaves the draft and its
+  // warning visible, but later property edits and a retry must remain usable.
+  pumpDocumentWork();
+}
+
 function setupSplitter(): void {
   const splitter = byId("splitter");
   splitter.addEventListener("pointerdown", (event) => {
+    if ((event.target as HTMLElement).closest("button")) return;
     event.preventDefault(); splitter.setPointerCapture(event.pointerId);
     const move = (moveEvent: PointerEvent) => {
       const bounds = document.body.getBoundingClientRect(); const percent = Math.max(25, Math.min(75, (moveEvent.clientY - bounds.top) / bounds.height * 100));
@@ -795,32 +1467,87 @@ function setupSplitter(): void {
 function setupOutlineDivider(): void {
   const divider = byId("outline-divider"); const workbench = byId("design-workbench"); const button = byId<HTMLButtonElement>("outline-collapse");
   let lastWidth = 280;
+  const inspectorWidth = 288;
+  const updateTracks = () => {
+    const limit = Math.max(28, (workbench.clientWidth - 127) / 2);
+    document.documentElement.style.setProperty("--outline-track", `${workbench.classList.contains("outline-collapsed") ? 28 : Math.min(lastWidth, limit)}px`);
+    document.documentElement.style.setProperty("--inspector-track", `${byId("inspector").classList.contains("collapsed") ? 28 : Math.min(inspectorWidth, limit)}px`);
+  };
   button.onclick = () => {
     const collapsed = workbench.classList.toggle("outline-collapsed");
-    if (collapsed) { lastWidth = byId("outline-panel").getBoundingClientRect().width; document.documentElement.style.setProperty("--outline-width", "0px"); button.textContent = "›"; button.title = "展开结构树"; }
-    else { document.documentElement.style.setProperty("--outline-width", `${lastWidth}px`); button.textContent = "‹"; button.title = "收起结构树"; }
+    button.textContent = collapsed ? "›" : "‹"; button.title = collapsed ? "展开结构树" : "收起结构树";
+    button.setAttribute("aria-expanded", String(!collapsed)); updateTracks();
   };
+  byId("collapse").onclick = () => {
+    const collapsed = byId("inspector").classList.toggle("collapsed");
+    const toggle = byId("collapse"); toggle.textContent = collapsed ? "‹" : "收起";
+    toggle.title = collapsed ? "展开属性面板" : "收起属性面板";
+    toggle.setAttribute("aria-expanded", String(!collapsed)); updateTracks();
+  };
+  new ResizeObserver(updateTracks).observe(workbench);
+  new ResizeObserver(() => { updateArtboard(); editor?.requestMeasure(); }).observe(byId("stage"));
+  byId('stage').addEventListener('scroll', updateSelectionOverlay, true);
+  updateTracks();
   divider.addEventListener("pointerdown", (event) => {
     if ((event.target as HTMLElement).closest("button")) return;
     event.preventDefault(); workbench.classList.remove("outline-collapsed"); button.textContent = "‹"; divider.setPointerCapture(event.pointerId);
-    const move = (moveEvent: PointerEvent) => { const bounds = workbench.getBoundingClientRect(); lastWidth = Math.max(168, Math.min(460, moveEvent.clientX - bounds.left)); document.documentElement.style.setProperty("--outline-width", `${lastWidth}px`); };
+    const move = (moveEvent: PointerEvent) => { const bounds = workbench.getBoundingClientRect(); lastWidth = Math.max(168, Math.min(460, moveEvent.clientX - bounds.left)); updateTracks(); };
     const stop = (upEvent: PointerEvent) => { divider.releasePointerCapture(upEvent.pointerId); divider.removeEventListener("pointermove", move); divider.removeEventListener("pointerup", stop); };
     divider.addEventListener("pointermove", move); divider.addEventListener("pointerup", stop);
   });
 }
 
-window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceReloadPayload>) => {
+/** Panning is a view-only operation: device and control preview dimensions stay immutable. */
+function setupArtboardViewport(): void {
+  const stage = byId("stage");
+  let spacePanHeld = false;
+  let pan: { x: number; y: number; left: number; top: number; pointerId: number } | undefined;
+  const ignoresKeyboardPan = () => !!document.activeElement?.closest("input, select, textarea, #source-editor");
+  window.addEventListener("keydown", (event) => { if (event.code === "Space" && !ignoresKeyboardPan()) spacePanHeld = true; });
+  window.addEventListener("keyup", (event) => { if (event.code === "Space") spacePanHeld = false; });
+  window.addEventListener("blur", () => { spacePanHeld = false; });
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.button !== 1 && !(event.button === 0 && spacePanHeld)) return;
+    event.preventDefault();
+    pan = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop, pointerId: event.pointerId };
+    stage.classList.add("is-panning"); stage.setPointerCapture(event.pointerId);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    stage.scrollLeft = pan.left - (event.clientX - pan.x); stage.scrollTop = pan.top - (event.clientY - pan.y);
+  });
+  const stopPan = (event: PointerEvent) => {
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+    pan = undefined; stage.classList.remove("is-panning");
+  };
+  stage.addEventListener("pointerup", stopPan); stage.addEventListener("pointercancel", stopPan);
+  stage.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    zoomAt(event.clientX, event.clientY, canvasZoom * Math.exp(-event.deltaY * .0015));
+  }, { passive: false });
+}
+
+window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceReloadPayload | SourceEditResultPayload | DesignerEditResultPayload | SaveSourceResultPayload>) => {
   if (event.data.type === "model") applyModel(event.data);
   if (event.data.type === "source") applyReload(event.data);
+  if (event.data.type === "sourceEditResult") applySourceEditResult(event.data);
+  if (event.data.type === "designerEditResult") applyDesignerEditResult(event.data);
+  if (event.data.type === "saveSourceResult") applySaveSourceResult(event.data);
 });
 
-byId<HTMLSelectElement>("device").onchange = draw;
-byId<HTMLInputElement>("available-width").onchange = () => { controlAvailableWidth = byId<HTMLInputElement>("available-width").value; draw(); };
-byId<HTMLInputElement>("available-height").onchange = () => { controlAvailableHeight = byId<HTMLInputElement>("available-height").value; draw(); };
-byId<HTMLSelectElement>("preview").onchange = draw;
+byId<HTMLSelectElement>("device").onchange = () => draw();
 byId<HTMLButtonElement>("deploy").onclick = () => vscode.postMessage({ type: "deploy" });
-byId<HTMLButtonElement>("collapse").onclick = () => { const inspector = byId("inspector"); inspector.classList.toggle("collapsed"); byId("collapse").textContent = inspector.classList.contains("collapsed") ? "展开" : "收起"; };
+byId("canvas").addEventListener("click", pickVisualTarget);
+byId<HTMLButtonElement>("fit").onclick = fitArtboard;
+byId<HTMLButtonElement>("actual-size").onclick = () => { canvasZoom = 1; updateArtboard(); };
+byId<HTMLButtonElement>("zoom-in").onclick = () => { canvasZoom = clampZoom(canvasZoom * 1.25); updateArtboard(); };
+byId<HTMLButtonElement>("zoom-out").onclick = () => { canvasZoom = clampZoom(canvasZoom / 1.25); updateArtboard(); };
+byId<HTMLButtonElement>("source-collapse").onclick = () => { document.body.classList.remove("source-maximized"); document.body.classList.toggle("source-collapsed"); };
+byId<HTMLButtonElement>("source-maximize").onclick = () => { document.body.classList.remove("source-collapsed"); document.body.classList.toggle("source-maximized"); };
 byId<HTMLSelectElement>("device").dispatchEvent(new Event("change"));
 setupSplitter();
 setupOutlineDivider();
+setupArtboardViewport();
 vscode.postMessage({ type: "ready" });

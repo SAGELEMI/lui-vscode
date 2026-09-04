@@ -1,12 +1,63 @@
-import { UI_CONTROL_DEFINITIONS, attributeDefinition, canonicalAttribute, canonicalTag, DEPRECATED_CANONICAL_ATTRIBUTES, DEPRECATED_CANONICAL_TAGS, directoryAlias, enumOptions, isLegacyToken, legacyEnumValue, normalizedEnumValue, parseBinding, sourceAttribute, sourceTag as chineseTag } from "./vocabulary.js";
+import { UI_CONTROL_DEFINITIONS, TAG_TO_CANONICAL, attributeDefinition, canonicalAttribute, canonicalTag, DEPRECATED_CANONICAL_ATTRIBUTES, DEPRECATED_CANONICAL_TAGS, directoryAlias, enumOptions, isLegacyToken, legacyEnumValue, normalizedEnumValue, parseBinding, parseCommand, sourceAttribute, sourceTag as chineseTag } from "./vocabulary.js";
+import { isLayoutProperty, type ComponentProperties } from './properties.js';
+import { pathKeys } from './paths.js';
+import type { LuiCompletionImport } from './completion.js';
 
-export { UI_CONTROL_DEFINITIONS, parseBinding };
+export { UI_CONTROL_DEFINITIONS, parseBinding, parseCommand };
+export { pathKeys, readPath } from './paths.js';
+export { readComponentProperties, isLayoutProperty, propertyTypeMatches, type ComponentProperties, type ComponentProperty } from './properties.js';
+export { availableAttributes, extractLuiActionSymbols, provideLuiCompletions, type LuiCompletionCandidate, type LuiCompletionContext, type LuiCompletionImport, type LuiImportedComponent } from "./completion.js";
+
+const KNOWN_CANONICAL_TAGS = new Set(Object.values(TAG_TO_CANONICAL));
 
 /**
  * LUI's portable syntax model. UTF-8 is valid everywhere in the design
  * document except values that cross the Lua boundary (x:Ref, Binding, Action).
  */
 export interface LuiRange { start: number; end: number; }
+
+export function validateComponentProperties(document: LuiDocument, imports: readonly LuiCompletionImport[], own?: ComponentProperties): LuiDiagnostic[] {
+  const diagnostics: LuiDiagnostic[] = [];
+  const visit = (node: LuiNode): void => {
+    const [alias, name] = (node.tag ?? '').split(':');
+    const schema = imports.find(i => i.alias === alias)?.components.find(c => c.name === name)?.definitions;
+    for (const attr of node.attrs) {
+      const binding = parseBinding(attr.value); const keys = binding && pathKeys(binding.path);
+      if (own && keys?.[0] === 'props' && keys[1] && !own[keys[1]] && !isLayoutProperty(keys[1])) fail(diagnostics, `组件未声明公开属性：${keys[1]}`, attr.valueRange.start, attr.valueRange.end);
+      if (!schema || isLayoutProperty(attr.name)) continue;
+      const definition = schema[attr.name];
+      if (!definition) { fail(diagnostics, `组件未声明公开属性：${attr.name}`, attr.range.start, attr.range.end); continue; }
+      if (binding) continue;
+      const valid = definition.type === 'string' || (definition.type === 'number' && attr.value.trim() !== '' && Number.isFinite(Number(attr.value))) || (definition.type === 'boolean' && ['true','false','是','否'].includes(attr.value)) || (definition.type === 'event' && /^\{(?:动作|Action)\s+[A-Za-z][A-Za-z0-9_.-]*\}$/.test(attr.value));
+      if (!valid) fail(diagnostics, `公开属性 ${attr.name} 需要 ${definition.type}${definition.type === 'table' ? ' 集合绑定' : ''}`, attr.valueRange.start, attr.valueRange.end);
+    }
+    node.children.forEach(visit);
+  };
+  if (document.root) visit(document.root);
+  return diagnostics;
+}
+
+/** Explicit, idempotent 2.3.2 migration. Never run while opening/saving a document.
+ * Changes only static alignment value spans; bindings must be audited at their source. */
+export function migrateAlignmentAxes(source: string): { text: string; changes: number; bindings: LuiRange[] } {
+  const parsed = parseLui(source);
+  const edits: Array<{ range: LuiRange; value: string }> = [];
+  const bindings: LuiRange[] = [];
+  const visit = (node: LuiNode): void => {
+    for (const attribute of node.attrs) {
+      const axis = canonicalAttribute(attribute.name);
+      if (axis !== "HorizontalAlignment" && axis !== "VerticalAlignment") continue;
+      if (parseBinding(attribute.value)) { bindings.push(attribute.valueRange); continue; }
+      const values: Record<string, string> = axis === "HorizontalAlignment" ? { "左": "上", "右": "下" } : { "上": "左", "下": "右" };
+      if (values[attribute.value]) edits.push({ range: attribute.valueRange, value: values[attribute.value] });
+    }
+    node.children.forEach(visit);
+  };
+  if (parsed.root) visit(parsed.root);
+  let text = source;
+  for (const edit of edits.sort((a, b) => b.range.start - a.range.start)) text = text.slice(0, edit.range.start) + edit.value + text.slice(edit.range.end);
+  return { text, changes: edits.length, bindings };
+}
 
 export interface LuiAttribute {
   name: string;
@@ -181,6 +232,12 @@ function isThickness(value: string): boolean {
 }
 function isTrack(value: string): boolean { return value === "自动" || value === "填充" || value === "*" || /^\d+(?:\.\d+)?(?:%|填充|\*)?$/.test(value); }
 function isTrackList(value: string): boolean { return value.split(",").map((part) => part.trim()).length > 0 && value.split(",").map((part) => part.trim()).every(isTrack); }
+function isTransform(value: string): boolean {
+  const source = value.trim();
+  if (!source) return true;
+  const parts = source.split(";").map((part) => part.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((part) => /^(缩放|旋转|平移|倾斜)\s*\(\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)?\s*\)$/.test(part));
+}
 function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
   const canonical = canonicalAttribute(attribute.name);
   const definition = attributeDefinition(canonical);
@@ -188,9 +245,21 @@ function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): v
   if (definition?.kind === "length" && !isLength(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是像素数、百分比或“自动”。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "thickness" && !isThickness(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是单值，或“左,上,右,下”四个数值。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”或 WPF 星号轨道（*、2*）。`, attribute.valueRange.start, attribute.valueRange.end);
+  if ((canonical === "RenderTransform" || canonical === "LayoutTransform") && !isTransform(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 使用“缩放(1.1);旋转(15);平移(8,0);倾斜(0,0)”格式。`, attribute.valueRange.start, attribute.valueRange.end);
   const options = enumOptions(canonical);
   if (options && !parseBinding(attribute.value) && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
   else if (options && legacyEnumValue(canonical, attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 的旧值“${attribute.value}”请改为“${normalizedEnumValue(canonical, attribute.value)}”（旧“主要/次要”现称“高亮/常规”）。`, attribute.valueRange.start, attribute.valueRange.end, "warning");
+}
+
+const EVENT_ATTRIBUTES = new Set(["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel"]);
+function validateCommand(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
+  const canonical = canonicalAttribute(attribute.name);
+  if (!EVENT_ATTRIBUTES.has(canonical) || !attribute.value.trim().startsWith("{命令")) return;
+  const command = parseCommand(attribute.value);
+  if (!command) { fail(diagnostics, "内置命令格式无效；只能使用受控的 {命令 名称, 键='值'} 语法。", attribute.valueRange.start, attribute.valueRange.end); return; }
+  const required: Record<string, string[]> = { "设值": ["路径", "值"], "可见性": ["路径", "值"], "页签": ["键", "值"], "导航": ["目标"], "关闭": ["目标"] };
+  for (const key of required[command.name]) if (!command.args[key]) fail(diagnostics, `内置命令“${command.name}”缺少“${key}”。`, attribute.valueRange.start, attribute.valueRange.end);
+  if ((command.name === "设值" || command.name === "可见性") && command.args["路径"] && !/^view\.[A-Za-z][A-Za-z0-9_.-]*$/.test(command.args["路径"])) fail(diagnostics, "设值与可见性命令只能修改 view.*，不能执行任意 Lua。", attribute.valueRange.start, attribute.valueRange.end);
 }
 
 /** Validates LUI identities and the boundary between design-only and Lua-visible values. */
@@ -222,11 +291,17 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const seenAttributes = new Map<string, LuiAttribute>();
     for (const attribute of node.attrs) {
+      if (node.tag?.includes(':') && !node.tag.startsWith('lui:') && !isLayoutProperty(attribute.name)) {
+        if (seenAttributes.has(attribute.name)) fail(diagnostics, `属性重复：${attribute.name}`, attribute.range.start, attribute.range.end);
+        seenAttributes.set(attribute.name, attribute); continue;
+      }
       const canonicalAttributeName = canonicalAttribute(attribute.name);
       if (seenAttributes.has(canonicalAttributeName)) fail(diagnostics, `属性重复：${sourceAttribute(canonicalAttributeName)}；保存会保留最后一个值。`, attribute.range.start, attribute.range.end);
       seenAttributes.set(canonicalAttributeName, attribute);
       validateValue(diagnostics, attribute);
-      if (DEPRECATED_CANONICAL_ATTRIBUTES.has(canonicalAttributeName)) fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 已移除；请改用网格或画布布局。`, attribute.range.start, attribute.range.end, "warning");
+      validateCommand(diagnostics, attribute);
+      if (canonicalAttributeName === "LayoutTransform" && /平移\s*\(/.test(attribute.value)) fail(diagnostics, "布局变换中的平移会被忽略；请改用渲染变换。", attribute.valueRange.start, attribute.valueRange.end, "warning");
+      if (DEPRECATED_CANONICAL_ATTRIBUTES.has(canonicalAttributeName)) fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 已移除；请改用 <容器> 的子项排列、对齐与边距。`, attribute.range.start, attribute.range.end, "warning");
       const definition = attributeDefinition(canonicalAttributeName);
       if (definition?.tags && !definition.tags.includes(canonicalTag(node.tag) ?? "") && !canonicalAttributeName.startsWith("Grid.") && !canonicalAttributeName.startsWith("Canvas.")) fail(diagnostics, `${chineseTag(canonicalAttributeName)} 只适用于 <${definition.tags.map(chineseTag).join(">、<")}>。`, attribute.range.start, attribute.range.end);
       if (canonicalAttributeName.startsWith("Grid.") && parentTag !== "Grid") fail(diagnostics, `${sourceAttribute(canonicalAttributeName)} 只可用于 <网格> 的直接子项。`, attribute.range.start, attribute.range.end);
@@ -239,6 +314,7 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     const ref = getAttribute(node, "x:Ref");
     const legacyNamespace = getAttribute(node, "x:Namespace");
     if (legacyNamespace) fail(diagnostics, "旧命名空间属性已废弃；请在根节点使用 目录:别名=\"目录路径\"。", legacyNamespace.range.start, legacyNamespace.range.end, "warning");
+    if (isRoot && !primary) fail(diagnostics, `<${node.tag ?? "根"}> 必须声明名称，用于 LUI 注册表。`, node.range.start, node.openTagEnd);
     if (primary) {
       if (!isDesignName(primary.value)) fail(diagnostics, `名称必须是非空的设计名称：${primary.value}`, primary.valueRange.start, primary.valueRange.end);
       const duplicate = designNames.get(primary.value) ?? displayNames.get(primary.value);
@@ -258,6 +334,8 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const sourceTag = node.tag;
     const canonical = canonicalTag(sourceTag);
+    if (sourceTag === "循环") fail(diagnostics, "<循环> 已改名为 <重复项>；按集合重复生成内部模板，旧语法仅兼容读取。", node.range.start, node.openTagEnd, "warning");
+    if (sourceTag && canonical && !KNOWN_CANONICAL_TAGS.has(canonical) && !sourceTag.includes(":") && !sourceTag.includes(".")) fail(diagnostics, `未识别控件 <${sourceTag}>；属性窗格仅显示基础布局属性。`, node.range.start, node.openTagEnd, "warning");
     if (!isRoot && (canonical === "lui:Page" || canonical === "lui:Component")) fail(diagnostics, "<页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", node.range.start, node.openTagEnd);
     if (canonical === "lui:Page") {
       for (const name of ["Width", "Height"]) {
@@ -271,9 +349,10 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
         if (!attribute || !/^\d+(?:\.\d+)?$/.test(attribute.value) || Number(attribute.value) <= 0) fail(diagnostics, `<视图框> 的${sourceAttribute(name)}必须是正数 px，作为内部设计坐标而非设备分辨率。`, attribute?.valueRange.start ?? node.range.start, attribute?.valueRange.end ?? node.openTagEnd);
       }
     }
-    if (canonical && DEPRECATED_CANONICAL_TAGS.has(canonical)) fail(diagnostics, `<${sourceTag}> 已移除；请使用 <网格> 或 <画布>。`, node.range.start, node.openTagEnd, "warning");
+    if (canonical === "lui:Preview" || canonical === "lui:Set") fail(diagnostics, `<${sourceTag}> 预览状态已移除；请将单个绑定样例写入“预览内容”并删除该节点。`, node.range.start, node.openTagEnd, "warning");
+    else if (canonical && DEPRECATED_CANONICAL_TAGS.has(canonical)) fail(diagnostics, `<${sourceTag}> 已移除；请使用 <容器> 或直接让语义控件承载子项。`, node.range.start, node.openTagEnd, "warning");
     if (sourceTag && canonical && chineseTag(canonical) !== sourceTag && isLegacyToken(sourceTag)) fail(diagnostics, `标签 <${sourceTag}> 已过时；请改为 <${chineseTag(canonical)}>。`, node.range.start, node.openTagEnd, "warning");
-    for (const attribute of node.attrs) if (isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
+    for (const attribute of node.attrs) if (!componentAttribute(node,attribute.name) && isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
     const separator = sourceTag?.indexOf(":") ?? -1;
     if (separator > 0) {
       const alias = sourceTag!.slice(0, separator);
@@ -285,10 +364,6 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     for (const child of node.children) visit(child, childParent, false);
   };
   visit(root, undefined, true);
-  if (canonicalTag(root.tag) === "lui:Page" || canonicalTag(root.tag) === "lui:Component") {
-    const hosts = root.children.filter((node) => node.kind === "element" && !["lui:Preview", "lui:Set"].includes(canonicalTag(node.tag) ?? ""));
-    if (hosts.length !== 1) fail(diagnostics, `<${chineseTag(canonicalTag(root.tag) ?? "lui:Page")}> 必须恰好包含一个布局根；页面安全区由 Runtime 自动提供。`, root.range.start, root.openTagEnd);
-  }
   if (root.tag === "控件" || root.tag === "组件" || canonicalTag(root.tag) === "lui:Component") {
     let presenters = 0;
     const countPresenters = (node: LuiNode) => {
@@ -303,20 +378,24 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
 
 function escapeAttribute(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("\"", "&quot;"); }
 
+function componentAttribute(node: LuiNode, name: string): boolean { return !!node.tag?.includes(':') && !node.tag.startsWith('lui:') && !isLayoutProperty(name); }
+function attributeIdentity(node: LuiNode, name: string): string { return componentAttribute(node,name) ? name : canonicalAttribute(name); }
+function attributeSpelling(node: LuiNode, name: string): string { return componentAttribute(node,name) ? name : sourceAttribute(name); }
+
 function rewrittenOpenTag(source: string, node: LuiNode, override?: { name: string; value: string }): string {
   const openEnd = node.openTagEnd ?? node.range.end;
   const opening = source.slice(node.range.start, openEnd);
   const prefix = /^(<\s*[^\s/>]+)/.exec(opening)?.[1];
   if (!prefix) return opening;
-  const attrs = node.attrs.map((attribute) => ({ ...attribute, canonical: canonicalAttribute(attribute.name) }));
-  const target = override ? canonicalAttribute(override.name) : undefined;
+  const attrs = node.attrs.map((attribute) => ({ ...attribute, canonical: attributeIdentity(node,attribute.name) }));
+  const target = override ? attributeIdentity(node,override.name) : undefined;
   const last = new Map<string, number>();
   attrs.forEach((attribute, index) => last.set(attribute.canonical, index));
-  const values = attrs.filter((attribute, index) => last.get(attribute.canonical) === index).map((attribute) => ({ name: sourceAttribute(attribute.canonical), value: attribute.value }));
+  const values = attrs.filter((attribute, index) => last.get(attribute.canonical) === index).map((attribute) => ({ name: attributeSpelling(node,attribute.canonical), value: attribute.value }));
   if (target) {
-    const existing = values.find((attribute) => canonicalAttribute(attribute.name) === target);
-    if (existing) { existing.name = sourceAttribute(target); existing.value = override!.value; }
-    else values.push({ name: sourceAttribute(target), value: override!.value });
+    const existing = values.find((attribute) => attributeIdentity(node,attribute.name) === target);
+    if (existing) { existing.name = attributeSpelling(node,target); existing.value = override!.value; }
+    else values.push({ name: attributeSpelling(node,target), value: override!.value });
   }
   const tail = /\/\>\s*$/.test(opening) ? " />" : ">";
   return `${prefix}${values.map((attribute) => ` ${attribute.name}="${escapeAttribute(attribute.value)}"`).join("")}${tail}`;
@@ -333,7 +412,7 @@ export function normalizeLuiAttributes(source: string): string {
       for (const child of node.children) find(child);
       const seen = new Set<string>();
       if (node.attrs.some((attribute) => {
-        const canonical = canonicalAttribute(attribute.name);
+        const canonical = attributeIdentity(node,attribute.name);
         if (seen.has(canonical)) return true;
         seen.add(canonical); return false;
       })) duplicateNode = node;
@@ -368,6 +447,35 @@ export function editAttribute(source: string, node: LuiNode, name: string, value
   return source.slice(0, node.range.start) + rewrittenOpenTag(source, node, { name, value }) + source.slice(end);
 }
 
+/** Explicit component interfaces keep exact attribute spelling and surrounding source. */
+export function editPublicAttribute(source: string, node: LuiNode, name: string, value?: string): string {
+  const attribute = node.attrs.find(item => item.name === name);
+  if (attribute) {
+    if (value === undefined) return source.slice(0, attribute.range.start) + source.slice(attribute.range.end);
+    const quote = source[attribute.valueRange.start - 1];
+    const escaped = value.replaceAll('&', '&amp;').replaceAll(quote!, quote === '"' ? '&quot;' : '&apos;');
+    return source.slice(0, attribute.valueRange.start) + escaped + source.slice(attribute.valueRange.end);
+  }
+  if (value === undefined) return source;
+  let offset = (node.openTagEnd ?? node.range.end) - 1;
+  if (source[offset - 1] === '/') offset--;
+  return source.slice(0, offset) + ` ${name}="${escapeAttribute(value)}"` + source.slice(offset);
+}
+
+/** Restores an effective default by removing only the selected opening-tag attribute. */
+export function removeAttribute(source: string, node: LuiNode, name: string): string {
+  const target = attributeIdentity(node,name);
+  const end = node.openTagEnd ?? node.range.end;
+  const opening = source.slice(node.range.start, end);
+  const prefix = /^(<\s*[^\s/>]+)/.exec(opening)?.[1];
+  if (!prefix) return source;
+  const values = node.attrs
+    .filter((attribute) => attributeIdentity(node,attribute.name) !== target)
+    .map((attribute) => ({ name: attributeSpelling(node,attributeIdentity(node,attribute.name)), value: attribute.value }));
+  const tail = /\/\>\s*$/.test(opening) ? " />" : ">";
+  return source.slice(0, node.range.start) + `${prefix}${values.map((attribute) => ` ${attribute.name}="${escapeAttribute(attribute.value)}"`).join("")}${tail}` + source.slice(end);
+}
+
 /** Replaces the selected element's paired source tags without touching its attributes or children. */
 export function editTag(source: string, node: LuiNode, nextTag: string): string {
   if (node.tag === "__placeholder__") return source.slice(0, node.range.start) + `<${nextTag} />` + source.slice(node.range.end);
@@ -384,5 +492,9 @@ export function editTag(source: string, node: LuiNode, nextTag: string): string 
 }
 
 export function displayNameOf(node: LuiNode): string {
-  return getAttribute(node, "x:DisplayName")?.value || getAttribute(node, "x:Name")?.value || node.tag || "未命名组件";
+  const caption = getAttribute(node, "x:DisplayName")?.value || getAttribute(node, "x:Name")?.value;
+  if (caption) return caption;
+  const tag = chineseTag(canonicalTag(node.tag) ?? node.tag ?? "控件");
+  const text = getAttribute(node, "Text")?.value ?? getAttribute(node, "Title")?.value;
+  return text ? `${tag} · ${text}` : tag;
 }
