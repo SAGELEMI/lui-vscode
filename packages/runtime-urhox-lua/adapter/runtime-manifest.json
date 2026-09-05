@@ -1,6 +1,31 @@
 {
   "adapter": "urhox-lua",
-  "version": "2.4.3",
-  "layoutContract": "xaml-initialize-v1-unified-layout-hy-vx-v1-properties-v1",
-  "description": "LUI 2.4.3: portable Chinese documentation, AI skills and protected guidance deployment; runtime language remains compatible with 2.4.2."
+  "version": "2.6.0",
+  "layoutContract": "xaml-initialize-v1-unified-layout-hy-vx-v4-fidelity",
+  "description": "Shared Studio/Runtime layout, rendering fidelity, component root, gradient and event conversion contract.",
+  "revision": "native-overlay-explicit-text-stroke-live-props-20260906",
+  "files": {
+    "Alignment.lua": "cc229241ffc2bdb2df6b1baeaf646e6854b4f3f835270213f08a4d7fe66ba201",
+    "Brush.lua": "0e85939048be114dc9225ec5ebc8d7cf6a2965d859605cedfe58ac981f87f1c8",
+    "BuiltinValues.lua": "e90e63ed16961563a2a1df8398a5934a7c758e1eb03e9e8d5ef31b5c5e8d9aaa",
+    "ButtonCaption.lua": "0263cf220a7bfe2377f04f269eaab8d9998afdd8ff6d0c2f125024b47880935b",
+    "Capabilities.lua": "84e11860468e79863d15986ca5e1870d70674a22455568cdf00f25ac4468f5a6",
+    "Contract.lua": "a8b26d30498a80c64908b171ad3a6d1cc857c673370f0e30fa7c473ef3ba67d1",
+    "Controls.lua": "77fb9cdbb151ca8c81925012612ab9ae7adf19a8b65af2eb3efedb75d1d17506",
+    "LayoutChecks.lua": "43dac81e77878f144bf90cf97527bc524229160697f8cf62edce8fcc4522e671",
+    "LiveProps.lua": "fb078ed401f8882f368958392dda4b3c8503cd6668756552714e7f4effdd63a0",
+    "Measure.lua": "3697fb2b4841085ebeadb749d5c77d965c4d16cbc768e497bd230bde2d1a15b9",
+    "NativeControls.lua": "2fac7ba822d5287bf22aef4af04a688589b26231830157b08ce4d33fe4091ade",
+    "Overlays.lua": "fba264bf3fca2d72d0b34a2f18aff24adf2310f6e115f2340dad31e017008e84",
+    "PageFrame.lua": "19438467c466e8d6c75c8387048a1bb054460e953b15eda1a76a91c8b62a3116",
+    "Parser.lua": "dd573e7ad86f2f464fb49182ee9439dedddf1d7faa199bc02c122bee0c4e160b",
+    "Paths.lua": "a5c1f40030025c05cbe57ac31cba8d93581d1d5646cb8cb5442ee975b49caaf5",
+    "Progress.lua": "c70b241aef5890d15bca46ac8c5ae02720dd6e0e4190b95f5b7dde282ccba3e3",
+    "Project.lua": "0280484920066ddf72de6c3d2948407e335317d207bedd9a88b68483d5423ad2",
+    "Properties.lua": "d9e9f390629f8cca18990db9c7719dd60cd9392b11d9cbdacfe65de018f1e98c",
+    "Runtime.lua": "a9f85ea9ffd32ebe9ce804ae3ac81905e0d7d11ab8cf1eefc2482c81b489c103",
+    "Scrollbars.lua": "563f019a2b12f4b12f72d54338acf854f6cf7289d9af443ef7501606ce6e2f0b",
+    "Typography.lua": "a7ca2418bd8fccac941d3de8b3ad9c35dfec978e875284d0081d04f064e6cb71",
+    "init.lua": "d1c7536353fbf8c20f0f1d22ca5290f58b90afb4afe7029642a710a2c364ab59"
+  }
 }

@@ -14,6 +14,8 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = join(repositoryRoot, "packages/runtime-urhox-lua/adapter");
 const targetRoot = join(scriptsRoot, "LUI");
 const backupRoot = join(targetRoot, ".backup-last");
+// Explicit preservation mode for projects with user-maintained backup edits.
+const preserveBackup = process.argv.includes("--preserve-backup");
 const knownUuids = new Set();
 let backupPrepared = false;
 
@@ -51,6 +53,7 @@ async function snapshotCurrentRuntime(directory = sourceRoot) {
 
 async function prepareBackup() {
   if (backupPrepared) return;
+  if (preserveBackup) { backupPrepared = true; return; }
   await rm(backupRoot, { recursive: true, force: true });
   await snapshotCurrentRuntime();
   backupPrepared = true;
@@ -136,10 +139,10 @@ async function stampLayoutContract() {
 }
 
 await scanMeta(scriptsRoot);
-await consolidateLegacyBackups();
+if (!preserveBackup) await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
 await stampLayoutContract();
-if (!backupPrepared) await completeBackup();
+if (!backupPrepared && !preserveBackup) await completeBackup();
 if (await pathExists(join(scriptsRoot, "Presentation"))) await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
 const guidance = await deployGuidance(repositoryRoot, projectRoot, guidanceNodeIO);
 if (guidance.preserved.length) console.warn(`LUI 已保留用户修改的资料：${guidance.preserved.join("、")}`);

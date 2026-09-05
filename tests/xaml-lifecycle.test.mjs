@@ -19,6 +19,13 @@ test("templates and runtime use same-name InitializeComponent classes and pure m
   assert.match(runtime, /for attributeName, attributeValue in pairs\(attrs\)/);
   assert.match(runtime, /instanceErr or \("LUI 组件实例化失败："/);
   assert.match(runtime, /GetRoot = function\(\) return fallbackRoot end/);
+  assert.match(runtime, /applyBrush\(props, "hover", resolve\(attrs\.HoverBackground, context\), "悬停背景"\)/);
+  assert.match(runtime, /applyBrush\(props, "pressed", resolve\(attrs\.PressedBackground, context\), "按下背景"\)/);
+  assert.match(runtime, /props\.hoverBackgroundColor = props\.hoverBackgroundColor or props\.backgroundColor/);
+  assert.match(runtime, /local Contract = require\("LUI\.Contract"\)/);
+  assert.match(runtime, /props\.fontSize, props\.lineHeight, props\.whiteSpace = props\.fontSize or nativeFontSize\(Defaults\.fontSize\), props\.lineHeight or Defaults\.lineHeight/);
+  assert.doesNotMatch(runtime, /UI\.SafeAreaView \{ width = "100%", height = "100%", children = \{ root \} \}/);
+  assert.match(runtime, /props\.height = Defaults\.button\.minHeight/);
   assert.doesNotMatch(runtime, /local alias, name = tag:match/);
   assert.doesNotMatch(runtime, /GetRoot = function\(self\)/);
   assert.match(runtime, /local function commandSpec/);

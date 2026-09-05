@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font: 13px/1.45 system-ui, "Microsoft YaHei", sans-serif;
+  font: var(--lui-font-size, 13px)/var(--lui-line-height, 1.45) "sans", sans-serif;
   color: #f4ecff;
   background: #10091c;
   --design-height: 65%;
@@ -43,6 +43,13 @@ h3 { margin: 15px 0 7px; color: #c6b0e4; font-size: 12px; }
 .thickness-editor > button { position: absolute; top: 0; right: 0; padding: 2px 5px; font-size: 10px; }
 .thickness-editor label { margin: 0 !important; font-size: 10px; }
 .thickness-editor input { width: 100%; min-width: 0; }
+.color-editor, .brush-editor, .brush-fields { display: grid; gap: 6px; margin-top: 4px; }
+.color-fields { display: grid; grid-template-columns: 38px minmax(64px, 1fr) 78px; gap: 5px; align-items: center; }
+.color-fields input[type=color] { width: 38px; height: 28px; padding: 1px; border: 1px solid #60477e; background: #271a3c; }
+.color-fields input[type=range] { min-width: 0; }
+.color-fields output { font: 10px ui-monospace, Consolas, monospace; color: #c6b0e4; }
+.gradient-stop { display: grid; grid-template-columns: minmax(0, 1fr) 54px; gap: 5px; align-items: center; }
+.gradient-stop > input { min-width: 0; }
 .content-presenter-placeholder { min-width: 96px; min-height: 32px; padding: 7px; color: #ffe16b; border: 1px dashed #d5b56d; background: #271a3c; }
 
 .outline-row {
@@ -115,7 +122,7 @@ main > header select, main > header input { margin-left: 6px; background: #271a3
 body.source-collapsed { grid-template-rows: minmax(0, 1fr) 7px 0; } body.source-collapsed #source-panel { display: none; }
 body.source-maximized { grid-template-rows: 0 7px minmax(0, 1fr); } body.source-maximized #design-workbench { display: none; }
 
-.lui-node { position: relative; min-width: 0; color: #f4ecff; cursor: pointer; }
+.lui-node { position: relative; min-width: 0; color: #f4ecff; cursor: pointer; box-sizing: border-box; font-synthesis: none; }
 .lui-node.row { display: flex; flex-direction: row; min-height: 32px; }
 .lui-node.panel, .lui-node.page, .lui-node.component, .lui-component-instance, .lui-node.control-root { display: flex; flex-direction: column; min-height: 0; }
 .lui-node.grid { display: grid; min-width: 0; min-height: 0; align-content: stretch; justify-content: stretch; }
@@ -127,27 +134,31 @@ body.source-maximized { grid-template-rows: 0 7px minmax(0, 1fr); } body.source-
 .lui-page-design { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; box-sizing: border-box; }
 .lui-node.control-root { width: fit-content; min-width: 0; align-self: stretch; }
 .lui-component-instance { min-width: 0; position: relative; }
+.lui-component-instance > .control-root { width: auto; }
 .lui-node.text { align-self: flex-start; color: #f6f0ff; white-space: pre-wrap; }
-.lui-node.button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 36px; padding: 8px 12px; border: 1px solid #af8cff; border-radius: 8px; background: linear-gradient(135deg, #7851c9, #4d2a91); color: #fff; font-weight: 700; }
+.lui-node.button { display: inline-flex; align-items: center; justify-content: center; min-width: var(--lui-button-min-width, 44px); min-height: var(--lui-button-min-height, 36px); padding: 8px 12px; border: 1px solid #af8cff; border-radius: 8px; background: linear-gradient(135deg, #7851c9, #4d2a91); color: #fff; font-weight: 700; }
 .lui-node.button.secondary { background: #382452; border-color: #7855aa; }
-.lui-node.card { padding: 12px; border: 1px solid #8064a8; border-radius: 12px; background: #211535; box-shadow: 0 5px 16px #0004; }
+.lui-node.card { padding: 12px; border: 1px solid #8064a8; border-radius: 12px; background: #211535; box-shadow: none; }
 .lui-node.scroll { min-width: 0; min-height: 0; overflow: auto; padding: 8px; border: 1px solid #4f396d; border-radius: 10px; background: #130b20; }
 .lui-node.scroll.scrollbar-hidden-x::-webkit-scrollbar:horizontal { display: none; }
 .lui-node.scroll.scrollbar-hidden-y::-webkit-scrollbar:vertical { display: none; }
 .lui-node.scroll.scrollbar-hidden-x.scrollbar-hidden-y { scrollbar-width: none; }
-.lui-node.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.lui-node.scroll::-webkit-scrollbar-thumb { background: var(--lui-scrollbar-color, #8a5cf6); border-radius: 4px; }
-.lui-node.scroll::-webkit-scrollbar-track { background: #25183a; border-radius: 4px; }
+.lui-node.scroll::-webkit-scrollbar { width: var(--lui-scrollbar-size, 8px); height: var(--lui-scrollbar-size, 8px); }
+.lui-node.scroll::-webkit-scrollbar-thumb { background: var(--lui-scrollbar-color, var(--lui-scrollbar-thumb, #8a5cf6)); border-radius: 4px; }
+.lui-node.scroll::-webkit-scrollbar-track { background: var(--lui-scrollbar-track, #25183a); border-radius: 4px; }
 .lui-node.scroll.scrollbar-always-y { scrollbar-gutter: stable; }
 .lui-node.scroll.scrollbar-always-y.scrollbar-empty-y::-webkit-scrollbar-track:vertical { background: var(--lui-scrollbar-color, #8a5cf6); }
-.lui-node.modal { margin: 28px 10px; padding: 16px; border: 1px solid #d5b56d; border-radius: 14px; background: #2a1944; box-shadow: 0 18px 50px #000a; }
+.lui-node.modal { margin: 28px 10px; padding: 16px; border: 1px solid #d5b56d; border-radius: 14px; background: #2a1944; box-shadow: none; }
 .lui-node.safe-area { padding: 0; border: 0; border-radius: 0; }
-.lui-node.progress { display: flex; flex-direction: column; gap: 5px; }
-.progress-track { height: 10px; width: 100%; overflow: hidden; border-radius: 99px; background: #392750; }
+.lui-node.progress { display: flex; flex-direction: column; }
+.progress-track { height: 10px; width: 100%; overflow: hidden; border-radius: inherit; background: #392750; }
 .progress-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8b5cf6, #d5b56d); }
 .toggle { align-self: flex-start; padding: 4px 9px; border-radius: 99px; background: #513446; color: #f2b6c3; }
 .toggle.on { background: #265c53; color: #a8f1df; }
 .lui-node.slider input { width: 100%; accent-color: #9f7aea; }
+.lui-node.text-field { display:flex; align-items:center; min-height:40px; overflow:hidden; }
+.lui-node.text-field > input { width:100%; height:100%; min-width:0; padding:0 12px; border:0; outline:0; box-sizing:border-box; background:transparent; color:inherit; font:inherit; line-height:inherit; letter-spacing:inherit; pointer-events:none; }
+.lui-node.text-field > input::placeholder { color:var(--lui-placeholder-color, #8f82a3); opacity:1; }
 
 /* The design tree and canvas share these states, like an HTML inspector. */
 .lui-node.is-hovered::after, .lui-node.is-selected::after {
@@ -158,3 +169,8 @@ body.source-maximized { grid-template-rows: 0 7px minmax(0, 1fr); } body.source-
 .lui-node.is-selected.is-hovered::after { border-color: #f0cf7d; }
 .public-property-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 8px 14px; }
 .public-property-meta small { overflow-wrap: anywhere; flex: 1 1 100px; }
+
+/* Caption alignment is independent of authored child layout and hit testing. */
+.lui-button-caption { display:flex; grid-area:1 / 1; align-self:stretch; justify-self:stretch; flex:1; min-width:0; min-height:0; overflow:hidden; pointer-events:none; }
+.lui-button-caption > span { flex:none; white-space:pre; line-height:var(--lui-line-height,1.45); }
+.lui-button-caption.composite-caption { position:absolute; inset:0; padding:inherit; box-sizing:border-box; }

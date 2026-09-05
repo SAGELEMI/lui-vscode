@@ -7,10 +7,12 @@ from lupa import LuaRuntime
 lua = LuaRuntime(unpack_returned_tuples=True)
 project = Path(sys.argv[1]) / "scripts"
 adapter = Path("packages/runtime-urhox-lua/adapter")
-for name in ["Controls", "Alignment", "Paths", "Properties", "Parser", "Scrollbars"]:
-    lua.globals().package.loaded["LUI." + name] = lua.execute((adapter / (name + ".lua")).read_text(encoding="utf-8-sig"))
+lua.globals().read_adapter = lambda name: (adapter / (name + ".lua")).read_text(encoding="utf-8-sig")
 lua.globals().read_source = lambda path: (project / path).read_text(encoding="utf-8-sig")
 lua.execute("""
+table.insert(package.searchers,1,function(name)
+ if name:sub(1,4)=="LUI." then return assert(load(read_adapter(name:sub(5)),"@"..name)) end
+end)
 local Widget = {}
 function Widget:GetChildren() return self.children end
 function Widget:AddChild(child) self.children[#self.children+1]=child end
@@ -30,13 +32,16 @@ local function constructor(kind, props)
 end
 local UI=setmetatable({}, {__index=function(_,kind) return function(props) return constructor(kind,props) end end})
 package.loaded["urhox-libs/UI"]=UI
+package.loaded["urhox-libs/UI/Core/Widget"]=Widget
 package.loaded["Presentation.Components"]={}
+package.loaded["Presentation.Dialog"]={}
+package.loaded["Presentation.TutorialFlow"]={}
 package.loaded["Audio"]={}
 """)
 runtime = lua.execute((adapter / "Runtime.lua").read_text(encoding="utf-8-sig"))
 lua.globals().Runtime = runtime
 lua.globals().package.loaded["LUI"] = runtime
-lua.globals().package.loaded["Presentation.Components.ListModel"] = lua.execute((project / "Presentation/Components/ListModel.lua").read_text(encoding="utf-8-sig"))
+lua.globals().package.loaded["Presentation.Support.ListModel"] = lua.execute((project / "Presentation/Support/ListModel.lua").read_text(encoding="utf-8-sig"))
 lua.globals().package.loaded["Presentation.PageLists"] = lua.execute((project / "Presentation/PageLists.lua").read_text(encoding="utf-8-sig"))
 lua.globals().Presentation = lua.execute((project / "Presentation/Presentation.lui.lua").read_text(encoding="utf-8-sig"))
 lua.execute("""
@@ -72,17 +77,20 @@ local raw={["标题"]="测试",["计数"]="2/3",["项目"]={original,disabled},[
 local instance=runtime:CreateComponent("Presentation/Components/TabView.lui",parent,{}, {},raw)
 local buttons=descendants(instance:GetRoot(),"Button")
 assert(#buttons==4,"two tabs and two data rows")
-assert(#descendants(buttons[3],"Label")==2 and #descendants(buttons[4],"Label")==1,"optional subtitle collapses")
+local firstLabels,secondLabels=descendants(buttons[3],"Label"),descendants(buttons[4],"Label")
+assert(#firstLabels==3 and firstLabels[2].props.visible~=false and firstLabels[3].props.visible==false
+ and #secondLabels==3 and secondLabels[2].props.visible==false and secondLabels[3].props.visible==false,
+ "bound optional subtitle/badge stay live but collapse")
 buttons[3].props.onClick(buttons[3],{})
 assert(chosen==original and state.selectedKey=="bag:1","selection returns original row, not text")
 buttons[4].props.onClick(buttons[4],{})
 assert(chosen==original,"disabled callback guard")
-assert(buttons[3].props.backgroundColor[1]==68,"selected state updates without page rebuild")
+assert(buttons[3].props.borderColor[1]==213,"selected state updates without page rebuild")
 buttons[2].props.onClick(buttons[2],{})
 assert(switched==raw["页签"][2],"tab returns original stable-id item")
 local scrolls=descendants(instance:GetRoot(),"ScrollView")
-assert(#scrolls==1 and scrolls[1].props.scrollX==false and scrolls[1].props.scrollY==true)
-local scroll=scrolls[1]; assert(scroll.y==500)
+assert(#scrolls==2 and scrolls[1].props.visible==false and scrolls[2].props.scrollX==false and scrolls[2].props.scrollY==true)
+local scroll=scrolls[2]; assert(scroll.y==0); scroll.luiLayoutProbe_=true
 scroll.layout={x=0,y=0,w=340,h=100}; scroll.extent=250; scroll:Update(0)
 assert(scroll.y==150 and state.scrollY==150,"restore clamps after layout")
 scroll:SetScroll(0,80); assert(state.scrollY==80,"live state capture before dispose")
@@ -91,7 +99,7 @@ local empty=runtime:CreateComponent("Presentation/Components/SelectionList.lui",
 assert(#descendants(empty:GetRoot(),"Button")==0,"empty card is not a button")
 assert(empty.state_.selectedKey==nil)
 assert(#descendants(empty:GetRoot(),"Label")==2,"empty list retains only header and counter, no placeholder card")
-local M=require("Presentation.Components.ListModel")
+local M=require("Presentation.Support.ListModel")
 assert(not pcall(M.Rows,{{label="no key"}}))
 assert(not pcall(M.Rows,{{key="a"},{key="a"}}))
 -- Presentation owns state by instance + tab, restoring detail without changing domain data.
@@ -151,18 +159,19 @@ vm.floor=2; ctx.actions.ClaimReward(); assert(claims==1,"stale floor cannot clai
 ctx=pageContext("FloorRewards"); assert(ctx.view.state.selectedKey==nil)
 ctx.actions.SelectReward(ctx.view.rows[1]); ctx=pageContext("FloorRewards")
 app.AcceptReward=function() claims=claims+1; vm.phase="between"; return true,{mergeCount=1,finalLocation="bag",finalLevel=2} end
-ctx.actions.ClaimReward(); assert(claims==2 and presentation.toast:find("Lv.2",1,true))
+ctx.actions.ClaimReward(); assert(claims==2 and presentation.toast:find("等级 2",1,true))
 ctx.actions.ClaimReward(); assert(claims==2,"phase guards double claim")
 vm.phase="reward"; ctx=pageContext("FloorRewards"); ctx.actions.AbandonReward(); assert(abandoned==1)
 -- Production logical routing and refresh guard, using a minimal registered-page factory.
-app.ConsumeSettlement=function() end; app.GetSystemState=function() return {} end; app.IsReady=function() return true end
-presentation.lui_={CreateRegistered=function(_,name) presentation.created=name; return {GetRoot=function() return {} end,Dispose=function() end} end}
+app.ConsumeSettlement=function() end; app.ConsumeAttackEvents=function() return {} end; app.GetSystemState=function() return {} end; app.IsReady=function() return true end
+app.GetSaveFault=function() return nil end
+presentation.lui_={config_={},CreateRegistered=function(_,name) presentation.created=name; return {GetRoot=function() return {} end,Dispose=function() end} end}
 presentation.page_="tower"; vm.phase="reward"; Presentation.Render(presentation)
-assert(presentation.created=="FloorRewards")
+assert(presentation.created=="Tower")
 local renders=presentation.renders; presentation:RefreshTower(); assert(presentation.renders==renders,"reward page is not rebuilt every tick")
 local rewardState=presentation:GetListState("tower.rewards",PageLists.Scope(vm)); rewardState.selectedKey="held"
 presentation.page_="cover"; Presentation.Render(presentation); assert(presentation.created=="Cover" and vm.phase=="reward")
-presentation.page_="tower"; Presentation.Render(presentation); assert(presentation.created=="FloorRewards" and rewardState.selectedKey=="held")
+presentation.page_="tower"; Presentation.Render(presentation); assert(presentation.created=="Tower" and rewardState.selectedKey=="held")
 vm.phase="between"; Presentation.Render(presentation); assert(presentation.created=="Tower" and presentation.listStates_["tower.rewards"]==nil)
 -- Both scrollbar axes: empty always-show draws, hidden never draws, bounds clamp.
 local shapes={}
@@ -170,6 +179,6 @@ nvgBeginPath=function() end; nvgFill=function() end; nvgFillColor=function() end
 nvgRGBA=function(...) return {...} end
 nvgRoundedRect=function(_,x,y,w,h) shapes[#shapes+1]={x=x,y=y,w=w,h=h} end
 scroll.extent=0; scroll:RenderScrollbars({})
-assert(#shapes==2 and shapes[2].h==96,"always-visible empty thumb")
-print("LUI 2.4.2 Lua: nested runtime, blank lists, per-page/tab isolation, category deletion/upgrade, reward selection/confirmation/stale guards/return/routing, scrolling passed (UI methods stubbed).")
+assert(#shapes==2 and shapes[2].h==100,"always-visible empty thumb")
+print("LUI 2.5.0 Lua: nested runtime, blank lists, per-page/tab isolation, category deletion/upgrade, reward selection/confirmation/stale guards/return/routing, scrolling passed (UI methods stubbed).")
 """)

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-export const GUIDE_DOCS = ["README.md", "getting-started.md", "language.md", "layout.md", "controls.md", "components.md", "bindings.md", "runtime.md", "studio.md", "troubleshooting.md", "migration.md"];
+export const GUIDE_DOCS = ["README.md", "getting-started.md", "language.md", "layout.md", "controls.md", "components.md", "bindings.md", "runtime.md", "studio.md", "troubleshooting.md", "migration.md", "engine-preview.md"];
 export const GUIDE_EXAMPLES = ["README.md", "lui.project.json", "Registry.lua", "Start.lua", "Pages/Welcome.lui", "Pages/Welcome.lui.lua", "Pages/Inventory.lui", "Pages/Inventory.lui.lua", "Components/ActionCard.lui", "Components/ActionCard.lui.lua"];
 export const GUIDE_SKILLS = ["lui-authoring", "lui-troubleshooting"];
 const BEGIN = "<!-- >>> LUI managed guidance >>> -->";

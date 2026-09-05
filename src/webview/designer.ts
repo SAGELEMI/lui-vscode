@@ -8,9 +8,14 @@ import { sourcePatch, rebaseSourcePatch, rebaseSourceChanges, applySourceChanges
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
 import { readPath } from '../../packages/spec/src/paths.js';
+import { buildEngineSnapshot, resolvePreviewAttributes } from './previewSnapshot.js';
 import { isLayoutProperty, type ComponentProperties } from '../../packages/spec/src/properties.js';
 import { displayNameOf, parseLui, provideLuiCompletions, type LuiCompletionImport, type LuiNode } from "../../packages/spec/src/index.js";
 import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, UI_CONTROL_DEFINITIONS, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, controlDefinition, directoryAlias, enumOptions, isBinding, parseBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
+import { capabilityAttributes } from "../../packages/spec/src/generated-capabilities.js";
+import { calculatePageFrame } from "../../packages/spec/src/page-frame.js";
+import { formatLinearGradient, normalizeColor, parseBrush } from "../../packages/spec/src/brush.js";
+import layoutContract from "../../packages/spec/layout-contract.json" with { type: "json" };
 
 interface DiagnosticInfo { message: string; severity: "error" | "warning"; range: { start: number; end: number }; }
 interface SerializableNode {
@@ -41,6 +46,7 @@ interface ModelPayload {
   actionSymbols: Record<string, string[]>;
   rootSource: string;
   device: string;
+  fonts: Array<{ family: string; weight: string; uri: string; sha256: string }>;
 }
 interface SourceReloadPayload { type: "source"; source: SourcePayload; origin?: "native-undo" | "native-redo" | "document"; }
 interface SourceEditResultPayload {
@@ -70,15 +76,25 @@ interface PickedNode { start: number; end: number; source: string; version: numb
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 const vscode = acquireVsCodeApi();
+const rgbaHex = (value: number[]): string => `#${value.slice(0, 3).map((part) => Math.max(0, Math.min(255, part)).toString(16).padStart(2, "0")).join("")}`;
+document.documentElement.style.setProperty("--lui-font-size", `${layoutContract.defaults.fontSize}px`);
+document.documentElement.style.setProperty("--lui-line-height", String(layoutContract.defaults.lineHeight));
+document.documentElement.style.setProperty("--lui-button-min-width", `${layoutContract.defaults.button.minWidth}px`);
+document.documentElement.style.setProperty("--lui-button-min-height", `${layoutContract.defaults.button.minHeight}px`);
+document.documentElement.style.setProperty("--lui-scrollbar-size", `${layoutContract.defaults.scroll.scrollbarThickness}px`);
+document.documentElement.style.setProperty("--lui-scrollbar-thumb", rgbaHex(layoutContract.defaults.scroll.thumbColor));
+document.documentElement.style.setProperty("--lui-scrollbar-track", rgbaHex(layoutContract.defaults.scroll.trackColor));
 const BUILTIN_TAGS = Array.from(new Set(Object.entries(TAG_TO_CANONICAL).filter(([name, canonical]) => name !== "循环" && /[^\x00-\x7f]/.test(name) && !DEPRECATED_CANONICAL_TAGS.has(canonical)).map(([name]) => name)));
 const ATTRIBUTE_NAMES = Object.values(CANONICAL_TO_ATTRIBUTE).concat(["目录:积木"]);
 const CATEGORIES: Array<[string, string[]]> = [
-  ["标识", ["x:Name", "x:DisplayName"]],
+  ["标识", ["x:Name", "x:DisplayName", "x:Ref"]],
   ["布局", ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "VerticalAlignment", "HorizontalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill"]],
   ["滚动", ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility", "ScrollbarColor"]],
+  ["画布与网格", ["Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Dock", "LastChildFill", "FlowDirection"]],
   ["变换", ["RenderTransform", "RenderTransformOrigin", "LayoutTransform"]],
-  ["外观", ["Background", "BorderWidth", "BorderColor", "Color", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
-  ["内容与数据", ["Text", "Title", "Subtitle", "Corner", "Status", "Description", "Hint", "ActionItems", "FontSize", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "Columns", "Rows", "Gap", "Orientation"]],
+  ["外观", ["Background", "HoverBackground", "PressedBackground", "BorderWidth", "BorderColor", "Opacity", "BorderRadius", "Variant", "Icon", "Image", "Type", "Visible", "Visibility"]],
+  ["文字", ["FontFamily", "FontSize", "FontWeight", "FontStyle", "Color", "TextStrokeColor", "TextStrokeWidth", "PlaceholderColor", "CursorColor", "LineHeight", "LetterSpacing", "TextWrapping", "TextTrimming", "TextHorizontalAlignment", "TextVerticalAlignment"]],
+  ["内容与数据", ["Text", "Title", "Subtitle", "Corner", "Status", "Description", "Hint", "ActionItems", "Placeholder", "Items", "Data", "Options", "Source", "Value", "Min", "Max", "Step", "TrackBrush", "FillBrush", "ProgressDirection", "Columns", "Rows", "Gap", "Orientation"]],
   ["交互", ["Click", "Change", "Submit", "Select", "Open", "Close", "Focus", "Blur", "Complete", "DragStart", "DragEnd", "DragCancel", "Disabled"]],
   ["数据与条件", ["Test", "In", "Each", "Path"]]
 ];
@@ -92,6 +108,7 @@ let completionImports: LuiCompletionImport[] = [];
 let actionSymbols: Record<string, string[]> = {};
 let rootSource = "";
 let selected: PickedNode | undefined;
+let enginePickProbe: {sourcePath:string;nodePath:string;probe:unknown}|undefined;
 let hovered: PickedNode | undefined;
 let editor: EditorView | undefined;
 let activeSource: SourcePayload | undefined;
@@ -122,7 +139,15 @@ let designerEditError = "";
 let canvasZoom = 1;
 let initialFitSource = "";
 interface BoxEdges { left: number; top: number; right: number; bottom: number; }
-interface LayoutData { x: number; y: number; width: number; height: number; parentX: number; parentY: number; contentWidth: number; contentHeight: number; availableWidth: number; availableHeight: number; desiredWidth: number; desiredHeight: number; margin: BoxEdges; border: BoxEdges; padding: BoxEdges; }
+interface LayoutData {
+  x: number; y: number; width: number; height: number; parentX: number; parentY: number;
+  contentWidth: number; contentHeight: number; availableWidth: number; availableHeight: number;
+  desiredWidth: number; desiredHeight: number; margin: BoxEdges; border: BoxEdges; padding: BoxEdges;
+  borderAlign: string; borderRect: { x: number; y: number; width: number; height: number };
+  colorSpace: string; alphaMode: string; gradientInterpolation: string;
+  fontFamily: string; fontSize: string; fontWeight: string; resolvedFontWeight: string;
+  lineHeight: string; fontSynthesis: string; textRasterMode: string; shadowSource: string; boxShadow: string;
+}
 const layouts = new Map<string, LayoutData>();
 
 const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -227,28 +252,11 @@ function resolve(value: string | undefined, scope: Record<string, unknown>): str
   const fromScope = getPath(scope, path);
   if (fromScope !== undefined) return binding?.stringFormat?.replace("{0}", String(fromScope)) ?? String(fromScope);
   if (binding?.previewContent !== undefined) return binding.stringFormat?.replace("{0}", binding.previewContent) ?? binding.previewContent;
-  const samples: Record<string, string> = {
-    title: "无尽塔", enemyText: "塔层守卫 · Lv.1", playerText: "冒险者 · Lv.1", logText: "战斗记录将在这里显示。",
-    weaponText: "武器槽（空）", armorText: "护甲槽（空）", detailText: "在这里查看当前选择的说明。", profileSummary: "本地进度已就绪。",
-    towerText: "继续爬塔"
-  };
-  return samples[path];
+  return undefined;
 }
 
 function effective(node: SerializableNode, scope: Record<string, unknown>): Record<string, string | undefined> {
-  const attrs: Record<string, string | undefined> = {};
-  const previews: Record<string, string | undefined> = {};
-  for (const [name, value] of Object.entries(node.attrs ?? {})) {
-    const canonical = attributeKey(node, name);
-    if (canonical.startsWith("Preview.")) previews[canonical.slice(8)] = value; else attrs[canonical] = value;
-  }
-  const owner = `${canonicalTag(node.tag) ?? String(node.tag)}.`;
-  for (const child of node.children ?? []) {
-    const propertyTag = canonicalTag(child.tag);
-    if (propertyTag?.startsWith(owner)) attrs[propertyTag.slice(owner.length)] = (child.children ?? []).filter((item) => item.kind === "text").map((item) => item.text ?? "").join("").trim();
-  }
-  for (const key of Object.keys(attrs)) attrs[key] = previews[key] ?? resolve(attrs[key], scope);
-  return attrs;
+  return resolvePreviewAttributes(node,scope,attributeKey);
 }
 
 function visualChildren(node: SerializableNode): SerializableNode[] {
@@ -358,14 +366,43 @@ function pickVisualTarget(event: MouseEvent): void {
 }
 
 function applyLayout(element: HTMLElement, tag: string, attrs: Record<string, string | undefined>): void {
+  element.style.boxSizing = layoutContract.boxSizing;
+  element.style.fontSynthesis = layoutContract.renderFidelity.typography.fontSynthesis;
+  element.style.boxShadow = layoutContract.renderFidelity.defaultBoxShadow ? "" : "none";
+  element.dataset.luiBorderAlign = layoutContract.renderFidelity.borderAlign;
+  element.dataset.luiColorSpace = layoutContract.renderFidelity.colorSpace;
+  element.dataset.luiAlphaMode = layoutContract.renderFidelity.alphaMode;
+  element.dataset.luiGradientInterpolation = layoutContract.renderFidelity.gradientInterpolation;
+  if (capabilityAttributes(tag).includes("FontFamily")) {
+    element.dataset.luiTextRaster = ["Text", "Button"].includes(tag)
+      ? layoutContract.renderFidelity.typography.studioTextRaster
+      : layoutContract.renderFidelity.typography.nativeControlRaster;
+  }
   const sizes: Record<string, string> = { Width: "width", Height: "height", MinWidth: "minWidth", MinHeight: "minHeight", MaxWidth: "maxWidth", MaxHeight: "maxHeight" };
   for (const [attribute, style] of Object.entries(sizes)) if (attrs[attribute] !== undefined) (element.style as unknown as Record<string, string>)[style] = cssSize(attrs[attribute]);
-  if (attrs.Background !== undefined) element.style.background = attrs.Background;
+  if (attrs.Background !== undefined && parseBrush(attrs.Background)) element.style.background = attrs.Background;
   if (attrs.BorderWidth !== undefined) { element.style.borderWidth = cssSize(attrs.BorderWidth); element.style.borderStyle = "solid"; }
-  if (attrs.BorderColor !== undefined) element.style.borderColor = attrs.BorderColor;
-  if (attrs.Color !== undefined) element.style.color = attrs.Color;
+  if (attrs.BorderColor !== undefined && normalizeColor(attrs.BorderColor)) element.style.borderColor = attrs.BorderColor;
+  if (attrs.Color !== undefined && normalizeColor(attrs.Color)) element.style.color = attrs.Color;
+  // This is only the explicitly selected structural illustration. Real preview
+  // uses the engine Label stroke from the same projected source attributes.
+  const strokeWidth = Number(attrs.TextStrokeWidth ?? 0);
+  if (tag === "Text" && strokeWidth > 0 && Number.isFinite(strokeWidth) && normalizeColor(attrs.TextStrokeColor ?? "")) {
+    element.style.textShadow = [[-1,0],[1,0],[0,-1],[0,1],[-0.707,-0.707],[0.707,-0.707],[-0.707,0.707],[0.707,0.707]]
+      .map(([x,y]) => `${x * strokeWidth}px ${y * strokeWidth}px 0 ${attrs.TextStrokeColor}`).join(",");
+  }
   if (attrs.Opacity !== undefined) element.style.opacity = attrs.Opacity;
   if (attrs.BorderRadius !== undefined) element.style.borderRadius = cssSize(attrs.BorderRadius);
+  if (attrs.FontFamily !== undefined) element.style.fontFamily = `"${attrs.FontFamily.replaceAll('"', '')}"`;
+  if (attrs.FontSize !== undefined) element.style.fontSize = cssSize(attrs.FontSize);
+  if (attrs.FontWeight !== undefined) element.style.fontWeight = attrs.FontWeight;
+  if (attrs.FontStyle !== undefined) element.style.fontStyle = attrs.FontStyle;
+  if (attrs.LineHeight !== undefined) element.style.lineHeight = attrs.LineHeight;
+  if (attrs.LetterSpacing !== undefined) element.style.letterSpacing = cssSize(attrs.LetterSpacing);
+  if (attrs.TextWrapping !== undefined) element.style.whiteSpace = attrs.TextWrapping === "换行" ? "normal" : "nowrap";
+  if (attrs.TextTrimming === "尾部省略") { element.style.textOverflow = "ellipsis"; element.style.overflow = "hidden"; }
+  if (attrs.TextHorizontalAlignment !== undefined) element.style.textAlign = ({ 左: "left", 居中: "center", 右: "right" } as Record<string, string>)[attrs.TextHorizontalAlignment] ?? attrs.TextHorizontalAlignment;
+  if (attrs.TextVerticalAlignment !== undefined && tag === "Text") { element.style.display = "flex"; element.style.flexDirection = "column"; element.style.justifyContent = ({ 上: "flex-start", 居中: "center", 下: "flex-end" } as Record<string, string>)[attrs.TextVerticalAlignment] ?? "center"; }
   if (attrs.Margin !== undefined) element.style.margin = cssThickness(attrs.Margin);
   if (attrs.Padding !== undefined) element.style.padding = cssThickness(attrs.Padding);
   if (attrs.ClipToBounds !== undefined) element.style.overflow = bool(attrs.ClipToBounds) ? "hidden" : "visible";
@@ -444,7 +481,12 @@ function applyChildLayout(host: HTMLElement, attrs: Record<string, string | unde
   host.style.minHeight ||= "0";
   if (mode === "自由") {
     host.style.display = "grid";
+    // A button's justify-content:center must not shrink its sole grid column.
+    // Percentage descendants resolve against the complete parent content box.
+    host.style.gridTemplateColumns = "minmax(0, 1fr)";
     host.style.gridAutoRows = "minmax(0, 1fr)";
+    host.style.justifyContent = "stretch";
+    host.style.alignContent = "stretch";
   } else {
     host.style.display = "flex";
     host.style.flexDirection = mode === "水平" ? "row" : "column";
@@ -474,7 +516,10 @@ function applyChildLayout(host: HTMLElement, attrs: Record<string, string | unde
       // Percentages need a definite flow slot, but explicit pixels remain on
       // the visual so an aligned fill item need not stretch its own bounds.
       const mainSize = mode === "水平" ? "width" : "height";
-      if (child.style[mainSize].endsWith("%")) slot.style[mainSize] = child.style[mainSize];
+      if (child.style[mainSize].endsWith("%")) {
+        slot.style[mainSize] = child.style[mainSize];
+        child.style[mainSize] = "100%";
+      }
     }
   });
 }
@@ -512,8 +557,8 @@ function renderComponent(node: SerializableNode, scope: Record<string, unknown>,
     const binding = parseBinding(raw); const value = binding ? getPath(scope, binding.path) : undefined;
     if (value !== undefined) props[isLayoutProperty(key) ? sourceAttribute(canonicalAttribute(key)) : key] = value;
   }
-  wrapper.append(fragmentChildren(visualChildren(template), { ...scope, props, slots: { Content: visualChildren(node) } }, [...trace, key], `${instancePath}/component:${key}`));
-  applyChildLayout(wrapper, effective(node, scope));
+  wrapper.append(renderNode(template, { ...scope, props, componentInstance: true, slots: { Content: visualChildren(node) } }, [...trace, key], `${instancePath}/component:${key}`));
+  applyChildLayout(wrapper, { ChildLayout: "自由" });
   return wrapper;
 }
 
@@ -546,8 +591,7 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
       Object.values(values).forEach((item, index) => fragment.append(fragmentChildren(visualChildren(node), { ...scope, [attrs.Items ?? attrs.Each ?? 'item']: item, item, index: index + 1 }, trace, `${instancePath}/item:${index}`)));
       return fragment;
     }
-    const sample = { label: "示例项目", name: "示例项目", text: "示例内容" };
-    return fragmentChildren(visualChildren(node), { ...scope, [attrs.Items ?? attrs.Each ?? "item"]: sample, item: sample, index: 1 }, trace, `${instancePath}/item:0`);
+    return document.createDocumentFragment();
   }
   if (tag === "lui:Slot") {
     const content = (scope.slots as Record<string, SerializableNode[]> | undefined)?.Content ?? [];
@@ -568,12 +612,11 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
       const rect = { width: viewport.clientWidth, height: viewport.clientHeight }; const margin = thicknessParts(attrs.Margin);
       const left = Number(margin[0]) || 0; const top = Number(margin[1]) || 0; const right = Number(margin[2]) || 0; const bottom = Number(margin[3]) || 0;
       const availableWidth = Math.max(0, rect.width - left - right); const availableHeight = Math.max(0, rect.height - top - bottom);
-      const scale = Math.min(availableWidth / designWidth, availableHeight / designHeight);
-      const safeScale = Number.isFinite(scale) ? scale : 1;
-      design.style.transform = `scale(${safeScale})`;
-      design.style.left = `${left + Math.max(0, (availableWidth - designWidth * safeScale) * 0.5)}px`;
-      design.style.top = `${top + Math.max(0, (availableHeight - designHeight * safeScale) * 0.5)}px`;
-      viewport.dataset.pageScale = String(safeScale);
+      const frame = calculatePageFrame({ viewportWidth: rect.width, viewportHeight: rect.height, designWidth, designHeight, marginLeft: left, marginTop: top, marginRight: right, marginBottom: bottom });
+      design.style.transform = `scale(${frame.scale})`;
+      design.style.left = `${frame.x}px`;
+      design.style.top = `${frame.y}px`;
+      viewport.dataset.pageScale = String(frame.scale);
     };
     new ResizeObserver(applyScale).observe(viewport); requestAnimationFrame(applyScale);
     return viewport;
@@ -605,15 +648,52 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   element.classList.add(`tag-${tag.replace(/[^A-Za-z0-9_-]/g, "-")}`);
   applyLayout(element, tag, attrs);
   if (tag === "Grid" || tag === "UniformGrid") element.classList.add("grid"); else if (tag === "Canvas") element.classList.add("canvas"); else if (tag === "Viewbox") element.classList.add("viewbox"); else if (tag === "Row" || tag === "StackPanel" || tag === "WrapPanel" || tag === "DockPanel") element.classList.add("row"); else element.classList.add("panel");
-  if (tag === "Button") { element.classList.add("button"); if (attrs.Variant === "常规" || attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary"); element.textContent = text(attrs.Text); }
+  if (tag === "Button") {
+    element.classList.add("button");
+    if (attrs.Variant === "常规" || attrs.Variant === "次要" || attrs.Variant === "secondary") element.classList.add("secondary");
+    const caption = document.createElement("span"); caption.className = "lui-button-caption";
+    const label = document.createElement("span"); label.textContent = attrs.Text ?? (visualChildren(node).length ? "" : "按钮");
+    caption.append(label);
+    caption.style.justifyContent = ({ "左": "flex-start", "居中": "center", "右": "flex-end" } as Record<string, string>)[attrs.TextHorizontalAlignment ?? layoutContract.defaults.button.textHorizontalAlignment];
+    caption.style.alignItems = ({ "上": "flex-start", "居中": "center", "下": "flex-end" } as Record<string, string>)[attrs.TextVerticalAlignment ?? layoutContract.defaults.button.textVerticalAlignment];
+    if (visualChildren(node).length) caption.classList.add("composite-caption");
+    if (bool(attrs.Disabled)) caption.style.color = `rgb(${layoutContract.defaults.button.disabledTextColor.slice(0, 3).join(",")})`;
+    element.append(caption);
+  }
   else if (tag === "Text") { element.classList.add("text"); element.style.fontSize = attrs.FontSize ? cssSize(attrs.FontSize) : ""; element.textContent = text(attrs.Text); }
+  else if (tag === "TextField") {
+    element.classList.add("text-field");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = text(attrs.Text);
+    input.placeholder = text(attrs.Placeholder);
+    input.readOnly = true;
+    input.tabIndex = -1;
+    if (attrs.Padding) input.style.padding = "0";
+    if (attrs.PlaceholderColor) element.style.setProperty("--lui-placeholder-color", attrs.PlaceholderColor);
+    if (attrs.CursorColor) input.style.caretColor = attrs.CursorColor;
+    element.append(input);
+  }
   else if (tag === "Card") element.classList.add("card");
   else if (tag === "Scroll") { element.classList.add("scroll"); applyScrollPresentation(element, attrs); }
   else if (tag === "SafeArea") element.classList.add("safe-area");
   else if (tag === "Modal") element.classList.add("modal");
   else if (tag === "Progress") {
     element.classList.add("progress"); const track = document.createElement("span"); track.className = "progress-track"; const fill = document.createElement("span"); fill.className = "progress-fill";
-    const maximum = Math.max(1, Number(attrs.Max) || 100); fill.style.width = `${Math.max(0, Math.min(100, (Number(attrs.Value) || 0) / maximum * 100))}%`; track.append(fill); element.append(track);
+    const progress = layoutContract.defaults.progress;
+    const rgba = (c: number[]) => `rgba(${c[0]},${c[1]},${c[2]},${c[3]/255})`;
+    element.style.height ||= `${progress.height}px`;
+    element.style.borderRadius ||= `${progress.borderRadius}px`;
+    track.style.height = "100%";
+    track.style.background = attrs.TrackBrush ?? attrs.Background ?? rgba(progress.track);
+    fill.style.background = attrs.FillBrush ?? `linear-gradient(90deg, ${rgba(progress.from)}, ${rgba(progress.to)})`;
+    const ratio = Math.max(0, Math.min(100, (Number(attrs.Value) || 0) / Math.max(1, Number(attrs.Max ?? progress.max)) * 100));
+    const direction = attrs.ProgressDirection ?? "从左到右";
+    track.style.display = "flex";
+    if (direction === "从右到左") track.style.justifyContent = "flex-end";
+    if (direction === "从上到下" || direction === "从下到上") { track.style.flexDirection = "column"; if (direction === "从下到上") track.style.justifyContent = "flex-end"; fill.style.width = "100%"; fill.style.height = `${ratio}%`; }
+    else fill.style.width = `${ratio}%`;
+    track.append(fill); element.append(track);
   } else if (tag === "Toggle") { element.classList.add("toggle"); element.textContent = bool(attrs.Value) ? "开启" : "关闭"; }
   else if (tag === "Slider") { element.classList.add("slider"); const input = document.createElement("input"); input.type = "range"; input.min = attrs.Min ?? "0"; input.max = attrs.Max ?? "100"; input.value = attrs.Value ?? "0"; element.append(input); }
   // Text and input controls keep their own visual layer, then host authored
@@ -723,8 +803,10 @@ function defaultValue(node: SerializableNode, key: string): string {
   if (key === "MinWidth" || key === "MinHeight" || key === "Margin" || key === "Padding" || key === "HorizontalGap" || key === "VerticalGap") return "0";
   if (key === "MaxWidth" || key === "MaxHeight") return "无限";
   if (key === "HorizontalAlignment" || key === "VerticalAlignment") return "拉伸";
+  if (key === "TextHorizontalAlignment" || key === "TextVerticalAlignment") return "居中";
   if (key === "ClipToBounds") return canonicalTag(node.tag) === "lui:Page" ? "是" : "否";
   if (key === "ChildLayout") return "自由";
+  if (key === "TextStrokeWidth") return "0";
   if (key === "Wrap" || key === "Fill") return "否";
   if (key === "ChildWidth" || key === "ChildHeight") return "自动";
   if (key === "ZIndex") return "自动（源码顺序）";
@@ -732,10 +814,6 @@ function defaultValue(node: SerializableNode, key: string): string {
 }
 
 function resetAttribute(node: SerializableNode, key: string): void {
-  if (canonicalTag(node.tag) === "lui:Page" && key === "Margin") {
-    writeAttribute(node, key, "0");
-    return;
-  }
   editNode(node, "resetAttribute", declaredProperties(node)?.[key] ? key : sourceAttribute(key));
 }
 
@@ -751,6 +829,25 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   const definition = custom ? { kind: custom.type === 'number' ? 'number' : custom.type === 'boolean' ? 'enum' : 'text', options: custom.type === 'boolean' ? ['true','false'] : undefined } : attributeDefinition(key);
   const explicit = sourceValue(node, key);
   const value = explicit ?? defaultValue(node, key);
+  label.dataset.property=key;
+  label.dataset.search=[key,ATTRIBUTE_LABELS[key],sourceAttribute(key)].join(' ').toLowerCase();
+  label.title=`${explicit===undefined?'继承：组件声明 / LUI 共享默认值':'显式属性'}\n当前解析值：${effective(node,{})[key]??value}`;
+  const reset=document.createElement('button');reset.type='button';reset.textContent='复位';reset.disabled=explicit===undefined;
+  reset.title='删除显式属性，恢复继承';reset.onclick=()=>resetAttribute(node,key);label.append(reset);
+  const bound=parseBinding(value);
+  if(bound){
+    const section=document.createElement('fieldset');section.className='binding-options';
+    const error=document.createElement('small');error.className='property-error';
+    const expression=document.createElement('input');expression.value=value;expression.title='绑定表达式';
+    expression.onchange=()=>{if(!parseBinding(expression.value)){error.textContent='绑定表达式无效';return;}error.textContent='';writeAttribute(node,key,expression.value);};
+    const sample=document.createElement('input');sample.value=bound.previewContent??'';sample.placeholder='仅预览内容（不更改绑定路径）';
+    sample.onchange=()=>{
+      if(/["'\r\n]/.test(sample.value)){error.textContent='预览内容不能含引号或换行，请在源码中编辑';return;}
+      const body=value.slice(0,-1).replace(/,\s*预览内容\s*=\s*(?:'[^']*'|"[^"]*"|[^,}]*)/,'');
+      writeAttribute(node,key,`${body}, 预览内容='${sample.value}'}`);
+    };
+    section.append(expression,sample,error);label.append(section);host.append(label);return;
+  }
   let input: HTMLInputElement | HTMLSelectElement;
   if (key === "HorizontalAlignment" || key === "VerticalAlignment") {
     const buttons = document.createElement("div"); buttons.className = "alignment-buttons"; buttons.setAttribute("role", "radiogroup"); buttons.setAttribute("aria-label", ATTRIBUTE_LABELS[key] ?? key);
@@ -769,11 +866,57 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   } else if (key === "Width" || key === "Height") {
     const box = document.createElement("div"); box.className = "size-editor";
     const actual = layouts.get(`${node.source}:${node.start}`); const measured = key === "Width" ? actual?.width : actual?.height;
-    const mode = document.createElement("select"); for (const [labelValue, optionText] of [["自动", measured === undefined ? "自动" : `自动（${Math.round(measured)}）`], ["像素", "像素"]]) { const option = document.createElement("option"); option.value = labelValue; option.textContent = optionText; mode.append(option); }
-    const isAuto = !value || value === "自动"; mode.value = isAuto ? "自动" : "像素";
-    const field = document.createElement("input"); field.type = "number"; field.step = "any"; field.value = isAuto ? "" : value; field.placeholder = "实际尺寸见下方";
-    mode.onchange = () => writeAttribute(node, key, mode.value === "自动" ? "自动" : (field.value || "0")); field.onchange = () => { if (mode.value === "像素") writeAttribute(node, key, field.value || "0"); };
+    const mode = document.createElement("select"); for (const [labelValue, optionText] of [["自动", measured === undefined ? "自动" : `自动（${Math.round(measured)}）`], ["像素", "px"],['百分比','%']]) { const option = document.createElement("option"); option.value = labelValue; option.textContent = optionText; mode.append(option); }
+    const isAuto = !value || value === "自动"; mode.value = isAuto ? "自动" : value.endsWith('%')?'百分比':"像素";
+    const field = document.createElement("input"); field.type = "number"; field.step = "1";field.min='0'; field.value = isAuto ? "" : String(parseFloat(value)); field.placeholder = "实际尺寸见下方";
+    const commit=()=>{if(mode.value==='自动'){writeAttribute(node,key,'自动');return;}if(!field.checkValidity()||!Number.isFinite(field.valueAsNumber)){field.reportValidity();return;}writeAttribute(node,key,field.value+(mode.value==='百分比'?'%':''));};
+    mode.onchange=commit;field.onchange=commit;
     box.append(mode, field); label.append(box); host.append(label); return;
+  } else if ((definition?.kind === "color" || definition?.kind === "brush") && !parseBinding(value)) {
+    const editor = document.createElement("div"); editor.className = definition.kind === "brush" ? "brush-editor" : "color-editor";
+    const colorFields = (initial: string, changed: (color: string) => void): HTMLElement => {
+      const normalized = normalizeColor(initial) ?? "#000000FF";
+      const row = document.createElement("span"); row.className = "color-fields";
+      const picker = document.createElement("input"); picker.type = "color"; picker.value = normalized.slice(0, 7);
+      const alpha = document.createElement("input"); alpha.type = "range"; alpha.min = "0"; alpha.max = "255"; alpha.value = String(normalized.length === 9 ? Number.parseInt(normalized.slice(7), 16) : 255); alpha.title = "透明度";
+      const output = document.createElement("output");
+      const commit = () => { const next = `${picker.value.toUpperCase()}${Number(alpha.value).toString(16).padStart(2, "0").toUpperCase()}`; output.value = next; changed(next); };
+      output.value = normalized.length === 7 ? `${normalized}FF` : normalized; picker.onchange = commit; alpha.onchange = commit; row.append(picker, alpha, output); return row;
+    };
+    if (definition.kind === "color") {
+      editor.append(colorFields(value, (next) => writeAttribute(node, key, next)));
+    } else {
+      let brush = parseBrush(value) ?? { kind: "solid" as const, color: "#000000FF" };
+      const mode = document.createElement("select");
+      for (const [entry, caption] of [["solid", "纯色"], ["linear", "线性渐变"]]) { const option = document.createElement("option"); option.value = entry; option.textContent = caption; mode.append(option); }
+      mode.value = brush.kind;
+      const fields = document.createElement("div"); fields.className = "brush-fields";
+      const renderFields = () => {
+        fields.innerHTML = "";
+        if (brush.kind === "solid") fields.append(colorFields(brush.color, (color) => { brush = { kind: "solid", color }; writeAttribute(node, key, color); }));
+        else {
+          const angle = document.createElement("input"); angle.type = "number"; angle.value = String(brush.angle); angle.title = "角度（deg）";
+          const offsets = brush.stops.map((stop) => stop.offset) as [number, number]; const colors = brush.stops.map((stop) => stop.color) as [string, string];
+          const commit = () => writeAttribute(node, key, formatLinearGradient(Number(angle.value) || 0, colors[0], offsets[0], colors[1], offsets[1]));
+          angle.onchange = commit; fields.append(angle);
+          for (let index = 0; index < 2; index += 1) {
+            const stop = document.createElement("span"); stop.className = "gradient-stop";
+            stop.append(colorFields(colors[index], (color) => { colors[index] = color; commit(); }));
+            const offset = document.createElement("input"); offset.type = "number"; offset.min = "0"; offset.max = "100"; offset.value = String(offsets[index]); offset.title = "色标位置（%）"; offset.onchange = () => { offsets[index] = Number(offset.value); commit(); }; stop.append(offset); fields.append(stop);
+          }
+        }
+      };
+      mode.onchange = () => { brush = mode.value === "linear" ? { kind: "linear", angle: 90, stops: [{ color: "#7851C9FF", offset: 0 }, { color: "#4D2A91FF", offset: 100 }] } : { kind: "solid", color: brush.kind === "solid" ? brush.color : brush.stops[0].color }; renderFields(); if (brush.kind === "solid") writeAttribute(node, key, brush.color); else writeAttribute(node, key, formatLinearGradient(brush.angle, brush.stops[0].color, brush.stops[0].offset, brush.stops[1].color, brush.stops[1].offset)); };
+      editor.append(mode, fields); renderFields();
+    }
+    label.append(editor); host.append(label);
+    if (explicit !== undefined) { const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "重置"; reset.onclick = () => resetAttribute(node, key); label.append(reset); }
+    return;
+  } else if (key === "TextStrokeWidth") {
+    const box = document.createElement("span"); box.className = "size-editor";
+    const field = document.createElement("input"); field.type = "number"; field.min = "0"; field.step = "0.25"; field.value = value;
+    field.onchange = () => { if (!field.checkValidity() || !Number.isFinite(field.valueAsNumber)) { field.reportValidity(); return; } writeAttribute(node, key, field.value); };
+    const unit = document.createElement("span"); unit.textContent = "px"; box.append(field, unit); label.append(box); host.append(label); return;
   } else if (definition?.kind === "enum") {
     const select = document.createElement("select");
     const empty = document.createElement("option"); empty.value = ""; empty.textContent = "未设置"; select.append(empty);
@@ -854,22 +997,10 @@ function attributesFor(node: SerializableNode): string[] {
   if (tag === "__placeholder__") return [];
   const identity = isDocumentRoot(node) || sourceValue(node, "x:Name") !== undefined ? ["x:Name"] : [];
   if (sourceValue(node, "x:DisplayName") !== undefined) identity.push("x:DisplayName");
-  if (tag === "lui:Page") return [...identity, "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
-  if (tag === "lui:Component") return [...identity, "Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
-  const structural = ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"];
-  const layout = structural.includes(tag ?? "") ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "Visibility", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
-  const surface = ["Container", "Panel", "Button", "Text", "Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag ?? "") ? ["Background", "BorderWidth", "BorderColor", "Opacity", "BorderRadius"] : [];
-  const specific: Record<string, string[]> = {
-    Grid: ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"], DockPanel: ["LastChildFill"], StackPanel: ["Orientation", "FlowDirection", "Gap"], WrapPanel: ["Orientation", "FlowDirection", "Gap"], Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Scroll: ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Items", "In"], "lui:Slot": [], "lui:Set": ["Path", "Value"]
-  };
   const control = controlDefinition(tag);
-  if (tag === "Scroll") specific.Scroll!.push("ScrollbarColor");
-  if (control) {
-    const declarative = ["Text", "Title", "Subtitle", "Value", "Min", "Max", "Step", "Placeholder", "Items", "Data", "Options", "Icon", "Image", "Source", "Orientation", "Columns", "Rows", "Gap", "Type", "Visible", ...(control.events ?? [])];
-    if (control.bindable && !declarative.includes(control.bindable)) declarative.push(control.bindable);
-    specific[tag ?? ""] = [...(specific[tag ?? ""] ?? []), ...declarative];
-  }
-  return [...new Set([...identity, ...layout, ...surface, ...componentPublicProperties(node), ...(specific[tag ?? ""] ?? [])])];
+  const attributes = [...capabilityAttributes(tag ?? "", isDocumentRoot(node)), ...(control?.events ?? [])];
+  if (control?.bindable) attributes.push(control.bindable);
+  return [...new Set([...identity, ...attributes, ...componentPublicProperties(node)])];
 }
 
 function collapsibleSection(title: string): HTMLElement {
@@ -887,6 +1018,13 @@ function collapsibleSection(title: string): HTMLElement {
 function layoutKey(source: string, path: readonly number[], instancePath = ""): string { return `${source}|${path.join(".")}|${instancePath}`; }
 
 function layoutResult(host: HTMLElement, node: SerializableNode): void {
+  if(previewBackend==='engine'){
+    const section=collapsibleSection('真实引擎布局结果');
+    const info=document.createElement('pre');info.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px';
+    info.textContent=enginePickProbe?.sourcePath===node.source&&enginePickProbe.nodePath===node.nodePath.join('.')
+      ?JSON.stringify(enginePickProbe.probe,null,2):'在真实预览中点选节点，读取 Runtime 的几何、字体与画刷结果。';
+    section.append(info);host.append(section);return;
+  }
   const prefix = `${node.source}|${node.nodePath.join(".")}|`;
   const result = layouts.get(layoutKey(node.source, node.nodePath, selected?.instancePath)) ?? [...layouts].find(([key]) => key.startsWith(prefix))?.[1];
   const section = document.createElement("section"); section.className = "layout-result";
@@ -920,7 +1058,13 @@ function layoutResult(host: HTMLElement, node: SerializableNode): void {
   host.append(section);
 }
 
+let propertyQuery='';
 function properties(node: SerializableNode | undefined): void {
+  const previousHost=byId('properties'),focused=document.activeElement as HTMLInputElement|null;
+  const focusedKey=focused?.closest<HTMLElement>('[data-property]')?.dataset.property;
+  const focusedIndex=focusedKey?Array.from(focused!.closest('[data-property]')!.querySelectorAll('input,select')).indexOf(focused!):-1;
+  const previousScroll=previousHost.scrollTop;
+  const cursor=focused?.type==='text'?[focused.selectionStart,focused.selectionEnd]:null;
   const host = byId("properties"); host.innerHTML = "<h2>当前节点属性</h2>";
   if (!node) { const paragraph = document.createElement("p"); paragraph.textContent = "在组件树、画布或源码中选择一个节点。"; host.append(paragraph); return; }
   const tagLabel = document.createElement("label"); tagLabel.textContent = "标签类型";
@@ -962,6 +1106,8 @@ function properties(node: SerializableNode | undefined): void {
   refreshCategories(); fillTags(); filter.oninput = fillTags; category.onchange = fillTags;
   select.onchange = () => { if (select.value) editNode(node, "setTag", select.value); };
   tagLabel.append(category, filter, select); host.append(tagLabel);
+  const search=document.createElement('input');search.type='search';search.placeholder='搜索属性中文名称 / 别名';search.value=propertyQuery;host.append(search);
+  const applySearch=()=>{propertyQuery=search.value;for(const row of host.querySelectorAll<HTMLElement>('[data-search]'))row.hidden=!row.dataset.search?.includes(propertyQuery.trim().toLowerCase());};search.oninput=applySearch;
   const available = new Set(attributesFor(node));
   const declared = declaredProperties(node);
   if (declared) {
@@ -985,6 +1131,8 @@ function properties(node: SerializableNode | undefined): void {
   const illegal = Object.keys(node.attrs ?? {}).map(name => attributeKey(node, name)).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
   if (illegal.length) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = `源代码保留 ${[...new Set(illegal)].map(sourceAttribute).join("、")}；这些属性不适用于当前标签，诊断中可定位并手动删除或迁移。`; host.append(note); }
   layoutResult(host, node);
+  applySearch();host.scrollTop=previousScroll;
+  if(focusedKey){const row=Array.from(host.querySelectorAll<HTMLElement>('[data-property]')).find(row=>row.dataset.property===focusedKey);const next=row?.querySelectorAll<HTMLInputElement>('input,select')[focusedIndex];if(next){next.focus({preventScroll:true});if(cursor&&next.type==='text')next.setSelectionRange(cursor[0],cursor[1]);}}
 }
 
 function applyHighlights(): void {
@@ -1279,6 +1427,11 @@ function collectLayoutData(): void {
     const border = { left: pixel(style.borderLeftWidth), top: pixel(style.borderTopWidth), right: pixel(style.borderRightWidth), bottom: pixel(style.borderBottomWidth) };
     const padding = { left: pixel(style.paddingLeft), top: pixel(style.paddingTop), right: pixel(style.paddingRight), bottom: pixel(style.paddingBottom) };
     const width = element.offsetWidth; const height = element.offsetHeight;
+    const borderWidth = Math.max(border.left, border.top, border.right, border.bottom);
+    const borderAlign = element.dataset.luiBorderAlign ?? layoutContract.renderFidelity.borderAlign;
+    const borderInset = borderAlign === "inside" ? borderWidth / 2 : borderAlign === "outside" ? -borderWidth / 2 : 0;
+    const numericWeight = Number(style.fontWeight);
+    const resolvedFontWeight = style.fontWeight === "bold" || (Number.isFinite(numericWeight) && numericWeight >= 600) ? "bold" : "normal";
     const path = (element.dataset.nodePath ?? "").split(".").filter(Boolean).map(Number);
     layouts.set(layoutKey(source, path, element.dataset.instancePath), {
       x: Math.round((rect.left - logicalOrigin.left) / logicalScale * 10) / 10, y: Math.round((rect.top - logicalOrigin.top) / logicalScale * 10) / 10,
@@ -1287,13 +1440,23 @@ function collectLayoutData(): void {
       contentWidth: Math.max(0, Math.round((width - padding.left - padding.right - border.left - border.right) * 10) / 10), contentHeight: Math.max(0, Math.round((height - padding.top - padding.bottom - border.top - border.bottom) * 10) / 10),
       availableWidth: Math.round(parent.width * 10) / 10, availableHeight: Math.round(parent.height * 10) / 10,
       desiredWidth: Math.round(element.scrollWidth * 10) / 10, desiredHeight: Math.round(element.scrollHeight * 10) / 10,
-      margin, border, padding
+      margin, border, padding,
+      borderAlign,
+      borderRect: { x: borderInset, y: borderInset, width: Math.max(0, width - borderInset * 2), height: Math.max(0, height - borderInset * 2) },
+      colorSpace: element.dataset.luiColorSpace ?? layoutContract.renderFidelity.colorSpace,
+      alphaMode: element.dataset.luiAlphaMode ?? layoutContract.renderFidelity.alphaMode,
+      gradientInterpolation: element.dataset.luiGradientInterpolation ?? layoutContract.renderFidelity.gradientInterpolation,
+      fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight, resolvedFontWeight,
+      lineHeight: style.lineHeight, fontSynthesis: style.fontSynthesis,
+      textRasterMode: element.dataset.luiTextRaster ?? "none",
+      shadowSource: layoutContract.renderFidelity.shadowSource, boxShadow: style.boxShadow
     });
   }
 }
 
 function draw(refreshChrome = true): void {
-  const canvas = byId("canvas"); const tree = byId("outline"); canvas.innerHTML = "";
+  const canvas = byId("canvas"); const tree = byId("outline");
+  if(previewBackend==='schematic'||canvas.dataset.previewBackend!==previewBackend)canvas.innerHTML='';
   if (refreshChrome) tree.innerHTML = "";
   if (!model?.root) return;
   const isPage = canonicalTag(model.root.tag) === "lui:Page";
@@ -1304,15 +1467,31 @@ function draw(refreshChrome = true): void {
   canvas.style.height = isPage ? `${height}px` : "auto";
   canvas.style.minHeight = isPage ? `${height}px` : "0";
   if (refreshChrome) outline(model.root, tree);
-  canvas.append(renderNode(model.root));
-  if (!isPage) measureControlPreview(canvas);
+  canvas.dataset.previewBackend = previewBackend;
+  if(previewBackend==='schematic')canvas.append(renderNode(model.root));
+  else{
+    canvas.style.width=`${width}px`;canvas.style.height=`${height}px`;
+    let status=canvas.querySelector<HTMLDivElement>('.engine-status');
+    if(!status){status=document.createElement('div');status.className='engine-status';canvas.append(status);}
+    status.textContent=engineError?`真实预览未就绪：${engineError}`:'真实引擎预览；内嵌隔离不可用时请在独立窗口打开。';
+    if(engineUrl){
+      const open=document.createElement('button');open.textContent='打开隔离预览窗口';open.onclick=()=>vscode.postMessage({type:'openEngine'});status.append(open);
+      let frame=canvas.querySelector('iframe');if(!frame){frame=document.createElement('iframe');frame.allow='cross-origin-isolated';frame.style.cssText='width:100%;height:calc(100% - 60px);border:0';canvas.append(frame);}
+      if(frame.src!==engineUrl)frame.src=engineUrl;
+    }
+  }
+  if (!(model.diagnostics ?? []).some(issue => issue.severity === 'error')) {
+    try { vscode.postMessage({ type:'engineSnapshot', snapshot:{revision:++engineRevision,width:Number(width)||390,height:Number(height)||844,node:engineNodes(model.root,previewScope)[0]} }); }
+    catch(error) { designerEditError=String(error); }
+  }
+  if (!isPage&&previewBackend==='schematic') measureControlPreview(canvas);
   if (refreshChrome) properties(resolvePicked(selected));
   const diagnostics = byId("diagnostics"); diagnostics.innerHTML = "";
   for (const issue of model.diagnostics ?? []) { const item = document.createElement("p"); item.textContent = `⚠ ${issue.message}`; diagnostics.append(item); }
   if (sourceEditError) { const item = document.createElement("p"); item.textContent = `⚠ 源码同步未完成：${sourceEditError}`; diagnostics.append(item); }
   if (designerEditError) { const item = document.createElement("p"); item.textContent = `⚠ 属性修改未完成：${designerEditError}`; diagnostics.append(item); }
   applyHighlights();
-  requestAnimationFrame(() => { collectLayoutData(); if (refreshChrome) properties(resolvePicked(selected)); updateArtboard(); });
+  requestAnimationFrame(() => { if(previewBackend==='schematic')collectLayoutData();else layouts.clear(); if (refreshChrome) properties(resolvePicked(selected)); updateArtboard(); });
 }
 
 function clampZoom(value: number): number { return Math.max(.05, Math.min(64, value)); }
@@ -1372,7 +1551,8 @@ function zoomAt(clientX: number, clientY: number, nextZoom: number): void {
 }
 
 function pick(node: SerializableNode, instancePath?: string): void {
-  selected = nodeRef(node, instancePath); draw();
+  selected = nodeRef(node, instancePath);
+  if(previewBackend==='engine'){properties(node);applyHighlights();}else draw();
   // The embedded editor remains bound to its document.  A user may explicitly
   // locate a root-document node, but selecting an imported implementation never
   // switches the source editor or opens a native editor group.
@@ -1382,6 +1562,11 @@ function pick(node: SerializableNode, instancePath?: string): void {
 function applyModel(payload: ModelPayload): void {
   if (payload.generation <= lastModelGeneration) return;
   lastModelGeneration = payload.generation;
+  const fontGeneration = payload.generation;
+  document.body.dataset.luiFontsReady = "false";
+  let fontStyles = document.getElementById("lui-project-fonts") as HTMLStyleElement | null;
+  if (!fontStyles) { fontStyles = document.createElement("style"); fontStyles.id = "lui-project-fonts"; document.head.append(fontStyles); }
+  fontStyles.textContent = (payload.fonts ?? []).map((font) => `@font-face{font-family:${JSON.stringify(font.family)};src:url(${JSON.stringify(font.uri)}) format("truetype");font-weight:${font.weight};font-style:normal;font-display:block}`).join("\n");
   const rootIncoming = payload.sources?.[payload.rootSource];
   const preserveDraft = !!editor && activeSource?.source === payload.rootSource && !!rootIncoming && editor.state.doc.toString() !== rootIncoming.text;
   const draftRoot = preserveDraft ? model?.root : undefined;
@@ -1415,7 +1600,44 @@ function applyModel(payload: ModelPayload): void {
     initialFitSource = rootSource;
     canvasZoom = 1; requestAnimationFrame(() => { updateArtboard(); updateSelectionOverlay(); });
   }
+  void document.fonts.ready.then(() => {
+    if (lastModelGeneration !== fontGeneration) return;
+    document.body.dataset.luiFontsReady = "true";
+    draw();
+  });
   if (!designerEditInFlight) flushDesignerEdits();
+}
+
+let engineRevision=0;
+let engineUrl='',engineError='正在准备官方引擎与字体';
+let previewBackend='engine';
+let previewScope:Record<string,unknown>={};
+const scenePresets:Record<string,Record<string,unknown>>={
+  '标记样例':{},'名称：收起':{view:{nameDisplayVisible:true,nameEditorVisible:false,nameErrorVisible:false}},
+  '名称：编辑':{view:{nameDisplayVisible:false,nameEditorVisible:true,nameErrorVisible:false,playerNameDraft:'登塔者'}},
+  '记录：空列表':{view:{empty:true,hasBest:false,noBest:true,entries:[]}},
+  '塔内：战斗':{view:{battleVisible:true,organizeVisible:false,betweenVisible:false}},
+  '塔内：层间':{view:{battleVisible:true,organizeVisible:false,betweenVisible:true}},
+};
+const sceneSelect=document.createElement('select');sceneSelect.title='场景数据预设（独立样例，不读取存档）';
+for(const title of Object.keys(scenePresets)){const option=document.createElement('option');option.textContent=title;sceneSelect.append(option);}
+sceneSelect.onchange=()=>{previewScope=scenePresets[sceneSelect.value];draw();};document.querySelector('main>header')?.prepend(sceneSelect);
+const backend=document.createElement('select');backend.title='预览后端';
+for(const [value,title]of [['engine','UrhoX 真实预览'],['schematic','结构示意（非实机验收）']]){const option=document.createElement('option');option.value=value;option.textContent=title;backend.append(option);}
+backend.onchange=()=>{previewBackend=backend.value;draw();};document.querySelector('main>header')?.prepend(backend);
+window.addEventListener('message',event=>{const message=event.data;if(message.type==='engineReady'){engineUrl=message.url??'';engineError=message.error??'';draw();}
+  if(message.type==='enginePick'&&message.revision===engineRevision){
+    const path=String(message.nodePath).split('.').filter(Boolean).map(Number);
+    const node=nodeAtPath(rootForSource(message.sourcePath),path);
+    if(node){enginePickProbe=message;pick(node);}
+  }
+});
+/** Resolve only declarative sample data. No Lua backend is loaded or evaluated. */
+function engineNodes(node: SerializableNode, scope: Record<string,unknown> = {}): unknown[] {
+  return buildEngineSnapshot(node,scope,{
+    tag:node=>canonicalTag(node.tag)??node.tag!,attrs:effective,
+    children:visualChildren,component:node=>componentTemplate(node)?.template,
+  });
 }
 
 function applyReload(payload: SourceReloadPayload): void {

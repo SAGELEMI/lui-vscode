@@ -2,6 +2,7 @@ import { build, context } from "esbuild";
 import { cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import "./generate-controls.mjs";
+import "./stamp-runtime.mjs";
 
 const watch = process.argv.includes("--watch");
 const outdir = resolve("dist");
@@ -11,7 +12,7 @@ await rm(resolve("runtime"), { recursive: true, force: true });
 await cp(resolve("packages/runtime-urhox-lua/adapter"), resolve("runtime/urhox-lua"), { recursive: true });
 
 const hostOptions = {
-  entryPoints: { extension: "src/extension.ts", spec: "packages/spec/src/index.ts", sourceSync: "src/webview/sourceSync.ts" },
+  entryPoints: { extension: "src/extension.ts", enginePreviewHost: "src/enginePreviewHost.ts", previewSnapshot: "src/webview/previewSnapshot.ts", spec: "packages/spec/src/index.ts", sourceSync: "src/webview/sourceSync.ts" },
   outdir,
   bundle: true,
   platform: "node",

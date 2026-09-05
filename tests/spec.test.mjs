@@ -3,6 +3,19 @@ import assert from "node:assert/strict";
 import spec from "../dist/spec.cjs";
 const { UI_CONTROL_DEFINITIONS, parseBinding, parseLui, editAttribute, editTag, removeAttribute, displayNameOf, formatLui, namespaceImports, normalizeLuiAttributes } = spec;
 
+test('button caption alignment supports nine positions, completion and source edits', () => {
+  for (const x of ['左','居中','右']) for (const y of ['上','居中','下']) {
+    const source=`<控件 名称="C"><按钮 文本="标题" 文字左右对齐="${x}" 文字上下对齐="${y}" /></控件>`;
+    assert.deepEqual(parseLui(source).diagnostics.filter(d=>d.severity==='error'),[]);
+    assert.ok(editAttribute(source,parseLui(source).root.children[0],'TextHorizontalAlignment','右').includes('文字左右对齐="右"'));
+  }
+  assert.ok(parseLui('<控件 名称="C"><按钮 文字左右对齐="上" /></控件>').diagnostics.some(d=>d.severity==='error'));
+  assert.ok(parseLui('<控件 名称="C"><按钮 文字上下对齐="右" /></控件>').diagnostics.some(d=>d.severity==='error'));
+  const source='<控件 名称="C"><按钮 文字左右对齐="';
+  const choices=spec.provideLuiCompletions({source,position:source.length});
+  for(const label of ['左','居中','右']) assert.ok(choices.some(c=>c.label===label));
+});
+
 test('legacy loops warn while repeat items remain transparent template nodes', () => {
   const source='<控件 名称="P"><容器><重复项 项目="row" 集合="{绑定 view.rows}"><文本 文本="{绑定 row.label}" /></重复项></容器></控件>';
   assert.equal(parseLui(source).diagnostics.filter(d=>d.severity==='error').length,0);
@@ -26,7 +39,14 @@ test("LUI 2.0 uses one reusable layout host and exposes resettable defaults", ()
   assert.equal(document.diagnostics.filter((item) => item.severity === "error").length, 0);
   const host = document.root.children[0];
   assert.equal(removeAttribute(source, host, "ChildWidth"), '<页面 名称="P" 宽度="390" 高度="844"><容器 名称="Root" 子项排列="水平" 允许换行="是" 水平间隔="8"><按钮 名称="A" 填充="是" /><文本 名称="B" /></容器></页面>');
-  assert.ok(parseLui('<页面 名称="P" 宽度="390" 高度="844"><网格 /></页面>').diagnostics.some((item) => item.message.includes("已移除")));
+  assert.equal(parseLui('<页面 名称="P" 宽度="390" 高度="844"><网格 /></页面>').diagnostics.filter((item) => item.message.includes("已移除")).length,0,'2.6 restores dedicated layouts in the authoring surface');
+});
+
+test("free layout warns for same-anchor siblings but permits deliberate opposite anchors", () => {
+  const overlap = parseLui('<控件 名称="C"><容器><文本 文本="名称" /><文本 文本="等级" /></容器></控件>');
+  assert.ok(overlap.diagnostics.some((item) => item.severity === "warning" && item.message.includes("自由排列")));
+  const anchored = parseLui('<控件 名称="C"><容器><文本 文本="左" 垂直对齐="左" 水平对齐="上" /><文本 文本="右" 垂直对齐="右" 水平对齐="上" /></容器></控件>');
+  assert.equal(anchored.diagnostics.filter((item) => item.message.includes("自由排列")).length, 0);
 });
 
 test("a paired button may carry an authored title and bound secondary text", () => {
@@ -36,6 +56,15 @@ test("a paired button may carry an authored title and bound secondary text", () 
   const button = document.root.children[0].children[0];
   assert.equal(button.children.length, 2);
   assert.equal(button.children[1].tag, "文本");
+});
+
+test("button interaction backgrounds use explicit Chinese attributes", () => {
+  const source = '<控件 名称="按钮外观"><按钮 背景="#241536" 悬停背景="#302147" 按下背景="#191027" /></控件>';
+  const document = parseLui(source);
+  assert.equal(document.diagnostics.filter((item) => item.severity === "error").length, 0);
+  const button = document.root.children[0];
+  assert.equal(button.attrs.find((item) => item.name === "悬停背景")?.value, "#302147");
+  assert.equal(button.attrs.find((item) => item.name === "按下背景")?.value, "#191027");
 });
 
 test("the generated visual control catalog covers every public UI constructor", () => {

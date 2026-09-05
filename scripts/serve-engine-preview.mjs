@@ -1,0 +1,20 @@
+// Local integration fixture: real engine, production Runtime, no game startup.
+import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import {projectSnapshot} from './lib/preview-fixture.mjs';
+const require=createRequire(import.meta.url);
+const {EnginePreviewHost}=require('../dist/enginePreviewHost.cjs');
+const game=resolve(process.argv[2]);
+const config=JSON.parse(await readFile(resolve(game,'scripts/LUI/lui.project.json'),'utf8'));
+const files=[];
+for(const family of config.fonts)for(const font of Object.values(family.weights))files.push({path:font.resource,sha256:font.sha256,bytes:await readFile(resolve(game,'assets',font.resource))});
+const host=new EnginePreviewHost();
+await host.start(resolve('artifacts/engine-cache'),resolve('packages/runtime-urhox-lua/adapter'),files);
+const sample={kind:'Element',tag:'lui:Page',attrs:{Width:'390',Height:'867',Background:'#0B0714',Padding:'18'},sourcePath:'fixture.lui',nodePath:'',children:[{kind:'Element',tag:'Card',attrs:{Height:'150',Background:'#211535',BorderColor:'#9274B6',BorderWidth:'1',BorderRadius:'12'},sourcePath:'fixture.lui',nodePath:'0',children:[{kind:'Element',tag:'Text',attrs:{Text:'无尽塔 · 真实引擎预览',FontSize:'24',FontWeight:'bold',Color:'#F4ECFF'},sourcePath:'fixture.lui',nodePath:'0.0',children:[]}]}]};
+const editing=process.argv.includes('--editing');
+const node=process.argv[3]?await projectSnapshot(game,config,process.argv[3],{view:{nameDisplayVisible:!editing,nameEditorVisible:editing,nameErrorVisible:false,currentName:'登塔者',playerNameDraft:'登塔者',battleVisible:true,organizeVisible:false,betweenVisible:false}}):sample;
+host.update({revision:1,runChecks:true,runOverlayChecks:process.argv.includes('--overlays'),width:390,height:867,theme:config.theme,fonts:config.fonts.map(family=>({family:family.family,weights:Object.fromEntries(Object.entries(family.weights).map(([weight,font])=>[weight,font.resource]))})),node});
+host.onPick=pick=>console.log('PICK '+JSON.stringify(pick));
+console.log(host.url);
+process.on('SIGINT',()=>{host.dispose();process.exit();});

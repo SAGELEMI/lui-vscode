@@ -1,6 +1,6 @@
 # 控件与属性参考
 
-[返回文档入口](README.md)。适用版本：2.4.3。
+[返回文档入口](README.md)。适用版本：2.6.0。
 
 本页由 scripts/generate-reference.mjs 从正式词汇与控件目录生成，运行 npm run docs:generate 更新。表格列出已登记语法，不代表 Studio 模拟全部复杂控件交互，或 Runtime 实现底层 UI 的全部属性；使用新能力时核对适配器及目标引擎 UI 文档。
 
@@ -92,8 +92,8 @@
 | 中文属性 | 语义键 | 类型/枚举 | 限定标签（若有） |
 | --- | --- | --- | --- |
 | 边框宽度 | BorderWidth | length | 按上下文 |
-| 边框颜色 | BorderColor | text | 按上下文 |
-| 滚动条颜色 | ScrollbarColor | text | 滚动查看器 |
+| 边框颜色 | BorderColor | color | 按上下文 |
+| 滚动条颜色 | ScrollbarColor | color | 滚动查看器 |
 | 名称 | x:Name | 按控件约定 | 按上下文 |
 | 副名称 | x:DisplayName | 按控件约定 | 按上下文 |
 | 引用 | x:Ref | 按控件约定 | 按上下文 |
@@ -115,8 +115,20 @@
 | 水平间隔 | HorizontalGap | length | 按上下文 |
 | 垂直间隔 | VerticalGap | length | 按上下文 |
 | 填充 | Fill | 是、否 | 按上下文 |
-| 背景 | Background | 按控件约定 | 按上下文 |
-| 颜色 | Color | 按控件约定 | 按上下文 |
+| 行定义 | RowDefinitions | tracks | 网格 |
+| 列定义 | ColumnDefinitions | tracks | 网格 |
+| 行间距 | RowSpacing | length | 网格 |
+| 列间距 | ColumnSpacing | length | 网格 |
+| 网格.行 | Grid.Row | integer | 按上下文 |
+| 网格.列 | Grid.Column | integer | 按上下文 |
+| 网格.跨行 | Grid.RowSpan | integer | 按上下文 |
+| 网格.跨列 | Grid.ColumnSpan | integer | 按上下文 |
+| 画布.左 | Canvas.Left | length | 按上下文 |
+| 画布.上 | Canvas.Top | length | 按上下文 |
+| 画布.右 | Canvas.Right | length | 按上下文 |
+| 画布.下 | Canvas.Bottom | length | 按上下文 |
+| 背景 | Background | brush | 按上下文 |
+| 颜色 | Color | color | 按上下文 |
 | 不透明度 | Opacity | 按控件约定 | 按上下文 |
 | 圆角 | BorderRadius | 按控件约定 | 按上下文 |
 | 外观 | Variant | 高亮、常规 | 按上下文 |
@@ -128,7 +140,7 @@
 | 说明 | Description | 按控件约定 | 按上下文 |
 | 提示 | Hint | 按控件约定 | 按上下文 |
 | 操作项 | ActionItems | 按控件约定 | 按上下文 |
-| 字号 | FontSize | 按控件约定 | 按上下文 |
+| 字号 | FontSize | length | 按上下文 |
 | 点击 | Click | 按控件约定 | 按上下文 |
 | 变更 | Change | 按控件约定 | 按上下文 |
 | 提交 | Submit | 按控件约定 | 按上下文 |
@@ -146,6 +158,9 @@
 | 可见性 | Visibility | 显示、隐藏、折叠 | 按上下文 |
 | 水平对齐 | HorizontalAlignment | 上、居中、下、拉伸 | 按上下文 |
 | 垂直对齐 | VerticalAlignment | 左、居中、右、拉伸 | 按上下文 |
+| 停靠 | Dock | 左、上、右、下 | 按上下文 |
+| 最后子项填充 | LastChildFill | 是、否 | 停靠面板 |
+| 流向 | FlowDirection | 从左到右、从右到左 | 堆叠面板、换行面板 |
 | 层级 | ZIndex | 按控件约定 | 按上下文 |
 | 渲染变换 | RenderTransform | text | 按上下文 |
 | 渲染变换原点 | RenderTransformOrigin | text | 按上下文 |
@@ -177,5 +192,23 @@
 | 安全边 | Edges | 全部、无、水平、垂直 | 按上下文 |
 | 安全区模式 | Mode | 内边距、外边距 | 按上下文 |
 | 原生菜单安全区 | NativeMenuInset | 是、否 | 按上下文 |
+| 文字描边颜色 | TextStrokeColor | color | 文本 |
+| 文字描边宽度 | TextStrokeWidth | number | 文本 |
+| 占位文字颜色 | PlaceholderColor | color | 文本框 |
+| 光标颜色 | CursorColor | color | 文本框 |
+| 文字左右对齐 | TextHorizontalAlignment | 左、居中、右 | 按上下文 |
+| 文字上下对齐 | TextVerticalAlignment | 上、居中、下 | 按上下文 |
+| 悬停背景 | HoverBackground | brush | 按钮 |
+| 按下背景 | PressedBackground | brush | 按钮 |
+| 字体家族 | FontFamily | text | 按上下文 |
+| 字重 | FontWeight | normal、bold、100、200、300、400、500、600、700、800、900 | 按上下文 |
+| 字体样式 | FontStyle | normal、italic | 按上下文 |
+| 行高 | LineHeight | number | 按上下文 |
+| 字距 | LetterSpacing | number | 按上下文 |
+| 文字换行 | TextWrapping | 不换行、换行 | 按上下文 |
+| 文字裁剪 | TextTrimming | 无、尾部省略 | 按上下文 |
+| 轨道画刷 | TrackBrush | brush | 进度条 |
+| 进度画刷 | FillBrush | brush | 进度条 |
+| 进度方向 | ProgressDirection | 从左到右、从右到左、从上到下、从下到上 | 按上下文 |
 
 绑定模式、刷新限制和事件桥见 [绑定与事件](bindings.md)；尺寸和特殊轴向见 [布局](layout.md)。

@@ -7,13 +7,33 @@ sys.path.insert(0, str(Path('artifacts/python').resolve()))
 from lupa import LuaRuntime
 lua=LuaRuntime(unpack_returned_tuples=True)
 adapter=Path('packages/runtime-urhox-lua/adapter')
-for name in ['Controls','Alignment','Paths','Properties','Parser','Scrollbars']:
-    module=lua.execute((adapter/(name+'.lua')).read_text(encoding='utf-8'))
-    lua.globals().package.loaded['LUI.'+name]=module
-lua.execute("package.loaded['urhox-libs/UI']={}; package.loaded['Presentation.Components']={}")
+lua.globals().read_adapter=lambda name:(adapter/(name+'.lua')).read_text(encoding='utf-8-sig')
+lua.execute('''
+table.insert(package.searchers,1,function(name)
+ if name:sub(1,4)=="LUI." then return assert(load(read_adapter(name:sub(5)),"@"..name)) end
+end)
+package.loaded['urhox-libs/UI']={}
+package.loaded['urhox-libs/UI/Core/Widget']={ResolveGradientDirection=function(_,x,y,w,h)return x,y,x+w,y end}
+package.loaded['Presentation.Components']={}
+''')
 runtime=lua.execute((adapter/'Runtime.lua').read_text(encoding='utf-8'))
 lua.globals().Runtime=runtime
 lua.execute('''
+local Typography=require('LUI.Typography')
+local draws=0
+nvgFillColor=function() end
+nvgRGBA=function(r,g,b,a) return {r,g,b,a} end
+nvgText=function() draws=draws+1 end
+assert(Typography.TextRasterMode()=="nanovg-single-pass")
+assert(Typography.InkCompensation({fontWeight="bold"})==0)
+assert(Typography.DrawSingleLine({},1,2,"清晰",{255,255,255,255},{fontWeight="bold"})==0 and draws==1)
+local Measure=require('LUI.Measure')
+local nativeLeaf={props={height=40,minWidth=80},GetLayout=function() return {w=0,h=0} end}
+local measuredWidth,measuredHeight=Measure.Leaf(nativeLeaf,nil)
+assert(measuredWidth==80 and measuredHeight==40)
+local minimumLeaf={props={minWidth=72,minHeight=24},GetLayout=function() return {w=0,h=0} end}
+measuredWidth,measuredHeight=Measure.Leaf(minimumLeaf,nil)
+assert(measuredWidth==72 and measuredHeight==24)
 local P=require('LUI.Properties'); local Paths=require('LUI.Paths')
 local schema={ ["标题"]={type="string",default="默认"}, ["Title"]={type="number",default=3}, ["启用"]={type="boolean",default=false}, ["条目"]={type="table",default={{text="一"}}}, ["确认"]={type="event"} }
 local a=P.Apply(schema,{["确认"]="{动作 Confirm}"}); local b=P.Apply(schema,{})
@@ -52,4 +72,4 @@ parent.view.value="父级刷新"; assert(linked.props["文本"]=="父级刷新")
 local once=runtime:CreateComponent('C.lui',parent,{}, {},{["文本"]="快照"},{["文本"]="{绑定 view.value, 模式=单次}"})
 assert(once.props["文本"]=="快照")
 ''')
-print('Lua 5.4: exact UTF-8 properties, isolation, defaults, table copies, validation, bracket paths, Commit/Notify and component initialization passed (UI stubbed).')
+print('Lua 5.4: single-pass text, native leaf sizing, exact UTF-8 properties, bindings and component initialization passed (UI stubbed).')

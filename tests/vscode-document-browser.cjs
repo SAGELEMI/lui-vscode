@@ -61,6 +61,9 @@ exports.run = async () => {
   };
   try {
     await page.goto(base); await page.waitForSelector('.cm-content');
+    // These assertions exercise source/property transactions, not engine pixels.
+    await page.locator('select[title="预览后端"]').selectOption('schematic');
+    await page.waitForFunction(()=>document.querySelector('#canvas')?.dataset.previewBackend==='schematic');
     const changed = initial.replace(' />', '  外边距="3"/>');
     await edit(); await waitText(changed); await new Promise(r => setTimeout(r, 300));
     assert.equal(await page.evaluate(() => window.getSelection()?.anchorNode?.parentElement?.closest('.cm-line')?.textContent.includes('按钮')), true);

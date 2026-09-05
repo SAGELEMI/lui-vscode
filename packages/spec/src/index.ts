@@ -2,11 +2,15 @@ import { UI_CONTROL_DEFINITIONS, TAG_TO_CANONICAL, attributeDefinition, canonica
 import { isLayoutProperty, type ComponentProperties } from './properties.js';
 import { pathKeys } from './paths.js';
 import type { LuiCompletionImport } from './completion.js';
+import { normalizeColor, parseBrush } from './brush.js';
 
 export { UI_CONTROL_DEFINITIONS, parseBinding, parseCommand };
 export { pathKeys, readPath } from './paths.js';
 export { readComponentProperties, isLayoutProperty, propertyTypeMatches, type ComponentProperties, type ComponentProperty } from './properties.js';
 export { availableAttributes, extractLuiActionSymbols, provideLuiCompletions, type LuiCompletionCandidate, type LuiCompletionContext, type LuiCompletionImport, type LuiImportedComponent } from "./completion.js";
+export { normalizeColor, parseBrush, formatLinearGradient, type LuiBrush } from "./brush.js";
+export { calculatePageFrame, type PageFrame, type PageFrameInput } from "./page-frame.js";
+export { UI_CAPABILITIES, capabilityAttributes, isVisualTag, isTextTag } from "./generated-capabilities.js";
 
 const KNOWN_CANONICAL_TAGS = new Set(Object.values(TAG_TO_CANONICAL));
 
@@ -241,10 +245,14 @@ function isTransform(value: string): boolean {
 function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
   const canonical = canonicalAttribute(attribute.name);
   const definition = attributeDefinition(canonical);
+  if (canonical === "TextStrokeWidth" && !parseBinding(attribute.value) && (!attribute.value.trim() || !Number.isFinite(Number(attribute.value)) || Number(attribute.value) < 0)) fail(diagnostics, "文字描边宽度必须是非负有限数值（逻辑像素，0 为关闭）。", attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "integer" && !isInteger(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是从 0 开始的整数。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "length" && !isLength(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是像素数、百分比或“自动”。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "thickness" && !isThickness(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是单值，或“左,上,右,下”四个数值。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "tracks" && !isTrackList(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 只能包含像素数、百分比、“自动”或 WPF 星号轨道（*、2*）。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "number" && !parseBinding(attribute.value) && !Number.isFinite(Number(attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 必须是数值。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "color" && !parseBinding(attribute.value) && !normalizeColor(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是 #RRGGBB 或 #RRGGBBAA。`, attribute.valueRange.start, attribute.valueRange.end);
+  if (definition?.kind === "brush" && !parseBinding(attribute.value) && !parseBrush(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是 #RRGGBB[AA] 或 linear-gradient(角度deg, 颜色 位置%, 颜色 位置%)。`, attribute.valueRange.start, attribute.valueRange.end);
   if ((canonical === "RenderTransform" || canonical === "LayoutTransform") && !isTransform(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 使用“缩放(1.1);旋转(15);平移(8,0);倾斜(0,0)”格式。`, attribute.valueRange.start, attribute.valueRange.end);
   const options = enumOptions(canonical);
   if (options && !parseBinding(attribute.value) && !options.includes(normalizedEnumValue(canonical, attribute.value))) fail(diagnostics, `${sourceAttribute(canonical)} 只能使用：${options.join("、")}。`, attribute.valueRange.start, attribute.valueRange.end);
@@ -353,6 +361,22 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     else if (canonical && DEPRECATED_CANONICAL_TAGS.has(canonical)) fail(diagnostics, `<${sourceTag}> 已移除；请使用 <容器> 或直接让语义控件承载子项。`, node.range.start, node.openTagEnd, "warning");
     if (sourceTag && canonical && chineseTag(canonical) !== sourceTag && isLegacyToken(sourceTag)) fail(diagnostics, `标签 <${sourceTag}> 已过时；请改为 <${chineseTag(canonical)}>。`, node.range.start, node.openTagEnd, "warning");
     for (const attribute of node.attrs) if (!componentAttribute(node,attribute.name) && isLegacyToken(attribute.name)) fail(diagnostics, `属性 ${attribute.name} 已过时；请改用中文属性。`, attribute.range.start, attribute.range.end, "warning");
+    const childLayout = getAttribute(node, "ChildLayout")?.value ?? "自由";
+    if (childLayout === "自由") {
+      const anchors = new Map<string, LuiNode>();
+      const visual = node.children.filter((child) => child.kind === "element" && !["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"].includes(canonicalTag(child.tag) ?? ""));
+      for (const child of visual) {
+        const visibility = getAttribute(child, "Visibility")?.value;
+        if (["折叠", "否", "false"].includes(visibility ?? "")) continue;
+        if (getAttribute(child, "ZIndex") || getAttribute(child, "RenderTransform") || getAttribute(child, "LayoutTransform")) continue;
+        const anchor = `${getAttribute(child, "VerticalAlignment")?.value ?? "拉伸"}|${getAttribute(child, "HorizontalAlignment")?.value ?? "拉伸"}`;
+        if (anchors.has(anchor)) {
+          fail(diagnostics, "自由排列会把同一对齐位置的多个子项叠放；如需上下排列，请设置 子项排列=\"垂直\"。", child.range.start, child.openTagEnd, "warning");
+          break;
+        }
+        anchors.set(anchor, child);
+      }
+    }
     const separator = sourceTag?.indexOf(":") ?? -1;
     if (separator > 0) {
       const alias = sourceTag!.slice(0, separator);

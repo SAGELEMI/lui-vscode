@@ -9,7 +9,7 @@ const command = process.env.VSCODE_EXECUTABLE;
 if (!command) throw new Error('Set VSCODE_EXECUTABLE to Code.exe');
 const started = Date.now();
 const log = createWriteStream(join(profile, 'test-host.log'));
-const child = spawn(command, [workspace, '--no-sandbox', '--disable-gpu', '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', profile, '--extensions-dir', join(profile, 'extensions'), '--extensionDevelopmentPath', resolve('.'), '--extensionTestsPath', resolve('tests/vscode-document-browser.cjs')], { windowsHide: true, env: {...process.env,LUI_TEST_PROJECT:workspace}, stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(command, [workspace, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--user-data-dir', profile, '--extensions-dir', join(profile, 'extensions'), '--extensionDevelopmentPath', resolve('.'), '--extensionTestsPath', resolve('tests/vscode-document-browser.cjs')], { windowsHide: true, env: {...process.env,LUI_TEST_PROJECT:workspace}, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.pipe(log); child.stderr.pipe(log);
 const code = await new Promise((done, reject) => { child.on('error', reject); child.on('exit', done); });
 const report = resolve('artifacts/vscode-document-2.4.0.json');

@@ -1,5 +1,6 @@
 import { parse } from 'luaparse';
 import { canonicalAttribute } from './vocabulary.js';
+import { UI_CAPABILITIES } from './generated-capabilities.js';
 export interface ComponentProperty {
   type: 'string' | 'number' | 'boolean' | 'table' | 'event';
   default?: unknown;
@@ -7,7 +8,7 @@ export interface ComponentProperty {
   start?: number;
 }
 export type ComponentProperties = Record<string, ComponentProperty>;
-export const LAYOUT_PROPERTIES = new Set(['x:Name','x:DisplayName','x:Ref','Width','Height','MinWidth','MinHeight','MaxWidth','MaxHeight','Margin','Padding','HorizontalAlignment','VerticalAlignment','Visibility','ZIndex','ClipToBounds','RenderTransform','LayoutTransform','RenderTransformOrigin','ChildLayout','Wrap','Fill','ChildWidth','ChildHeight','HorizontalGap','VerticalGap']);
+export const LAYOUT_PROPERTIES = new Set<string>([...UI_CAPABILITIES.groups.identity,...UI_CAPABILITIES.groups.rootIdentity,...UI_CAPABILITIES.groups.layout]);
 export function isLayoutProperty(name: string): boolean { return LAYOUT_PROPERTIES.has(canonicalAttribute(name)); }
 export function validPropertyName(name: string): boolean { return !!name && !/[\s<>/="':\[\]\\]/u.test(name) && !/^\d/u.test(name) && !['__proto__','constructor','prototype'].includes(name); }
 export function propertyTypeMatches(value: unknown, type: ComponentProperty['type']): boolean {

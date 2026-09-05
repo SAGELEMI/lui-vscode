@@ -1,6 +1,6 @@
 # 组件与公开属性
 
-[返回文档入口](README.md)。适用版本：2.4.3。
+[返回文档入口](README.md)。适用版本：2.4.6。
 
 组件由根为控件的 .lui 与同名 .lui.lua 类组成。目录是导入命名空间，公开名称由配置登记。[ActionCard 示例](../examples/tutorial/Components/ActionCard.lui.lua) 展示完整生命周期。
 

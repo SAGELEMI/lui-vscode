@@ -46,8 +46,28 @@ export const ATTRIBUTE_TO_CANONICAL: Record<string, string> = {
   "x:Name": "x:Name", "x:DisplayName": "x:DisplayName", "x:Ref": "x:Ref", Width: "Width", Height: "Height", MinWidth: "MinWidth", MinHeight: "MinHeight", MaxWidth: "MaxWidth", MaxHeight: "MaxHeight", Margin: "Margin", Padding: "Padding", ClipToBounds: "ClipToBounds", HorizontalScrollBarVisibility: "HorizontalScrollBarVisibility", VerticalScrollBarVisibility: "VerticalScrollBarVisibility", RowDefinitions: "RowDefinitions", ColumnDefinitions: "ColumnDefinitions", RowSpacing: "RowSpacing", ColumnSpacing: "ColumnSpacing", "Grid.Row": "Grid.Row", "Grid.Column": "Grid.Column", "Grid.RowSpan": "Grid.RowSpan", "Grid.ColumnSpan": "Grid.ColumnSpan", "Canvas.Left": "Canvas.Left", "Canvas.Top": "Canvas.Top", "Canvas.Right": "Canvas.Right", "Canvas.Bottom": "Canvas.Bottom", Background: "Background", Color: "Color", Opacity: "Opacity", BorderRadius: "BorderRadius", Variant: "Variant", HorizontalAlignment: "HorizontalAlignment", VerticalAlignment: "VerticalAlignment", Visibility: "Visibility", Dock: "Dock", LastChildFill: "LastChildFill", FlowDirection: "FlowDirection", ZIndex: "ZIndex", RenderTransform: "RenderTransform", RenderTransformOrigin: "RenderTransformOrigin", LayoutTransform: "LayoutTransform", Text: "Text", Title: "Title", Subtitle: "Subtitle", FontSize: "FontSize", Click: "Click", Change: "Change", Submit: "Submit", Select: "Select", Open: "Open", Focus: "Focus", Blur: "Blur", Complete: "Complete", DragStart: "DragStart", DragEnd: "DragEnd", DragCancel: "DragCancel", Close: "Close", Disabled: "Disabled", Value: "Value", Max: "Max", Min: "Min", Step: "Step", Placeholder: "Placeholder", Items: "Items", Data: "Data", Options: "Options", Icon: "Icon", Image: "Image", Source: "Source", Orientation: "Orientation", Columns: "Columns", Rows: "Rows", Gap: "Gap", Type: "Type", Visible: "Visible", Test: "Test", In: "In", Each: "Each", Path: "Path", Name: "Name", Error: "Error", Settings: "Settings", Back: "Back", WeaponText: "WeaponText", ArmorText: "ArmorText", SelectWeapon: "SelectWeapon", SelectArmor: "SelectArmor", CloseOnOverlay: "CloseOnOverlay", ShowCloseButton: "ShowCloseButton", Edges: "Edges", Mode: "Mode", NativeMenuInset: "NativeMenuInset", Anchor: "Anchor", Left: "Left", Top: "Top", Right: "Right", Bottom: "Bottom", Justify: "Justify"
 };
 
-export const DEPRECATED_CANONICAL_ATTRIBUTES = new Set(["Anchor", "Left", "Top", "Right", "Bottom", "FlexGrow", "FlexBasis", "Align", "Justify", "RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing", "Grid.Row", "Grid.Column", "Grid.RowSpan", "Grid.ColumnSpan", "Canvas.Left", "Canvas.Top", "Canvas.Right", "Canvas.Bottom", "Dock", "LastChildFill", "FlowDirection"]);
-export const DEPRECATED_CANONICAL_TAGS = new Set(["Panel", "Row", "Grid", "Canvas", "Viewbox", "StackPanel", "WrapPanel", "DockPanel", "UniformGrid", "lui:Preview", "lui:Set"]);
+Object.assign(ATTRIBUTE_TO_CANONICAL, {
+  "文字描边颜色": "TextStrokeColor", "文字描边宽度": "TextStrokeWidth",
+  TextStrokeColor: "TextStrokeColor", TextStrokeWidth: "TextStrokeWidth",
+  "占位文字颜色": "PlaceholderColor", "光标颜色": "CursorColor",
+  PlaceholderColor: "PlaceholderColor", CursorColor: "CursorColor",
+  "文字左右对齐": "TextHorizontalAlignment",
+  "文字上下对齐": "TextVerticalAlignment",
+  TextHorizontalAlignment: "TextHorizontalAlignment",
+  TextVerticalAlignment: "TextVerticalAlignment",
+  "悬停背景": "HoverBackground",
+  "按下背景": "PressedBackground",
+  HoverBackground: "HoverBackground",
+  PressedBackground: "PressedBackground",
+  "字体": "FontFamily", "字体家族": "FontFamily", "字重": "FontWeight", "字体样式": "FontStyle",
+  "行高": "LineHeight", "字距": "LetterSpacing", "文字换行": "TextWrapping", "文字裁剪": "TextTrimming",
+  "轨道画刷": "TrackBrush", "进度画刷": "FillBrush", "进度方向": "ProgressDirection",
+  FontFamily: "FontFamily", FontWeight: "FontWeight", FontStyle: "FontStyle", LineHeight: "LineHeight", LetterSpacing: "LetterSpacing",
+  TextWrapping: "TextWrapping", TextTrimming: "TextTrimming", TrackBrush: "TrackBrush", FillBrush: "FillBrush", ProgressDirection: "ProgressDirection"
+});
+
+export const DEPRECATED_CANONICAL_ATTRIBUTES = new Set(["Anchor", "Left", "Top", "Right", "Bottom", "FlexGrow", "FlexBasis", "Align", "Justify"]);
+export const DEPRECATED_CANONICAL_TAGS = new Set(["Panel", "Row", "lui:Preview", "lui:Set"]);
 
 export const CANONICAL_TO_ATTRIBUTE: Record<string, string> = Object.fromEntries(
   Object.entries(ATTRIBUTE_TO_CANONICAL)
@@ -61,16 +81,29 @@ export const ATTRIBUTE_LABELS: Record<string, string> = {
 };
 
 Object.assign(ATTRIBUTE_LABELS, {
+  TextStrokeColor: "文字描边颜色", TextStrokeWidth: "文字描边宽度",
+  PlaceholderColor: "占位文字颜色", CursorColor: "光标颜色",
+  TextHorizontalAlignment: "文字左右对齐", TextVerticalAlignment: "文字上下对齐",
   ChildLayout: "子项排列", Wrap: "允许换行", ChildWidth: "固定子项宽度", ChildHeight: "固定子项高度",
-  HorizontalGap: "水平间隔", VerticalGap: "垂直间隔", Fill: "填充"
+  HorizontalGap: "水平间隔", VerticalGap: "垂直间隔", Fill: "填充",
+  HoverBackground: "悬停背景", PressedBackground: "按下背景",
+  FontFamily: "字体家族", FontWeight: "字重", FontStyle: "字体样式", LineHeight: "行高", LetterSpacing: "字距",
+  TextWrapping: "文字换行", TextTrimming: "文字裁剪", TrackBrush: "轨道画刷", FillBrush: "进度画刷", ProgressDirection: "进度方向"
 });
 
-export type AttributeKind = "text" | "length" | "thickness" | "integer" | "tracks" | "enum";
+export type AttributeKind = "text" | "number" | "length" | "thickness" | "integer" | "tracks" | "enum" | "color" | "brush";
 export interface AttributeDefinition { kind: AttributeKind; options?: readonly string[]; tags?: readonly string[]; }
 
 /** The one source of truth for inspector controls and both completion providers. */
 export const ATTRIBUTE_DEFINITIONS: Record<string, AttributeDefinition> = {
-  BorderWidth: { kind: "length" }, BorderColor: { kind: "text" }, ScrollbarColor: { kind: "text", tags: ["Scroll"] },
+  TextStrokeColor: { kind: "color", tags: ["Text"] }, TextStrokeWidth: { kind: "number", tags: ["Text"] },
+  PlaceholderColor: { kind: "color", tags: ["TextField"] }, CursorColor: { kind: "color", tags: ["TextField"] },
+  TextHorizontalAlignment: { kind: "enum", options: ["左", "居中", "右"] },
+  TextVerticalAlignment: { kind: "enum", options: ["上", "居中", "下"] },
+  BorderWidth: { kind: "length" }, BorderColor: { kind: "color" }, Background: { kind: "brush" }, HoverBackground: { kind: "brush", tags: ["Button"] }, PressedBackground: { kind: "brush", tags: ["Button"] }, ScrollbarColor: { kind: "color", tags: ["Scroll"] },
+  Color: { kind: "color" }, TrackBrush: { kind: "brush", tags: ["Progress"] }, FillBrush: { kind: "brush", tags: ["Progress"] },
+  FontFamily: { kind: "text" }, FontSize: { kind: "length" }, FontWeight: { kind: "enum", options: ["normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900"] }, FontStyle: { kind: "enum", options: ["normal", "italic"] },
+  LineHeight: { kind: "number" }, LetterSpacing: { kind: "number" }, TextWrapping: { kind: "enum", options: ["不换行", "换行"] }, TextTrimming: { kind: "enum", options: ["无", "尾部省略"] }, ProgressDirection: { kind: "enum", options: ["从左到右", "从右到左", "从上到下", "从下到上"] },
   Width: { kind: "length" }, Height: { kind: "length" }, MinWidth: { kind: "length" }, MinHeight: { kind: "length" }, MaxWidth: { kind: "length" }, MaxHeight: { kind: "length" }, Margin: { kind: "thickness" }, Padding: { kind: "thickness" }, HorizontalScrollBarVisibility: { kind: "enum", options: ["自动", "显示", "隐藏", "禁用"], tags: ["Scroll"] }, VerticalScrollBarVisibility: { kind: "enum", options: ["自动", "显示", "隐藏", "禁用"], tags: ["Scroll"] },
   ChildLayout: { kind: "enum", options: ["自由", "垂直", "水平"] }, Wrap: { kind: "enum", options: ["是", "否"] }, ChildWidth: { kind: "length" }, ChildHeight: { kind: "length" }, HorizontalGap: { kind: "length" }, VerticalGap: { kind: "length" }, Fill: { kind: "enum", options: ["是", "否"] },
   RowDefinitions: { kind: "tracks", tags: ["Grid"] }, ColumnDefinitions: { kind: "tracks", tags: ["Grid"] }, RowSpacing: { kind: "length", tags: ["Grid"] }, ColumnSpacing: { kind: "length", tags: ["Grid"] }, "Grid.Row": { kind: "integer" }, "Grid.Column": { kind: "integer" }, "Grid.RowSpan": { kind: "integer" }, "Grid.ColumnSpan": { kind: "integer" }, "Canvas.Left": { kind: "length" }, "Canvas.Top": { kind: "length" }, "Canvas.Right": { kind: "length" }, "Canvas.Bottom": { kind: "length" },

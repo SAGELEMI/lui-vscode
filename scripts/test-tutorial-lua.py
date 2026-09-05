@@ -14,6 +14,7 @@ from lupa.lua54 import LuaRuntime
 lua = LuaRuntime(unpack_returned_tuples=True)
 adapter = ROOT / "packages/runtime-urhox-lua/adapter"
 tutorial = ROOT / "examples/tutorial"
+lua.globals().read_adapter = lambda name: (adapter / (name + ".lua")).read_text(encoding="utf-8-sig")
 
 def read_source(path):
     if path == "LUI/lui.project.json":
@@ -55,10 +56,12 @@ local UI = setmetatable({}, { __index = function(_, kind)
 end })
 function UI.SetRoot(root) UI.root = root end
 package.loaded['urhox-libs/UI'] = UI
+package.loaded['urhox-libs/UI/Core/Widget'] = Widget
 package.loaded['Presentation.Components'] = {}
+table.insert(package.searchers, 1, function(name)
+  if name:sub(1,4) == 'LUI.' then return assert(load(read_adapter(name:sub(5)), '@'..name)) end
+end)
 """)
-for name in ["Controls", "Alignment", "Paths", "Properties", "Parser", "Scrollbars", "Runtime"]:
-    lua.globals().package.loaded["LUI." + name] = lua.execute((adapter / (name + ".lua")).read_text(encoding="utf-8"))
 lua.globals().package.loaded["LUI"] = lua.execute((adapter / "init.lua").read_text(encoding="utf-8"))
 lua.globals().package.loaded["LUI.Registry"] = lua.execute((tutorial / "Registry.lua").read_text(encoding="utf-8"))
 lua.globals().Tutorial = lua.execute((tutorial / "Start.lua").read_text(encoding="utf-8"))

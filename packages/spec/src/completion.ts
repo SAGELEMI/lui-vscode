@@ -9,6 +9,7 @@ import {
   sourceAttribute
 } from "./vocabulary.js";
 import { isLayoutProperty, type ComponentProperties } from './properties.js';
+import { capabilityAttributes } from './generated-capabilities.js';
 
 export type LuiCompletionKind = "tag" | "attribute" | "value" | "binding" | "action" | "command";
 
@@ -119,22 +120,10 @@ function sourceAttributes(fragment: string): Set<string> {
 export function availableAttributes(tagName: string | undefined, root: boolean, componentProperties: readonly string[] = []): string[] {
   const tag = canonicalTag(tagName);
   if (!tag || tag === "__placeholder__") return [];
-  const identity = root ? ["x:Name", "Margin", "Padding", "Width", "Height", "ClipToBounds"] : ["x:Name", "x:Ref"];
-  if (root) return [...new Set([...identity, "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "HorizontalAlignment", "VerticalAlignment", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"])];
-  const structural = ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"];
-  const layout = structural.includes(tag) ? [] : ["Width", "Height", "MinWidth", "MinHeight", "MaxWidth", "MaxHeight", "Margin", "Padding", "ClipToBounds", "HorizontalAlignment", "VerticalAlignment", "Visibility", "ZIndex", "ChildLayout", "Wrap", "ChildWidth", "ChildHeight", "HorizontalGap", "VerticalGap", "Fill", "RenderTransform", "RenderTransformOrigin", "LayoutTransform"];
-  const surface = ["Container", "Panel", "Button", "Text", "Grid", "Canvas", "Card", "Scroll", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen"].includes(tag) ? ["Background", "BorderWidth", "BorderColor", "Opacity", "BorderRadius"] : [];
-  const specific: Record<string, string[]> = {
-    Text: ["Text", "FontSize", "Color"], Button: ["Text", "Click", "Disabled", "Variant", "Color"], Progress: ["Value", "Max"], Toggle: ["Value", "Change", "Disabled"], Slider: ["Value", "Min", "Max", "Change", "Disabled"], Scroll: ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility"], Modal: ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"], Section: ["Title", "Subtitle"], Notice: ["Text", "Error"], "lui:If": ["Test"], "lui:For": ["Items", "In"], "lui:Set": ["Path", "Value"]
-  };
   const control = controlDefinition(tag);
-  if (tag === "Scroll") specific.Scroll!.push("ScrollbarColor");
-  if (control) {
-    const declarative = ["Text", "Title", "Subtitle", "Value", "Min", "Max", "Step", "Placeholder", "Items", "Data", "Options", "Icon", "Image", "Source", "Orientation", "Columns", "Rows", "Gap", "Type", "Visible", ...(control.events ?? [])];
-    if (control.bindable && !declarative.includes(control.bindable)) declarative.push(control.bindable);
-    specific[tag] = [...(specific[tag] ?? []), ...declarative];
-  }
-  return [...new Set([...identity, ...layout, ...surface, ...componentProperties, ...(specific[tag] ?? [])])];
+  const generated = [...capabilityAttributes(tag, root), ...(control?.events ?? [])];
+  if (control?.bindable) generated.push(control.bindable);
+  return [...new Set([...generated, ...componentProperties])];
 }
 
 function componentPropertiesFor(tag: string | undefined, imports: readonly LuiCompletionImport[]): string[] {

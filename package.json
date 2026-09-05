@@ -3,7 +3,7 @@
   "displayName": "LUI Studio",
   "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
   "icon": "icons/lui-studio.png",
-  "version": "2.4.3",
+  "version": "2.6.0",
   "publisher": "SAGELEMI",
   "license": "MIT",
   "repository": {
@@ -102,11 +102,14 @@
           "type": "string",
           "default": "390x844",
           "enum": [
+            "358x425",
+            "377x496",
             "360x800",
             "390x844",
+            "640x1024",
             "768x1024"
           ],
-          "description": "LUI 设计预览的默认逻辑像素尺寸。"
+          "description": "LUI 设计预览的默认逻辑像素尺寸；包含实机对照与常用竖屏基准。"
         }
       }
     },
@@ -140,13 +143,14 @@
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",
-    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-2.4.3.vsix",
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-2.6.0.vsix",
     "test:vscode": "node scripts/test-vscode-document.mjs",
     "test:browser": "node scripts/test-workspace-browser.mjs",
     "watch": "node ./scripts/build.mjs --watch",
     "check:types": "tsc --noEmit",
     "docs:generate": "node scripts/generate-reference.mjs",
-    "check:docs": "node scripts/generate-reference.mjs --check && node scripts/check-docs.mjs"
+    "check:docs": "node scripts/generate-reference.mjs --check && node scripts/check-docs.mjs",
+    "migrate:buttons": "node scripts/migrate-button-captions.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

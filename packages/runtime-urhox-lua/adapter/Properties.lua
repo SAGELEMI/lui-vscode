@@ -1,11 +1,15 @@
 -- 公开接口以 UTF-8 字符串键为准；表默认值按实例复制。
 local Properties = {}
+local Capabilities = require("LUI.Capabilities")
+local Parser = require("LUI.Parser")
 local function copy(value)
     if type(value) ~= "table" then return value end
     local result = {}; for key, item in pairs(value) do result[key] = copy(item) end; return result
 end
-local reserved = {}
-for _, name in ipairs({ "名称","副名称","引用","宽度","高度","最小宽度","最小高度","最大宽度","最大高度","外边距","内边距","水平对齐","垂直对齐","可见性","层级","裁剪超出","渲染变换","布局变换","渲染变换原点","子项排列","允许换行","填充","固定子项宽度","固定子项高度","水平间隔","垂直间隔","x:Name","x:DisplayName","x:Ref","Width","Height","MinWidth","MinHeight","MaxWidth","MaxHeight","Margin","Padding","HorizontalAlignment","VerticalAlignment","Visibility","ZIndex","ClipToBounds","RenderTransform","LayoutTransform","RenderTransformOrigin","ChildLayout","Wrap","Fill","ChildWidth","ChildHeight","HorizontalGap","VerticalGap" }) do reserved[name] = true end
+local reserved = setmetatable({}, { __index = function(self, name) return rawget(self, Parser.CanonicalAttribute(name)) end })
+for _, group in ipairs({ "identity", "rootIdentity", "layout" }) do
+    for _, name in ipairs(Capabilities.groups[group]) do reserved[name] = true end
+end
 Properties.IsLayout = function(name) return reserved[name] == true end
 function Properties.Apply(schema, incoming)
     incoming = incoming or {}
@@ -24,7 +28,7 @@ function Properties.Apply(schema, incoming)
         end
         if value == nil then value = copy(definition.default) end
         if value ~= nil then
-            local matches = definition.type == "event" and type(value) == "string" or type(value) == definition.type
+            local matches = definition.type == "event" and (type(value) == "string" or type(value) == "function") or type(value) == definition.type
             if not matches then error("公开属性类型不符：" .. name .. "，需要 " .. definition.type) end
         end
         result[name] = value

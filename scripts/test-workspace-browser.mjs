@@ -143,10 +143,10 @@ try {
     await open('Presentation/Pages/'+name+'.lui');
     assert.deepEqual((await bounds()).canvas,[390,844]);
     for (const label of labels) assert.ok((await page.locator('#canvas').innerText()).includes(label),name+': '+label);
-    assert.equal(await page.locator('#canvas .scroll').count(),2,'Information text and list scroll independently');
+    assert.equal(await page.locator('#canvas .scroll:visible').count(),2,'Information text and list scroll independently');
     const frame=await page.locator('#canvas').evaluate(el=>{
       const root=el.getBoundingClientRect();
-      return [...el.querySelectorAll('.scroll')].map(n=>{const r=n.getBoundingClientRect(); return {w:r.width,h:r.height,right:r.right-root.left,bottom:r.bottom-root.top};});
+      return [...el.querySelectorAll('.scroll')].filter(n=>n.getClientRects().length && getComputedStyle(n).display!=='none').map(n=>{const r=n.getBoundingClientRect(); return {w:r.width,h:r.height,right:r.right-root.left,bottom:r.bottom-root.top};});
     });
     assert.ok(frame.every(r=>r.w>0 && r.h>0 && r.right<=391 && r.bottom<=845),JSON.stringify({name,frame}));
     await page.click('#fit'); await settle();
@@ -156,8 +156,8 @@ try {
   for (const [name, expected] of [['SelectionList', [340,220]], ['TabView',[340,262]]]) {
     await open('Presentation/Components/' + name + '.lui');
     assert.deepEqual((await bounds()).canvas, expected);
-    assert.equal(await page.locator('#canvas .scroll').count(), 1, 'Exactly one list scroll region');
-    assert.ok(await page.locator('#canvas').innerText().then(t => t.includes('已携带背包') && t.includes('物品名称') && !t.includes('背包为空')));
+    assert.equal(await page.locator('#canvas .scroll:visible').count(), 1, 'Exactly one list scroll region');
+    assert.ok(await page.locator('#canvas').innerText().then(t => t.includes('列表标题') && t.includes('物品名称') && !t.includes('背包为空')));
     if (name === 'TabView') {
       assert.equal(await page.locator('#canvas .button').count(), 3, 'Two preview tabs and one sample data row');
       const tabs = await page.locator('#canvas .button').evaluateAll(nodes => nodes.map(n => n.getBoundingClientRect().width));

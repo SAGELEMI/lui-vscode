@@ -1,0 +1,5 @@
+[
+  { "input": { "viewportWidth": 377, "viewportHeight": 496, "designWidth": 390, "designHeight": 844 }, "expected": { "x": 73.90284360189574, "y": 0, "scale": 0.5876777251184834 } },
+  { "input": { "viewportWidth": 358, "viewportHeight": 425, "designWidth": 390, "designHeight": 844 }, "expected": { "x": 80.80687203791469, "y": 0, "scale": 0.5035545023696683 } },
+  { "input": { "viewportWidth": 390, "viewportHeight": 844, "designWidth": 390, "designHeight": 844, "marginLeft": 12, "marginTop": 8, "marginRight": 12, "marginBottom": 8 }, "expected": { "x": 12, "y": 25.969230769230762, "scale": 0.9384615384615385 } }
+]

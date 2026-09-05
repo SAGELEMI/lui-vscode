@@ -1,8 +1,28 @@
 -- ScrollView 渲染适配：四种可见性按轴独立生效；保留 UI 库原有滚轮、触控和拖拽处理。
 -- 空内容的“显示”绘制满轨道指示条，不伪造内容尺寸或可滚动距离。
+local Contract = require("LUI.Contract")
+---@class LuiScrollbars
+---@field Gutters fun(view: any): number, number
+---@field Attach fun(widget: any, horizontal: string, vertical: string, tint: number[]?)
+---@type LuiScrollbars
 local Scrollbars = {}
+local Defaults = Contract.defaults.scroll
+
+function Scrollbars.Gutters(view)
+    local bounds = view:GetAbsoluteLayout()
+    local contentW, contentH = view.contentWidth_ or 0, view.contentHeight_ or 0
+    local horizontal = view.luiHorizontalScrollbarMode_
+    local vertical = view.luiVerticalScrollbarMode_
+    local right = (vertical == "显示" or (vertical == "自动" and contentH > bounds.h)) and Defaults.scrollbarThickness or 0
+    local bottom = (horizontal == "显示" or (horizontal == "自动" and contentW > bounds.w)) and Defaults.scrollbarThickness or 0
+    return right, bottom
+end
 
 function Scrollbars.Attach(widget, horizontal, vertical, tint)
+    -- 浏览器的常驻滚动条会参与内容框计算。UrhoX ScrollView 默认叠画，
+    -- 因此把同样的 8px gutter 暴露给 LUI 布局宿主，避免覆盖条目。
+    widget.luiHorizontalScrollbarMode_ = horizontal
+    widget.luiVerticalScrollbarMode_ = vertical
     local originalRender = widget.Render
     widget.Render = function(view, nvg)
         if horizontal == "显示" or vertical == "显示" then view.scrollbarOpacity_ = 1 end
@@ -11,13 +31,15 @@ function Scrollbars.Attach(widget, horizontal, vertical, tint)
     widget.RenderScrollbars = function(view, nvg)
         local bounds, hit = view:GetAbsoluteLayout(), view:GetAbsoluteLayoutForHitTest()
         local contentW, contentH = view:GetContentSize()
+        local gutterRight, gutterBottom = Scrollbars.Gutters(view)
         local x, y = view:GetScroll()
         view.vScrollbarBounds_, view.hScrollbarBounds_ = nil, nil
         view.vTrackBounds_, view.hTrackBounds_ = nil, nil
         local function axis(verticalAxis, mode, extent, viewport, offset)
             if mode == "隐藏" or mode == "禁用" or (mode ~= "显示" and extent <= viewport) then return end
-            local thickness, inset = view.props.scrollbarInteractive and 10 or 6, 2
-            local length = math.max(0, viewport - inset * 2)
+            local thickness, inset = Defaults.scrollbarThickness, 0
+            local intersection = verticalAxis and gutterBottom or gutterRight
+            local length = math.max(0, viewport - intersection - inset * 2)
             if length <= 0 then return end
             local maximum = math.max(0, extent - viewport)
             local thumb = math.min(length, math.max(30, extent > 0 and length * viewport / extent or length))
@@ -37,9 +59,10 @@ function Scrollbars.Attach(widget, horizontal, vertical, tint)
             local alpha = mode == "显示" and 255 or math.floor(255 * (view.scrollbarOpacity_ or 0))
             nvgBeginPath(nvg)
             nvgRoundedRect(nvg, tx, ty, tw, th, thickness / 2)
-            nvgFillColor(nvg, nvgRGBA(37, 24, 58, alpha))
+            local track = Defaults.trackColor
+            nvgFillColor(nvg, nvgRGBA(track[1], track[2], track[3], math.floor(alpha * (track[4] or 255) / 255)))
             nvgFill(nvg)
-            local color = tint or { 128, 128, 128, 255 }
+            local color = tint or Defaults.thumbColor
             nvgBeginPath(nvg)
             nvgRoundedRect(nvg, bx, by, bw, bh, thickness / 2)
             nvgFillColor(nvg, nvgRGBA(color[1], color[2], color[3], math.floor(alpha * (color[4] or 255) / 255)))

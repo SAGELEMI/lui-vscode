@@ -1,0 +1,59 @@
+{
+  "version": "xaml-initialize-v1-unified-layout-hy-vx-v4-fidelity",
+  "boxSizing": "border-box",
+  "renderFidelity": {
+    "colorSpace": "srgb",
+    "alphaMode": "straight",
+    "gradientInterpolation": "premultiplied-srgb",
+    "borderAlign": "inside",
+    "shadowSource": "contract-only",
+    "defaultBoxShadow": false,
+    "typography": {
+      "fontSynthesis": "none",
+      "studioTextRaster": "chromium-reference",
+      "ownedTextRaster": "nanovg-single-pass",
+      "nativeControlRaster": "native-raster",
+      "inkCompensation": 0
+    }
+  },
+  "alignment": {
+    "horizontalAlignmentAxis": "y",
+    "verticalAlignmentAxis": "x"
+  },
+  "defaults": {
+    "childLayout": "自由",
+    "fontSize": 13,
+    "lineHeight": 1.45,
+    "button": {
+      "minWidth": 44,
+      "minHeight": 36,
+      "padding": [8, 12, 8, 12],
+      "borderWidth": 1,
+      "borderRadius": 8,
+      "textHorizontalAlignment": "居中",
+      "textVerticalAlignment": "居中",
+      "disabledTextColor": [158, 158, 158, 255]
+    },
+    "card": {
+      "padding": [12, 12, 12, 12],
+      "borderWidth": 1,
+      "borderRadius": 12
+    },
+    "progress": {
+      "height": 10,
+      "max": 100,
+      "borderRadius": 99,
+      "track": [57, 39, 80, 255],
+      "from": [139, 92, 246, 255],
+      "to": [213, 181, 109, 255]
+    },
+    "scroll": {
+      "padding": [8, 8, 8, 8],
+      "borderWidth": 1,
+      "borderRadius": 10,
+      "scrollbarThickness": 8,
+      "thumbColor": [138, 92, 246, 255],
+      "trackColor": [37, 24, 58, 255]
+    }
+  }
+}

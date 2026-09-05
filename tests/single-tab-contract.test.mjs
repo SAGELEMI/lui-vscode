@@ -96,8 +96,8 @@ test("the inspector exposes only applicable Chinese controls and preserves the L
   assert.match(designer, /"VerticalAlignment", "HorizontalAlignment"/);
   assert.match(host, /designerEditResult/);
   assert.match(host, /replaceDocumentText/);
-  assert.match(designer, /canonicalTag\(node\.tag\) === "lui:Page" && key === "Margin"/);
-  assert.match(designer, /writeAttribute\(node, key, "0"\)/);
+  assert.doesNotMatch(designer, /canonicalTag\(node\.tag\) === "lui:Page" && key === "Margin"/);
+  assert.match(designer, /editNode\(node, "resetAttribute"/);
   assert.match(css, /\.alignment-arrow \{[^}]*rotate\(var\(--alignment-arrow-rotation/);
   assert.doesNotMatch(css, /\.alignment-icon\.horizontal-left/);
   assert.doesNotMatch(css, /\.alignment-icon\.vertical-top/);
@@ -111,7 +111,7 @@ test("the preview implements DockPanel, reverse flow, transform fields and the c
   assert.match(designer, /attrs\.FlowDirection === "从右到左" \? "row-reverse"/);
   assert.match(designer, /function cssTransform/);
   assert.match(designer, /RenderTransformOrigin/);
-  assert.match(designer, /availableWidth: number; availableHeight: number; desiredWidth: number; desiredHeight: number;/);
+  assert.match(designer, /availableWidth: number; availableHeight: number;\s*desiredWidth: number; desiredHeight: number;/);
   assert.match(designer, /box-model-position/);
   assert.match(designer, /box-model-margin/);
   assert.match(designer, /box-model-boundary/);
@@ -130,7 +130,7 @@ test("the preview selects the deepest visual LUI node and composite buttons keep
   assert.match(designer, /byId\("canvas"\)\.addEventListener\("click", pickVisualTarget\)/);
   assert.doesNotMatch(designer, /wrapper\.addEventListener\("click", \(event\) => \{ event\.stopImmediatePropagation\(\); pick\(node\); \}, true\)/);
   assert.match(runtime, /local function configureVisualHost/);
-  assert.match(runtime, /props\.text = #children > 0/);
+  assert.match(runtime, /if #children > 0 then props\.text = text ~= nil and tostring\(text\) or ""/);
   assert.match(runtime, /appendChildren\(widget, children\)/);
 });
 
@@ -141,8 +141,10 @@ test("the preview defaults to the Maker long-screen viewport and hides unresolve
   const css = await readFile("media/preview.css", "utf8");
   assert.match(manifest, /"default": "390x844"/);
   assert.match(host, /get<string>\("preview\.defaultDevice", "390x844"\)/);
-  assert.match(designer, /return samples\[path\];/);
-  assert.match(designer, /towerText: "继续爬塔"/);
+  assert.doesNotMatch(designer, /return samples\[path\];|towerText: "继续爬塔"/);
+  assert.match(designer, /resolvePreviewAttributes\(node,scope,attributeKey\)/);
+  const snapshot=await readFile('src/webview/previewSnapshot.ts','utf8');
+  assert.match(snapshot,/key==='Visibility'&&binding&&attrs\[key\]===undefined/);
   assert.doesNotMatch(designer, /autoFitArtboard/);
   assert.doesNotMatch(designer, /new ResizeObserver\(resize\)\.observe\(stage\)/);
   assert.match(designer, /function fitArtboard\(\): void \{ fitArtboardToStage\(\); \}/);

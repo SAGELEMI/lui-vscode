@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { dirname } from "node:path";
+import { EnginePreviewHost } from './enginePreviewHost.js';
 import { deployGuidance, matchesRuntime } from "../scripts/lib/guidance.mjs";
 import { readComponentProperties, isLayoutProperty, type ComponentProperties } from '../packages/spec/src/properties.js';
 import { createHash, randomBytes } from "node:crypto";
@@ -18,10 +19,11 @@ const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" 
 let bundledManifestUri: vscode.Uri | undefined;
 
 interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; layoutContract?: string; message: string; }
-interface WebviewMessage { type: "ready" | "setAttribute" | "resetAttribute" | "setTag" | "sourceEdit" | "saveSource" | "copy" | "deploy" | "openComponent" | "openProperty"; requestId?: number; start?: number; path?: number[]; source?: string; name?: string; value?: string; version?: number; text?: string; baseText?: string; patch?: SourcePatch; changes?: SourcePatch[]; origin?: string; }
+interface WebviewMessage { type: "ready" | "engineSnapshot" | "openEngine" | "setAttribute" | "resetAttribute" | "setTag" | "sourceEdit" | "saveSource" | "copy" | "deploy" | "openComponent" | "openProperty"; snapshot?: Record<string,unknown>; requestId?: number; start?: number; path?: number[]; source?: string; name?: string; value?: string; version?: number; text?: string; baseText?: string; patch?: SourcePatch; changes?: SourcePatch[]; origin?: string; }
 interface SerializableNode { kind: LuiNode["kind"]; tag?: string; text?: string; start: number; end: number; openTagEnd?: number; closeTagStart?: number; source: string; nodePath: number[]; displayName: string; attrs: Record<string, string>; children: SerializableNode[]; properties?: ComponentProperties; propertiesError?: string; codeSource?: string; }
 interface SourcePayload extends VersionedSource { displayPath: string; diagnostics: LuiDiagnostic[]; }
 interface CatalogBundle { catalog: Record<string, Record<string, SerializableNode>>; sources: Record<string, SourcePayload>; completionImports: LuiCompletionImport[]; actionSymbols: Record<string, string[]>; }
+interface ProjectFont { family: string; weight: string; uri: string; sha256: string; resource: string; }
 
 function createUuid(): string { return randomBytes(18).toString("base64url"); }
 function sha256(value: Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
@@ -41,6 +43,30 @@ async function attachProperties(node: SerializableNode, uri: vscode.Uri): Promis
 }
 async function exists(uri: vscode.Uri): Promise<boolean> { try { await vscode.workspace.fs.stat(uri); return true; } catch { return false; } }
 async function readJson(uri: vscode.Uri): Promise<Record<string, unknown> | undefined> { try { return JSON.parse(asText(await vscode.workspace.fs.readFile(uri))) as Record<string, unknown>; } catch { return undefined; } }
+
+async function projectFonts(root: vscode.Uri | undefined, webview: vscode.Webview): Promise<{ fonts: ProjectFont[]; errors: string[] }> {
+  const result: ProjectFont[] = []; const errors: string[] = [];
+  if (!root) return { fonts: result, errors };
+  const config = await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE));
+  const entries = Array.isArray(config?.fonts) ? config.fonts : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const family = typeof (entry as { family?: unknown }).family === "string" ? (entry as { family: string }).family : "";
+    const weights = (entry as { weights?: unknown }).weights;
+    if (!family || !weights || typeof weights !== "object") { errors.push("LUI 字体声明缺少 family 或 weights。"); continue; }
+    for (const [weight, descriptor] of Object.entries(weights as Record<string, unknown>)) {
+      const resource = typeof descriptor === "string" ? descriptor : descriptor && typeof descriptor === "object" && typeof (descriptor as { resource?: unknown }).resource === "string" ? (descriptor as { resource: string }).resource : "";
+      const expected = descriptor && typeof descriptor === "object" && typeof (descriptor as { sha256?: unknown }).sha256 === "string" ? (descriptor as { sha256: string }).sha256.toLowerCase() : "";
+      if (!resource || resource.includes("..") || resource.includes("\\") || resource.startsWith("/")) { errors.push(`LUI 字体资源路径无效：${resource || "（空）"}`); continue; }
+      const file = uriPath(root, "assets", ...resource.split("/"));
+      if (!await exists(file)) { errors.push(`LUI 字体资源不存在：assets/${resource}`); continue; }
+      const actual = sha256(await vscode.workspace.fs.readFile(file));
+      if (expected && expected !== actual) { errors.push(`LUI 字体哈希不匹配：assets/${resource}`); continue; }
+      result.push({ family, weight, uri: webview.asWebviewUri(file).toString(), sha256: actual, resource });
+    }
+  }
+  return { fonts: result, errors };
+}
 
 function nodeAt(node: LuiNode | undefined, offset: number): LuiNode | undefined {
   if (!node || offset < node.range.start || offset > node.range.end) return undefined;
@@ -339,11 +365,30 @@ export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
-    panel.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")] };
+    const workspace = workspaceRoot();
+    panel.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media"), ...(workspace ? [workspace] : [])] };
     panel.webview.html = previewHtml(panel.webview, this.context.extensionUri);
     let allowedSources = new Set<string>([document.uri.toString()]);
     let updateGeneration = 0;
     let cachedComponents: CatalogBundle | undefined;
+    const engine=new EnginePreviewHost();let engineStarting=false,disposed=false;
+    engine.onPick=selection=>{if(!disposed)panel.webview.postMessage({type:'enginePick',...selection});};
+    let previewFonts: Array<{family:string;weights:Record<string,string>}> = [];
+    let previewTheme: unknown;
+    const startEngine=async()=>{
+      if(engineStarting)return;engineStarting=true;
+      try {
+        const bundle=await projectFonts(workspace,panel.webview);
+        if(!workspace||bundle.errors.length||!bundle.fonts.length)throw new Error(bundle.errors.join('\n')||'请在 lui.project.json 声明同源字体');
+        const files=await Promise.all(bundle.fonts.map(async font=>({path:font.resource,sha256:font.sha256,bytes:await vscode.workspace.fs.readFile(uriPath(workspace,'assets',...font.resource.split('/')))})));
+        const families=new Map<string,Record<string,string>>();for(const font of bundle.fonts){const weights=families.get(font.family)??{};weights[font.weight]=font.resource;families.set(font.family,weights);}
+        previewFonts=Array.from(families,([family,weights])=>({family,weights}));
+        previewTheme=(await readJson(uriPath(workspace,...RUNTIME_DIRECTORY,CONFIG_FILE)))?.theme;
+        await engine.start(uriPath(this.context.globalStorageUri,'engine-cache').fsPath,uriPath(this.context.extensionUri,'runtime','urhox-lua').fsPath,files);
+        if(disposed){engine.dispose();return;}
+        panel.webview.postMessage({type:'engineReady',url:engine.url});
+      }catch(error){panel.webview.postMessage({type:'engineReady',error:String(error)});}
+    };
     const update = async (refreshComponents = false) => {
       const generation = ++updateGeneration;
       const rootSource = sourcePayload(document);
@@ -367,8 +412,10 @@ export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
       if (serialized) await attachProperties(serialized, document.uri);
       parsed.diagnostics.push(...validateComponentProperties(parsed, completionImports, serialized?.properties));
       if (serialized?.propertiesError) parsed.diagnostics.push({ message: serialized.propertiesError, severity: 'warning', range: { start: 0, end: 1 } });
+      const fontBundle = await projectFonts(workspaceRoot(), panel.webview);
+      for (const message of fontBundle.errors) parsed.diagnostics.push({ message, severity: "error", range: { start: 0, end: 1 } });
       if (generation !== updateGeneration) return;
-      panel.webview.postMessage({ type: "model", generation, model: { root: serialized, diagnostics: parsed.diagnostics }, catalog: bundle.catalog, sources: bundle.sources, completionImports: bundle.completionImports, actionSymbols: bundle.actionSymbols, rootSource: rootSource.source, device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "390x844") });
+      panel.webview.postMessage({ type: "model", generation, model: { root: serialized, diagnostics: parsed.diagnostics }, catalog: bundle.catalog, sources: bundle.sources, completionImports: bundle.completionImports, actionSymbols: bundle.actionSymbols, rootSource: rootSource.source, device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "390x844"), fonts: fontBundle.fonts });
     };
     const changes = vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.uri.fsPath.endsWith('.lui.lua')) { void update(true); return; }
@@ -379,9 +426,11 @@ export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
     });
     const backends = vscode.workspace.createFileSystemWatcher('**/*.lui.lua');
     const backendChanges = [backends.onDidCreate(() => void update(true)), backends.onDidChange(() => void update(true)), backends.onDidDelete(() => void update(true))];
-    panel.onDidDispose(() => { changes.dispose(); backends.dispose(); backendChanges.forEach(d => d.dispose()); });
+    panel.onDidDispose(() => { disposed=true;engine.dispose();changes.dispose(); backends.dispose(); backendChanges.forEach(d => d.dispose()); });
     panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-      if (message.type === "ready") { await update(); return; }
+      if (message.type === "ready") { void startEngine();await update(); return; }
+      if(message.type==='engineSnapshot'){if(message.snapshot&&JSON.stringify(message.snapshot).length<8_000_000)engine.update({...message.snapshot,fonts:previewFonts,theme:previewTheme});return;}
+      if(message.type==='openEngine'){if(engine.url)await vscode.env.openExternal(vscode.Uri.parse(engine.url));return;}
       if (message.type === "deploy") { await deployUrhoXLuaRuntime(this.context); return; }
       if (message.type === "copy") { if (typeof message.text === "string" && message.text.length > 0) await vscode.env.clipboard.writeText(message.text); return; }
       if (message.type === "openComponent" && typeof message.source === "string" && allowedSources.has(message.source)) {
@@ -619,8 +668,8 @@ function previewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "preview.css"));
   const designer = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "designer.js"));
   const nonce = createUuid();
-return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
-<section id="design-workbench"><aside id="outline-panel"><h1>LUI 结构</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label id="device-label">设备 <select id="device"><option>390x844</option><option>360x800</option><option>768x1024</option></select></label><span id="zoom-tools"><button id="fit" title="按中间画板视口适应">适应</button><button id="actual-size" title="显示 100%">100%</button><button id="zoom-out" title="缩小画板视图">−</button><output id="zoom-value">100%</output><button id="zoom-in" title="放大画板视图">＋</button></span><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage" aria-label="中间设计画板；可滚动、中键或空格拖拽平移，Ctrl 加滚轮缩放"><div id="stage-content"><div id="artboard"><div id="canvas"></div></div></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
+return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http://127.0.0.1:*; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
+<section id="design-workbench"><aside id="outline-panel"><h1>LUI 结构</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label id="device-label">设备 <select id="device"><option>358x425</option><option>377x496</option><option>360x800</option><option>390x844</option><option>640x1024</option><option>768x1024</option></select></label><span id="zoom-tools"><button id="fit" title="按中间画板视口适应">适应</button><button id="actual-size" title="显示 100%">100%</button><button id="zoom-out" title="缩小画板视图">−</button><output id="zoom-value">100%</output><button id="zoom-in" title="放大画板视图">＋</button></span><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage" aria-label="中间设计画板；可滚动、中键或空格拖拽平移，Ctrl 加滚轮缩放"><div id="stage-content"><div id="artboard"><div id="canvas"></div></div></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
 <div id="splitter" role="separator" aria-label="调整设计预览与源码高度"><button id="source-collapse" title="折叠源码">⌄</button><button id="source-maximize" title="源码最大化">⛶</button></div>
 <section id="source-panel"><div id="source-editor"></div></section>
 <script nonce="${nonce}" src="${designer}"></script></body></html>`;
