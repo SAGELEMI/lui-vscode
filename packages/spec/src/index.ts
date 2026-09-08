@@ -3,8 +3,10 @@ import { isLayoutProperty, type ComponentProperties } from './properties.js';
 import { pathKeys } from './paths.js';
 import type { LuiCompletionImport } from './completion.js';
 import { normalizeColor, parseBrush } from './brush.js';
+import { parseLayoutExpression } from './layout-expression.js';
 
 export { UI_CONTROL_DEFINITIONS, parseBinding, parseCommand };
+export { parseLayoutExpression } from './layout-expression.js';
 export { pathKeys, readPath } from './paths.js';
 export { readComponentProperties, isLayoutProperty, propertyTypeMatches, type ComponentProperties, type ComponentProperty } from './properties.js';
 export { availableAttributes, extractLuiActionSymbols, provideLuiCompletions, type LuiCompletionCandidate, type LuiCompletionContext, type LuiCompletionImport, type LuiImportedComponent } from "./completion.js";
@@ -26,12 +28,14 @@ export function validateComponentProperties(document: LuiDocument, imports: read
     const [alias, name] = (node.tag ?? '').split(':');
     const schema = imports.find(i => i.alias === alias)?.components.find(c => c.name === name)?.definitions;
     for (const attr of node.attrs) {
+      if(attr.name.startsWith('布局:'))continue;
       const binding = parseBinding(attr.value); const keys = binding && pathKeys(binding.path);
-      if (own && keys?.[0] === 'props' && keys[1] && !own[keys[1]] && !isLayoutProperty(keys[1])) fail(diagnostics, `组件未声明公开属性：${keys[1]}`, attr.valueRange.start, attr.valueRange.end);
+      if (own && keys?.[0] === 'props' && keys[1] && !own[keys[1]] && !isLayoutProperty(String(keys[1]))) fail(diagnostics, `组件未声明公开属性：${keys[1]}`, attr.valueRange.start, attr.valueRange.end);
       if (!schema || isLayoutProperty(attr.name)) continue;
       const definition = schema[attr.name];
       if (!definition) { fail(diagnostics, `组件未声明公开属性：${attr.name}`, attr.range.start, attr.range.end); continue; }
-      if (binding) continue;
+      if (binding || parseLayoutExpression(attr.value)) continue;
+      if (/^\{布局(?:\s|\})/.test(attr.value.trim())) {fail(diagnostics,'布局表达式无效。',attr.valueRange.start,attr.valueRange.end);continue;}
       const valid = definition.type === 'string' || (definition.type === 'number' && attr.value.trim() !== '' && Number.isFinite(Number(attr.value))) || (definition.type === 'boolean' && ['true','false','是','否'].includes(attr.value)) || (definition.type === 'event' && /^\{(?:动作|Action)\s+[A-Za-z][A-Za-z0-9_.-]*\}$/.test(attr.value));
       if (!valid) fail(diagnostics, `公开属性 ${attr.name} 需要 ${definition.type}${definition.type === 'table' ? ' 集合绑定' : ''}`, attr.valueRange.start, attr.valueRange.end);
     }
@@ -158,7 +162,7 @@ function parseCloseTag(source: string, start: number, diagnostics: LuiDiagnostic
 }
 
 /** Parses the safe XML-shaped LUI subset. DTD, processing instructions and entities are deliberately excluded. */
-export function parseLui(source: string): LuiDocument {
+export function parseLui(source: string, schemaVersion = 5): LuiDocument {
   const diagnostics: LuiDiagnostic[] = [];
   const stack: LuiNode[] = [];
   let root: LuiNode | undefined;
@@ -202,6 +206,10 @@ export function parseLui(source: string): LuiDocument {
   }
   for (const node of stack) fail(diagnostics, `<${node.tag}> 没有结束标签。`, node.range.start, source.length);
   if (!root) fail(diagnostics, "LUI 文档缺少根元素。", 0, Math.max(1, source.length));
+  if (root && schemaVersion < 5 && canonicalTag(root.tag) === "lui:Page") {
+    root.tag = root.tag === "页面" ? "场景" : "lui:Scene";
+    fail(diagnostics, "schema 4 的旧 <页面> 已按 <场景> 兼容读取；请迁移到 schema 5 的 <场景>。", root.range.start, root.openTagEnd, "warning");
+  }
   const document = { root, diagnostics, source };
   if (root) validateLui(document);
   return document;
@@ -245,6 +253,11 @@ function isTransform(value: string): boolean {
 function validateValue(diagnostics: LuiDiagnostic[], attribute: LuiAttribute): void {
   const canonical = canonicalAttribute(attribute.name);
   const definition = attributeDefinition(canonical);
+  if (parseBinding(attribute.value) || parseLayoutExpression(attribute.value)) return;
+  if (/^\{布局(?:\s|\})/.test(attribute.value.trim())) {
+    fail(diagnostics, '布局表达式无效；仅允许数据路径、标量、算术、比较、and/or/not 和 min/max/count/choose。', attribute.valueRange.start, attribute.valueRange.end);
+    return;
+  }
   if (canonical === "TextStrokeWidth" && !parseBinding(attribute.value) && (!attribute.value.trim() || !Number.isFinite(Number(attribute.value)) || Number(attribute.value) < 0)) fail(diagnostics, "文字描边宽度必须是非负有限数值（逻辑像素，0 为关闭）。", attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "integer" && !isInteger(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是从 0 开始的整数。`, attribute.valueRange.start, attribute.valueRange.end);
   if (definition?.kind === "length" && !isLength(attribute.value)) fail(diagnostics, `${sourceAttribute(canonical)} 必须是像素数、百分比或“自动”。`, attribute.valueRange.start, attribute.valueRange.end);
@@ -290,7 +303,7 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     imports.set(alias, attribute);
   }
   const rootTag = canonicalTag(root.tag);
-  if (rootTag !== "lui:Page" && rootTag !== "lui:Component") fail(diagnostics, "LUI 根节点只能是 <页面> 或 <控件>。", root.range.start, root.openTagEnd);
+  if (rootTag !== "lui:Scene" && rootTag !== "lui:Page" && rootTag !== "lui:Component") fail(diagnostics, "LUI 根节点只能是 <场景>、<页面> 或 <控件>。", root.range.start, root.openTagEnd);
   const visit = (node: LuiNode, parentTag?: string, isRoot = false) => {
     if (node.kind !== "element") return;
     if (node.tag === "__placeholder__") {
@@ -299,6 +312,10 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     }
     const seenAttributes = new Map<string, LuiAttribute>();
     for (const attribute of node.attrs) {
+      if (attribute.name.startsWith('布局:')) {
+        if (!/^布局:[A-Za-z][A-Za-z0-9_]*$/.test(attribute.name) || !parseLayoutExpression(attribute.value)) fail(diagnostics, '布局声明须为 布局:名称="{布局 表达式}"，名称只使用 ASCII 字母、数字与下划线。', attribute.valueRange.start, attribute.valueRange.end);
+        continue;
+      }
       if (node.tag?.includes(':') && !node.tag.startsWith('lui:') && !isLayoutProperty(attribute.name)) {
         if (seenAttributes.has(attribute.name)) fail(diagnostics, `属性重复：${attribute.name}`, attribute.range.start, attribute.range.end);
         seenAttributes.set(attribute.name, attribute); continue;
@@ -344,11 +361,11 @@ export function validateLui(document: LuiDocument): LuiDiagnostic[] {
     const canonical = canonicalTag(sourceTag);
     if (sourceTag === "循环") fail(diagnostics, "<循环> 已改名为 <重复项>；按集合重复生成内部模板，旧语法仅兼容读取。", node.range.start, node.openTagEnd, "warning");
     if (sourceTag && canonical && !KNOWN_CANONICAL_TAGS.has(canonical) && !sourceTag.includes(":") && !sourceTag.includes(".")) fail(diagnostics, `未识别控件 <${sourceTag}>；属性窗格仅显示基础布局属性。`, node.range.start, node.openTagEnd, "warning");
-    if (!isRoot && (canonical === "lui:Page" || canonical === "lui:Component")) fail(diagnostics, "<页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", node.range.start, node.openTagEnd);
-    if (canonical === "lui:Page") {
+    if (!isRoot && (canonical === "lui:Scene" || canonical === "lui:Page" || canonical === "lui:Component")) fail(diagnostics, "<场景>、<页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", node.range.start, node.openTagEnd);
+    if (canonical === "lui:Scene") {
       for (const name of ["Width", "Height"]) {
         const attribute = getAttribute(node, name);
-        if (!attribute || !/^\d+(?:\.\d+)?$/.test(attribute.value) || Number(attribute.value) <= 0) fail(diagnostics, `<页面> 的${sourceAttribute(name)}必须是正数 px，作为设计坐标而非设备分辨率。`, attribute?.valueRange.start ?? node.range.start, attribute?.valueRange.end ?? node.openTagEnd);
+        if (!attribute || !/^\d+(?:\.\d+)?$/.test(attribute.value) || Number(attribute.value) <= 0) fail(diagnostics, `<场景> 的${sourceAttribute(name)}必须是正数 px，作为设计坐标而非设备分辨率。`, attribute?.valueRange.start ?? node.range.start, attribute?.valueRange.end ?? node.openTagEnd);
       }
     }
     if (canonical === "Viewbox") {

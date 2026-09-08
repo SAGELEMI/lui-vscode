@@ -1,25 +1,25 @@
-# LUI Studio 2.6.0
+# LUI Studio 3.0.0
 
-2.6.0 提供隔离的官方 UrhoX 真实预览，修复折叠测量和 Modal 上方的全屏覆盖层，增加显式文字描边与标量绑定原位刷新。普通文字保持单次正文绘制。验收范围与剩余项见 [2.6.0 验收](docs/workspace-2.6.0-acceptance.md)。
+3.0.0 将界面分为场景、页面、控件：场景拥有设备级设计画布，页面由页面呈现器受控切换，控件可被多处复用。Studio 只从 `.lui` 根 `副名称`发现控件，并把原始声明交给正式 Lua Runtime，统一执行布局表达式、条件、重复项、模板虚拟列表和渐进式预加载。单文件 Studio 的数据来自绑定内联 `预览内容`；“运行”会校验并按需部署 Runtime，然后在独立浏览器运行整个 Maker 项目。接口见 [运行时](docs/runtime.md) 与 [绑定和列表](docs/bindings.md)。
 
 LUI 是面向 UrhoX 游戏 UI 的中文声明式语言。小写 `.lui` 描述布局、外观和绑定，同名 `.lui.lua` 负责数据、动作与生命周期。Studio 在一个 VS Code 标签中提供结构树、画板、属性栏和源码编辑；设计预览不执行游戏 Lua。
 
 从 [LUI 使用文档](docs/README.md) 开始，或直接阅读 [快速入门](docs/getting-started.md) 和 [完整示例](examples/tutorial/README.md)。
 
 ```xml
-<页面 名称="Welcome" 副名称="欢迎页" 宽度="390" 高度="844">
+<场景 名称="Welcome" 副名称="欢迎场景" 宽度="390" 高度="844">
   <容器 子项排列="垂直" 内边距="20" 垂直间隔="12">
     <文本 文本="{绑定 view.title, 预览内容='你好，LUI'}" 字号="28" />
     <按钮 文本="开始" 点击="{动作 Start}" />
   </容器>
-</页面>
+</场景>
 ```
 
 ## 安装与使用
 
-安装 `dist/lui-vscode-2.6.0.vsix`，打开游戏项目，运行 **LUI: 部署 UrhoX/Lua 运行时**。部署同时交付 docs/lui 文档和示例、项目 skills 下两个技能，并向根 AGENTS.md 添加 LUI 导航。升级保留用户修改的资料并提示。
+安装 `dist/lui-vscode-3.0.0.vsix` 并打开游戏项目。在任意 LUI Studio 中点击 **运行**，或执行 **LUI: 运行项目预览**；Studio 会校验运行时，必要时自动部署并保留项目配置及一份 `.backup-last`，随后在独立浏览器运行 `.project/project.json` 的入口。
 
-运行 **LUI: 新建页面或组件（MVVM）** 创建配对文件，双击 .lui 打开 Studio。运行时需要 UrhoX 的 urhox-libs/UI 与项目宿主适配，见 [运行时接入](docs/runtime.md)。Studio 预览成功不代表游戏已完成接入。
+运行 **LUI: 新建场景、页面或控件（MVVM）** 创建配对文件，双击 .lui 打开 Studio。运行时需要 UrhoX 的 urhox-libs/UI 与项目宿主适配，见 [运行时接入](docs/runtime.md)。Studio 预览成功不代表游戏已完成接入。
 
 ## 给 AI 使用
 

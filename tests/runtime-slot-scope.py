@@ -11,15 +11,19 @@ env["lua"].execute(r'''
 local Runtime=require('LUI.Runtime')
 local Parser=require('LUI.Parser')
 local documents={
- ['Fixture/A/Outer.lui']=[[<控件 名称="Outer" 目录:inner="Fixture/B"><容器 子项排列="垂直"><文本 引用="Caption" 文本="{绑定 props['标题']}"/><inner:Leaf 标题="内层属性"><内容呈现器/></inner:Leaf></容器></控件>]],
- ['Fixture/B/Leaf.lui']=[[<控件 名称="Leaf"><容器 子项排列="垂直"><文本 引用="Caption" 文本="{绑定 props['标题']}"/><内容呈现器/></容器></控件>]],
- ['Fixture/C/Stamp.lui']=[[<控件 名称="Stamp"><文本 引用="Caption" 文本="{绑定 props['标题']}"/></控件>]],
+ ['Fixture/A/Outer.lui']=[[<控件 名称="Outer" 副名称="Outer" 目录:inner="Fixture/B"><容器 子项排列="垂直"><文本 引用="Caption" 文本="{绑定 props['标题']}"/><inner:Leaf 标题="内层属性"><内容呈现器/></inner:Leaf></容器></控件>]],
+ ['Fixture/B/Leaf.lui']=[[<控件 名称="Leaf" 副名称="Leaf"><容器 子项排列="垂直"><文本 引用="Caption" 文本="{绑定 props['标题']}"/><内容呈现器/></容器></控件>]],
+ ['Fixture/C/Stamp.lui']=[[<控件 名称="Stamp" 副名称="Stamp"><文本 引用="Caption" 文本="{绑定 props['标题']}"/></控件>]],
  ['Fixture/Page.lui']=[[<页面 名称="Page" 宽度="390" 高度="867" 目录:a="Fixture/A" 目录:caller="Fixture/C"><a:Outer 标题="外层属性"><文本 引用="SlotText" 文本="{绑定 props['标题']}"/><文本 引用="Once" 文本="{绑定 view.message, 模式=单次}"/><按钮 引用="SlotAction" 文本="单击" 点击="{动作 Click}"/><caller:Stamp 标题="{绑定 view.message}"/><caller:Stamp 标题="{绑定 view.message, 模式=单次}"/></a:Outer></页面>]],
  ['Fixture/Repeated.lui']=[[<页面 名称="Repeated" 宽度="390" 高度="867" 目录:a="Fixture/A"><重复项 项目="row" 集合="{绑定 view.rows}"><a:Outer 标题="{绑定 row.title}"><文本 文本="{绑定 row.slot}"/></a:Outer></重复项></页面>]],
 }
-local runtime=setmetatable({isV2_=true,documents_={},code_={},config_={sourceRoots={'Fixture'},componentDirectories={
- ['Fixture/A']={Outer='Fixture/A/Outer.lui'},['Fixture/B']={Leaf='Fixture/B/Leaf.lui'},['Fixture/C']={Stamp='Fixture/C/Stamp.lui'}
-}}},Runtime)
+local directoryComponents={
+ ['Fixture/A']={Outer={markup='Fixture/A/Outer.lui',code='Fixture/A/Outer.lui.lua'}},
+ ['Fixture/B']={Leaf={markup='Fixture/B/Leaf.lui',code='Fixture/B/Leaf.lui.lua'}},
+ ['Fixture/C']={Stamp={markup='Fixture/C/Stamp.lui',code='Fixture/C/Stamp.lui.lua'}},
+}
+local registry={GetDirectoryComponent=function(_,directory,name)local entries=directoryComponents[directory];return entries and entries[name]end}
+local runtime=setmetatable({isV2_=true,documents_={},code_={},registry_=registry,config_={sourceRoots={'Fixture'},componentDirectories={'Fixture/A','Fixture/B','Fixture/C'}}},Runtime)
 for path,source in pairs(documents) do runtime.documents_[path]=assert(Parser.Parse(source,path)) end
 local instances={}
 local callerClicks,componentClicks=0,0

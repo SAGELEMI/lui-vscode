@@ -6,18 +6,21 @@ import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import assert from 'node:assert/strict';
+import {visibleLayoutProbe,recordEngineErrors} from './lib/visible-layout-probe.mjs';
+import {verifyEngineRuntime} from './lib/preview-fixture.mjs';
 const require=createRequire(import.meta.url);
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {EnginePreviewHost}=require('../dist/enginePreviewHost.cjs');
-const {parseLui}=require('../dist/spec.cjs');
-const {buildEngineSnapshot,resolvePreviewAttributes,canonicalTag}=require('../dist/previewSnapshot.cjs');
+const {parseLui,isLayoutProperty}=require('../dist/spec.cjs');
+const {buildDeclarationSnapshot,canonicalTag,canonicalAttribute}=require('../dist/previewSnapshot.cjs');
 const game=resolve(process.argv[2]);
 const output=resolve('artifacts/engine-parity-components-20260906');await mkdir(output,{recursive:true});
 const config=JSON.parse(await readFile(resolve(game,'scripts/LUI/lui.project.json'),'utf8'));
 const files=[];
 for(const family of config.fonts)for(const font of Object.values(family.weights))files.push({path:font.resource,sha256:font.sha256,bytes:await readFile(resolve(game,'assets',font.resource))});
 const host=new EnginePreviewHost();
-await host.start(resolve('artifacts/engine-cache'),resolve('packages/runtime-urhox-lua/adapter'),files);
+const runtimeDirectory=resolve(process.env.LUI_TEST_RUNTIME_DIR||'runtime/urhox-lua');
+await host.start(resolve('artifacts/engine-cache'),runtimeDirectory,files);
 const fonts=config.fonts.map(f=>({family:f.family,weights:Object.fromEntries(Object.entries(f.weights).map(([k,v])=>[k,v.resource]))}));
 const empty={kind:'Element',tag:'lui:Page',attrs:{Width:'390',Height:'867',Background:'#0B0714'},children:[],sourcePath:'Fixture.lui',nodePath:''};
 host.update({revision:1,width:390,height:867,theme:config.theme,fonts,node:empty});
@@ -47,6 +50,7 @@ await page.addInitScript(()=>{
 });
 const report={scope:'isolated static imported components, caller wrapper, caller slot scope, repeated instance refs, false/nil/single-pass initial data; no game state, animation timing or VS Code interaction',passed:false,cases:[],errors:[]};
 page.on('pageerror',e=>report.errors.push(e.message));
+recordEngineErrors(page,report);
 const long=value=>'[====['+value+']====]';
 async function runLua(source){
  await page.evaluate(source=>{const frame=document.querySelector('iframe');frame.contentWindow.postMessage({source:'tap-plugin-host',kind:'event',name:'RunLuaSource',payload:{source}},location.origin);},source);
@@ -55,10 +59,11 @@ async function render(kind,sample,node){
  const {source,data}=sample;
  const seq=report.cases.length+'-'+kind;
  await page.evaluate(sequence=>{window.__parity=null;window.__expectedParity=sequence;},seq);
- await runLua(`local ok,err=xpcall(function()
+ await runLua(`${visibleLayoutProbe}
+local ok,err=xpcall(function()
  local UI=require('urhox-libs/UI');local Runtime=require('LUI.Runtime')
  local Parser=require('LUI.Parser')
- local runtime=setmetatable({config_={sourceRoots={'Fixture'},componentDirectories={['Fixture/Components']={['卡片']='Fixture/Components/Card.lui',['插槽卡']='Fixture/Components/SlotCard.lui'}}},documents_={},code_={},isV2_=true},Runtime)
+ local runtime=setmetatable({config_={sourceRoots={'Fixture'},componentDirectories={['Fixture/Components']={['卡片']='Fixture/Components/Card.lui',['插槽卡']='Fixture/Components/SlotCard.lui',['自适应卡']='Fixture/Components/AdaptiveCard.lui'}}},documents_={},code_={},isV2_=true},Runtime)
  local documents=cjson.decode(${long(JSON.stringify({['Fixture/Page.lui']:source,...componentSources}))})
  for path,markup in pairs(documents) do runtime.documents_[path]=assert(Parser.Parse(markup,path)) end
  local schema=cjson.decode(${long(JSON.stringify(properties))})
@@ -72,6 +77,7 @@ async function render(kind,sample,node){
  end
  runtime.code_['Fixture/Components/Card.lui.lua']=componentCode
  runtime.code_['Fixture/Components/SlotCard.lui.lua']=componentCode
+ runtime.code_['Fixture/Components/AdaptiveCard.lui.lua']=componentCode
  local title;local textWidgets,componentRoots={},{};local build=runtime.BuildNode
  function runtime:BuildNode(n,c)
   local w=build(self,n,c)
@@ -82,12 +88,14 @@ async function render(kind,sample,node){
  local context=cjson.decode(${long(JSON.stringify(data))});context.refs={};context.actions={}
  local content
  if '${kind}'=='source' then content=assert(runtime:RenderMarkup('Fixture/Page.lui',context))
- else content=runtime:BuildNode(cjson.decode(${long(JSON.stringify(node))}),context) end
+ else content=assert(runtime:BuildPreview(cjson.decode(${long(JSON.stringify(node))}))) end
  local previous=UI.GetRoot();local candidate=UI.Panel{width='100%',height='100%',children={content}}
  UI.SetRoot(candidate);if previous then previous:Destroy() end
  local frames=0;local cancel
  cancel=runtime:AfterLayout(candidate,function()
   frames=frames+1;if frames<12 then return end;cancel()
+  local settledOk,settled=xpcall(function()return verifyVisibleLayout(runtime,content,390,867)end,debug.traceback)
+  if not settledOk then local out=VariantMap();out['name']='lui-parity-ready';out['payload']=cjson.encode({sequence='${seq}',error=tostring(settled)});SendEvent('EmitToPlugin',out);return end
   local texts,components={},{}
   for _,w in ipairs(textWidgets) do
    local visible=true;local parent=w
@@ -95,9 +103,10 @@ async function render(kind,sample,node){
    if visible then texts[#texts+1]=tostring(w.props.text or '') end
   end
   for _,w in ipairs(componentRoots) do components[#components+1]={inner=runtime:GetScreenRect(w),wrapper=runtime:GetScreenRect(w.luiComponentHost_ or w.parent)} end
+  instanceContexts={};for _,w in ipairs(componentRoots) do if w.luiRootContext_ then instanceContexts[#instanceContexts+1]=w.luiRootContext_ end end
   local refsIsolated=true;local seen={}
   for _,scope in ipairs(instanceContexts) do for name,w in pairs(scope.refs) do if seen[w] then refsIsolated=false end;seen[w]=true end end
-  local out=VariantMap();out['name']='lui-parity-ready';out['payload']=cjson.encode({sequence='${seq}',minimumCompletedLayouts=frames,text=title and title.props.text,textRect=title and runtime:GetScreenRect(title),uiScale=UI.GetScale(),texts=texts,components=components,instanceCount=#instanceContexts,refsIsolated=refsIsolated})
+  local out=VariantMap();out['name']='lui-parity-ready';out['payload']=cjson.encode({sequence='${seq}',minimumCompletedLayouts=frames,visibleLayout=settled,text=title and title.props.text,textRect=title and runtime:GetScreenRect(title),uiScale=UI.GetScale(),texts=texts,components=components,instanceCount=#instanceContexts,refsIsolated=refsIsolated})
   SendEvent('EmitToPlugin',out)
  end)
 end,debug.traceback)
@@ -127,7 +136,7 @@ if not ok then local out=VariantMap();out['name']='lui-parity-ready';out['payloa
   }
  }
  assert.ok(colors.size>=16&&inkPixels>=50,`title region must contain antialiased glyph ink, not an empty/color-only frame (${colors.size} colors, ${inkPixels} ink pixels)`);
- return {...capture,texts:result.texts,components:result.components,instanceCount:result.instanceCount,refsIsolated:result.refsIsolated,sequence:seq,minimumCompletedLayouts:result.minimumCompletedLayouts,textRect:rect,textRegionColors:colors.size,textInkPixels:inkPixels,stability:{firstRaf:first.completedVendorRaf,secondRaf:capture.completedVendorRaf,firstTimestamp:first.rafTimestamp,secondTimestamp:capture.rafTimestamp,distinctDisplayTimestamps:true,sha256:first.sha256}};
+ return {...capture,visibleLayout:result.visibleLayout,texts:result.texts,components:result.components,instanceCount:result.instanceCount,refsIsolated:result.refsIsolated,sequence:seq,minimumCompletedLayouts:result.minimumCompletedLayouts,textRect:rect,textRegionColors:colors.size,textInkPixels:inkPixels,stability:{firstRaf:first.completedVendorRaf,secondRaf:capture.completedVendorRaf,firstTimestamp:first.rafTimestamp,secondTimestamp:capture.rafTimestamp,distinctDisplayTimestamps:true,sha256:first.sha256}};
 }
 
 const properties={
@@ -136,12 +145,14 @@ const properties={
  '启用':{type:'boolean',default:true}
 };
 const componentSources={
+ 'Fixture/Components/AdaptiveCard.lui':'<控件 名称="AdaptiveCard" 宽度="{绑定 props[\'宽度\'], 预览内容=\'340\'}" 高度="{绑定 props[\'高度\'], 预览内容=\'220\'}" 背景="{绑定 props[\'底色\']}"><容器 子项排列="垂直" 内边距="6"><文本 引用="Caption" 文本="{绑定 props[\'标题\']}" 字号="16"/></容器></控件>',
  'Fixture/Components/Card.lui':'<控件 名称="Card" 宽度="132" 高度="92" 背景="{绑定 props[\'底色\']}"><容器 子项排列="垂直" 内边距="6" 垂直间隔="6"><文本 引用="Caption" 文本="{绑定 props[\'标题\']}" 字号="16"/><文本 引用="State" 文本="{绑定 props[\'启用\']}" 字号="14"/></容器></控件>',
  'Fixture/Components/SlotCard.lui':'<控件 名称="SlotCard" 宽度="240" 高度="110" 背景="{绑定 props[\'底色\']}"><容器 子项排列="垂直" 内边距="6" 垂直间隔="6"><文本 引用="Caption" 文本="{绑定 props[\'标题\']}" 字号="16"/><内容呈现器/></容器></控件>'
 };
 const title='同引擎 · 组件与作用域';
 const document=body=>'<页面 名称="Fixture" 宽度="390" 高度="867" 背景="#0B0714" 目录:积木="Fixture/Components"><容器 子项排列="垂直" 内边距="18" 垂直间隔="12"><文本 引用="PageTitle" 文本="{绑定 view.title}" 颜色="#F4ECFF" 字号="24"/>'+body+'</容器></页面>';
 const samples=[
+ {name:'missing-component-size-ignores-inline-preview',body:'<容器 宽度="220" 高度="120"><积木:自适应卡 标题="缺省尺寸跟随宿主"/></容器>',data:{view:{title}},expectedTexts:[title,'缺省尺寸跟随宿主']},
  {name:'component-wrapper',body:'<积木:卡片 标题="{绑定 view.caption}" 底色="#37547C" 宽度="300" 高度="140" 内边距="12" 外边距="4"/>',data:{view:{title,caption:'组件内部'}},expectedTexts:[title,'组件内部','true']},
  {name:'caller-slot-scope',body:'<积木:插槽卡 标题="组件内部标题" 宽度="300" 高度="140" 内边距="8"><文本 引用="SlotCaption" 文本="{绑定 props[\'标题\']}" 字号="16" 颜色="#FFC66E"/></积木:插槽卡>',data:{view:{title},props:{'标题':'调用方插槽标题'}},expectedTexts:[title,'组件内部标题','调用方插槽标题']},
  {name:'repeated-instance-isolation',body:'<重复项 项目="row" 集合="{绑定 view.rows}"><积木:卡片 标题="{绑定 row.caption}" 底色="{绑定 row.color}" 宽度="280" 高度="110"/></重复项>',data:{view:{title,rows:[{caption:'独立实例甲',color:'#37547C'},{caption:'独立实例乙',color:'#743F57'}]}},expectedTexts:[title,'独立实例甲','true','独立实例乙','true']},
@@ -160,11 +171,13 @@ try{
  await page.evaluate(()=>{window.addEventListener('message',event=>{if(event.origin===location.origin&&event.data?.name==='lui-parity-ready'&&event.data.payload?.sequence===window.__expectedParity)window.__parity=event.data.payload;});});
  await page.waitForFunction(()=>document.querySelector('#status')?.textContent.includes('已绘制'),{timeout:60000});
  report.identity=await(await fetch(host.url+'identity.json')).json();
+ report.runtime=await verifyEngineRuntime(report.identity,runtimeDirectory);
  for(const sample of samples){
   const {name,source,data}=sample;
   await writeFile(resolve(output,name+'.lui'),source);
   await writeFile(resolve(output,name+'-data.json'),JSON.stringify(data,null,2));
-  const [node]=buildEngineSnapshot(serialized(source,'Fixture/Page.lui'),data,{tag:n=>canonicalTag(n.tag)??n.tag,attrs:resolvePreviewAttributes,children:n=>n.children,component:n=>templates[n.tag==='积木:卡片'?'Fixture/Components/Card.lui':'Fixture/Components/SlotCard.lui']});
+  const paths={'积木:卡片':'Fixture/Components/Card.lui','积木:插槽卡':'Fixture/Components/SlotCard.lui','积木:自适应卡':'Fixture/Components/AdaptiveCard.lui'};
+  const node={width:390,height:867,...buildDeclarationSnapshot(serialized(source,'Fixture/Page.lui'),data,{tag:n=>canonicalTag(n.tag)??n.tag,attributeKey:(n,key)=>n.tag?.startsWith('积木:')&&!isLayoutProperty(key)?key:canonicalAttribute(key),component:n=>templates[paths[n.tag]]})};
   await writeFile(resolve(output,name+'-snapshot.json'),JSON.stringify(node,null,2));
   try{
    const actual=await render('source',sample,node);
@@ -179,9 +192,9 @@ try{
    const sourceSemantics=JSON.stringify(actual.texts)===JSON.stringify(sample.expectedTexts);
    const snapshotSemantics=JSON.stringify(preview.texts)===JSON.stringify(sample.expectedTexts);
    const expectedInstances=name==='repeated-instance-isolation'?2:1;
-   const isolation=actual.instanceCount===expectedInstances&&actual.refsIsolated;
+   const isolation=actual.instanceCount===expectedInstances&&actual.refsIsolated&&preview.instanceCount===expectedInstances&&preview.refsIsolated;
    const geometry=isDeepStrictEqual(actual.components,preview.components);
-   report.cases.push({name,width:actual.width,height:actual.height,dpr:actual.devicePixelRatio,renderer:actual.renderer,attributes:actual.attributes,colorSpace:actual.colorSpace,origin:'bottom-left',settledMinimumLayouts:12,capture:'next completed vendor RAF after readiness; separately sampled stable static states, not synchronized animation time',sourceSequence:actual.sequence,snapshotSequence:preview.sequence,sourceStability:actual.stability,snapshotStability:preview.stability,textRegion:{rect:actual.textRect,sourceColors:actual.textRegionColors,snapshotColors:preview.textRegionColors,sourceInkPixels:actual.textInkPixels,snapshotInkPixels:preview.textInkPixels},expectedTexts:sample.expectedTexts,sourceTexts:actual.texts,snapshotTexts:preview.texts,sourceSemantics,snapshotSemantics,sourceComponents:actual.components,snapshotComponents:preview.components,componentGeometryEqual:geometry,sourceInstanceCount:actual.instanceCount,instanceRefsIsolated:isolation,sourceSha256:actual.sha256,snapshotSha256:preview.sha256,differentBytes,maxDifference,passed:differentBytes===0&&maxDifference===0&&sourceSemantics&&snapshotSemantics&&isolation&&geometry});
+   report.cases.push({name,width:actual.width,height:actual.height,dpr:actual.devicePixelRatio,renderer:actual.renderer,attributes:actual.attributes,colorSpace:actual.colorSpace,origin:'bottom-left',settledMinimumLayouts:12,capture:'next completed vendor RAF after readiness; separately sampled stable static states, not synchronized animation time',sourceSequence:actual.sequence,snapshotSequence:preview.sequence,sourceVisibleLayout:actual.visibleLayout,snapshotVisibleLayout:preview.visibleLayout,sourceStability:actual.stability,snapshotStability:preview.stability,textRegion:{rect:actual.textRect,sourceColors:actual.textRegionColors,snapshotColors:preview.textRegionColors,sourceInkPixels:actual.textInkPixels,snapshotInkPixels:preview.textInkPixels},expectedTexts:sample.expectedTexts,sourceTexts:actual.texts,snapshotTexts:preview.texts,sourceSemantics,snapshotSemantics,sourceComponents:actual.components,snapshotComponents:preview.components,componentGeometryEqual:geometry,sourceInstanceCount:actual.instanceCount,instanceRefsIsolated:isolation,sourceSha256:actual.sha256,snapshotSha256:preview.sha256,differentBytes,maxDifference,passed:differentBytes===0&&maxDifference===0&&sourceSemantics&&snapshotSemantics&&isolation&&geometry});
   }catch(error){report.cases.push({name,passed:false,error:String(error?.stack||error)});}
   console.log(JSON.stringify(report.cases.at(-1)));
   await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));

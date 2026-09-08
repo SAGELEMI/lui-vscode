@@ -6,16 +6,16 @@ import { pathKeys } from './paths.js';
  * only remain readable so an old document can receive a precise migration hint.
  */
 export const TAG_TO_CANONICAL: Record<string, string> = {
-  "页面": "lui:Page", "控件": "lui:Component", "组件": "lui:Component", "条件": "lui:If", "重复项": "lui:For", "循环": "lui:For", "内容呈现器": "lui:Slot", "插槽": "lui:Slot", "预览": "lui:Preview", "设值": "lui:Set",
+  "场景": "lui:Scene", "页面": "lui:Page", "控件": "lui:Component", "组件": "lui:Component", "条件": "lui:If", "重复项": "lui:For", "循环": "lui:For", "内容呈现器": "lui:Slot", "插槽": "lui:Slot", "页面呈现器": "lui:PagePresenter", "预览": "lui:Preview", "设值": "lui:Set",
   "容器": "Container", "网格": "Grid", "画布": "Canvas", "视图框": "Viewbox", "堆叠面板": "StackPanel", "换行面板": "WrapPanel", "停靠面板": "DockPanel", "均分网格": "UniformGrid", "边框": "Border", "滚动查看器": "Scroll", "内容控件": "ContentControl", "文本": "Text", "按钮": "Button", "卡片": "Card", "滚动区": "Scroll", "进度条": "Progress", "开关": "Toggle", "滑块": "Slider", "安全区": "SafeArea", "弹窗": "Modal", "分区": "Section", "提示": "Notice", "屏幕": "Screen", "固定屏幕": "FixedScreen",
-  "lui:Page": "lui:Page", "lui:Component": "lui:Component", "lui:If": "lui:If", "lui:For": "lui:For", "lui:Slot": "lui:Slot", "lui:Preview": "lui:Preview", "lui:Set": "lui:Set",
+  "lui:Scene": "lui:Scene", "lui:Page": "lui:Page", "lui:Component": "lui:Component", "lui:If": "lui:If", "lui:For": "lui:For", "lui:Slot": "lui:Slot", "lui:PagePresenter": "lui:PagePresenter", "lui:Preview": "lui:Preview", "lui:Set": "lui:Set",
   Grid: "Grid", Canvas: "Canvas", Viewbox: "Viewbox", Panel: "Panel", Row: "Row", Text: "Text", Button: "Button", Card: "Card", Scroll: "Scroll", Progress: "Progress", Toggle: "Toggle", Slider: "Slider", SafeArea: "SafeArea", Modal: "Modal", Section: "Section", Notice: "Notice", Screen: "Screen", FixedScreen: "FixedScreen",
   // Kept for parsing old documents only. New design documents must use 网格/画布.
   "面板": "Panel", "横排": "Row"
 };
 
 export const CANONICAL_TO_TAG: Record<string, string> = {
-  "lui:Page": "页面", "lui:Component": "控件", "lui:If": "条件", "lui:For": "重复项", "lui:Slot": "内容呈现器", "lui:Preview": "预览", "lui:Set": "设值",
+  "lui:Scene": "场景", "lui:Page": "页面", "lui:Component": "控件", "lui:If": "条件", "lui:For": "重复项", "lui:Slot": "内容呈现器", "lui:PagePresenter": "页面呈现器", "lui:Preview": "预览", "lui:Set": "设值",
   Container: "容器", Grid: "网格", Canvas: "画布", Viewbox: "视图框", StackPanel: "堆叠面板", WrapPanel: "换行面板", DockPanel: "停靠面板", UniformGrid: "均分网格", Border: "边框", ContentControl: "内容控件", Text: "文本", Button: "按钮", Card: "卡片", Scroll: "滚动查看器", Progress: "进度条", Toggle: "开关", Slider: "滑块", SafeArea: "安全区", Modal: "弹窗", Section: "分区", Notice: "提示", Screen: "屏幕", FixedScreen: "固定屏幕"
 };
 
@@ -29,10 +29,8 @@ for (const control of UI_CONTROL_DEFINITIONS) {
   CANONICAL_TO_TAG[control.tag] ??= control.name;
 }
 
-/** Public component names are directory-scoped in source, but share these default Chinese aliases. */
-export const COMPONENT_NAME_TO_CANONICAL: Record<string, string> = {
-  Header: "页眉", EquipmentSlots: "装备槽", ScrollRegion: "滚动区域", InformationPanel: "信息面板", SelectionList: "选择列表", TabView: "页签视图"
-};
+/** Directory-component tags come exclusively from the imported .lui root's 副名称. */
+export const COMPONENT_NAME_TO_CANONICAL: Record<string, string> = {};
 
 export const ATTRIBUTE_TO_CANONICAL: Record<string, string> = {
   "边框宽度": "BorderWidth", "边框颜色": "BorderColor", "滚动条颜色": "ScrollbarColor",
@@ -109,6 +107,12 @@ export const ATTRIBUTE_DEFINITIONS: Record<string, AttributeDefinition> = {
   RowDefinitions: { kind: "tracks", tags: ["Grid"] }, ColumnDefinitions: { kind: "tracks", tags: ["Grid"] }, RowSpacing: { kind: "length", tags: ["Grid"] }, ColumnSpacing: { kind: "length", tags: ["Grid"] }, "Grid.Row": { kind: "integer" }, "Grid.Column": { kind: "integer" }, "Grid.RowSpan": { kind: "integer" }, "Grid.ColumnSpan": { kind: "integer" }, "Canvas.Left": { kind: "length" }, "Canvas.Top": { kind: "length" }, "Canvas.Right": { kind: "length" }, "Canvas.Bottom": { kind: "length" },
 Variant: { kind: "enum", options: ["高亮", "常规"] }, Disabled: { kind: "enum", options: ["是", "否"] }, ClipToBounds: { kind: "enum", options: ["是", "否"] }, CloseOnOverlay: { kind: "enum", options: ["是", "否"] }, ShowCloseButton: { kind: "enum", options: ["是", "否"] }, Visible: { kind: "enum", options: ["是", "否"] }, Visibility: { kind: "enum", options: ["显示", "隐藏", "折叠"] }, HorizontalAlignment: { kind: "enum", options: ["上", "居中", "下", "拉伸"] }, VerticalAlignment: { kind: "enum", options: ["左", "居中", "右", "拉伸"] }, Dock: { kind: "enum", options: ["左", "上", "右", "下"] }, LastChildFill: { kind: "enum", options: ["是", "否"], tags: ["DockPanel"] }, FlowDirection: { kind: "enum", options: ["从左到右", "从右到左"], tags: ["StackPanel", "WrapPanel"] }, Edges: { kind: "enum", options: ["全部", "无", "水平", "垂直"] }, Mode: { kind: "enum", options: ["内边距", "外边距"] }, NativeMenuInset: { kind: "enum", options: ["是", "否"] }, RenderTransform: { kind: "text" }, RenderTransformOrigin: { kind: "text" }, LayoutTransform: { kind: "text" }
 };
+
+Object.assign(ATTRIBUTE_TO_CANONICAL, {"条目键":"StableKey", "循环项":"Each", "滚动状态":"ScrollState", "选中键":"SelectedKey", StableKey:"StableKey", ScrollState:"ScrollState", SelectedKey:"SelectedKey"});
+Object.assign(CANONICAL_TO_ATTRIBUTE, {StableKey:"条目键", Each:"循环项", ScrollState:"滚动状态", SelectedKey:"选中键"});
+Object.assign(ATTRIBUTE_LABELS, {StableKey:"条目键", Each:"循环项", ScrollState:"滚动状态", SelectedKey:"选中键"});
+Object.assign(ATTRIBUTE_DEFINITIONS, {StableKey:{kind:"text"}, Each:{kind:"text"}, ScrollState:{kind:"text"}, SelectedKey:{kind:"text"}});
+for(const key of ['HorizontalScrollBarVisibility','VerticalScrollBarVisibility','ScrollbarColor'])ATTRIBUTE_DEFINITIONS[key]!.tags=['Scroll','VirtualList'];
 
 export function attributeDefinition(name: string): AttributeDefinition | undefined { return ATTRIBUTE_DEFINITIONS[canonicalAttribute(name)]; }
 export function enumOptions(name: string): readonly string[] | undefined { return attributeDefinition(name)?.options; }

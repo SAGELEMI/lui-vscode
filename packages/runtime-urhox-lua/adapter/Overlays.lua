@@ -138,6 +138,17 @@ end
 
 function Overlays.Unmount(overlay)
     if not overlay then return end
+    overlay.luiOverlayMounted_ = false
+    -- Unmount retains the tree, but its deferred jobs must stop immediately.
+    -- This traversal only runs on a mounting change, never each frame.
+    local visited = {}
+    local function suspend(widget)
+        if visited[widget] then return end
+        visited[widget] = true
+        if widget.luiUnmount_ then widget:luiUnmount_() end
+        for _, child in ipairs(Overlays.Children(widget)) do suspend(child) end
+    end
+    suspend(overlay)
     Overlays.Release(overlay)
     local host=overlay.luiOverlayHost_
     if host then
@@ -196,6 +207,7 @@ function Overlays.Mount(host,overlay,layer)
         end
     end
     overlay.luiGlobalOverlay_,overlay.luiOverlayHost_,overlay.luiOverlayLayer_=true,host,tonumber(layer) or 0
+    overlay.luiOverlayMounted_ = true
     hosts[host]=true
     Overlays.SyncInput()
     return true

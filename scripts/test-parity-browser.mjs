@@ -170,7 +170,7 @@ try {
  // The same explicit page-frame formula keeps header, settings and footer
  // inside every approved narrow/short viewport without an implicit safe area.
  for (const device of ['358x425','377x496','360x800','390x844','640x1024']) {
-  await open('Presentation/Pages/Cover.lui',undefined,device);
+  await open('Presentation/Scenes/Cover.lui',undefined,device);
   const canvas=await page.locator('#canvas').boundingBox();
   const nodes=await page.locator('#canvas .page-root .lui-page-design').evaluate(n=>{
    const all=[n.querySelector('.lui-component-instance'),...n.querySelectorAll('.button'),...n.querySelectorAll('.text')];
@@ -179,7 +179,7 @@ try {
   assert.ok(nodes.length>5 && nodes.every(n=>n.x>=canvas.x-1&&n.right<=canvas.x+canvas.width+1&&n.y>=canvas.y-1&&n.bottom<=canvas.y+canvas.height+1),JSON.stringify({device,canvas,nodes}));
   results.push({test:'cover frame visible',device});
  }
- await open('Presentation/Pages/Cover.lui');
+ await open('Presentation/Scenes/Cover.lui');
  const coverCanvas=await page.locator('#canvas').boundingBox();
  await page.screenshot({path:'artifacts/parity-cover-377x496.png',clip:{x:coverCanvas.x+(coverCanvas.width-377)/2,y:coverCanvas.y,width:377,height:496}});
  // Audit all active paired designs: not just the reported page.

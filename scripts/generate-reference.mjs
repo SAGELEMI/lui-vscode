@@ -7,8 +7,8 @@ const bundled = await build({ entryPoints: [resolve(root, "packages/spec/src/voc
 const vocab = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`);
 const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const cell = (v) => String(v ?? "—").replaceAll("|", " / ");
-const lines = ["# 控件与属性参考", "", "[返回文档入口](README.md)。适用版本：" + pkg.version + "。", "", "本页由 scripts/generate-reference.mjs 从正式词汇与控件目录生成，运行 npm run docs:generate 更新。表格列出已登记语法，不代表 Studio 模拟全部复杂控件交互，或 Runtime 实现底层 UI 的全部属性；使用新能力时核对适配器及目标引擎 UI 文档。", "", "## 根与结构", "", "页面、控件是文档根；条件、重复项控制构建；内容呈现器接受组件调用方内容。重复项的项目属性是当前项别名，与数据控件的项目集合属性含义不同。", "", "## 基础与布局标签", "", "| 中文标签 | 内部语义 |", "| --- | --- |"];
-const special = new Set(["lui:Page", "lui:Component", "lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"]);
+const lines = ["# 控件与属性参考", "", "[返回文档入口](README.md)。适用版本：" + pkg.version + "。", "", "本页由 scripts/generate-reference.mjs 从正式词汇与控件目录生成，运行 npm run docs:generate 更新。表格列出已登记语法，不代表 Studio 模拟全部复杂控件交互，或 Runtime 实现底层 UI 的全部属性；使用新能力时核对适配器及目标引擎 UI 文档。", "", "## 根与结构", "", "场景、页面、控件是文档根；页面呈现器负责受控页面切换；条件、重复项控制构建；内容呈现器接受组件调用方内容。重复项的项目属性是当前项别名，与数据控件的项目集合属性含义不同。", "", "## 基础与布局标签", "", "| 中文标签 | 内部语义 |", "| --- | --- |"];
+const special = new Set(["lui:Scene", "lui:Page", "lui:Component", "lui:PagePresenter", "lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"]);
 const generated = new Set(vocab.UI_CONTROL_DEFINITIONS.map((c) => c.tag));
 for (const [tag, name] of Object.entries(vocab.CANONICAL_TO_TAG)) {
   if (!special.has(tag) && !generated.has(tag)) lines.push(`| ${cell(name)} | ${cell(tag)} |`);

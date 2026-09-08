@@ -89,6 +89,9 @@ test('isolated engine host uses vendor manifests, session whitelist, hashes and 
   assert.equal((await pick({...report,revision:1})).status,409);
   assert.equal((await pick({...report,sourcePath:'Private.lua'})).status,409);
   assert.equal((await pick(report)).status,204);assert.deepEqual(selection,report);
+  host.update({revision:3,node:{sourcePath:'Page.lui',nodePath:'0'},documents:{'Card.lui':{node:{sourcePath:'Card.lui',nodePath:'1'}}}});
+  assert.equal((await pick({...report,revision:3,sourcePath:'Card.lui',nodePath:'1'})).status,204,'imported declaration nodes remain pickable');
+  assert.equal((await pick({...report,revision:3,sourcePath:'Private.lua'})).status,409);
   const count=requests;const second=new EnginePreviewHost();await second.start(join(directory,'cache'),runtime,[]);second.dispose();assert.equal(requests,count,'verified cache prevents downloads');
  }finally{host.dispose();globalThis.fetch=original;await rm(directory,{recursive:true,force:true});}
 });

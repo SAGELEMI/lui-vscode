@@ -8,7 +8,8 @@ import { sourcePatch, rebaseSourcePatch, rebaseSourceChanges, applySourceChanges
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { xml } from "@codemirror/lang-xml";
 import { readPath } from '../../packages/spec/src/paths.js';
-import { buildEngineSnapshot, resolvePreviewAttributes } from './previewSnapshot.js';
+import { resolvePreviewAttributes } from './previewSnapshot.js';
+import { parseLayoutExpression } from '../../packages/spec/src/layout-expression.js';
 import { isLayoutProperty, type ComponentProperties } from '../../packages/spec/src/properties.js';
 import { displayNameOf, parseLui, provideLuiCompletions, type LuiCompletionImport, type LuiNode } from "../../packages/spec/src/index.js";
 import { ATTRIBUTE_LABELS, CANONICAL_TO_ATTRIBUTE, DEPRECATED_CANONICAL_TAGS, TAG_TO_CANONICAL, UI_CONTROL_DEFINITIONS, attributeDefinition, bindingPath, canonicalAttribute, canonicalTag, controlDefinition, directoryAlias, enumOptions, isBinding, parseBinding, sourceAttribute } from "../../packages/spec/src/vocabulary.js";
@@ -108,7 +109,6 @@ let completionImports: LuiCompletionImport[] = [];
 let actionSymbols: Record<string, string[]> = {};
 let rootSource = "";
 let selected: PickedNode | undefined;
-let enginePickProbe: {sourcePath:string;nodePath:string;probe:unknown}|undefined;
 let hovered: PickedNode | undefined;
 let editor: EditorView | undefined;
 let activeSource: SourcePayload | undefined;
@@ -148,6 +148,7 @@ interface LayoutData {
   fontFamily: string; fontSize: string; fontWeight: string; resolvedFontWeight: string;
   lineHeight: string; fontSynthesis: string; textRasterMode: string; shadowSource: string; boxShadow: string;
 }
+interface ExternalPickPayload { type: "externalPick"; source: string; path: number[]; instancePath?: string; }
 const layouts = new Map<string, LayoutData>();
 
 const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -600,7 +601,7 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
   }
   if (tag.includes(":") && !tag.startsWith("lui:")) return renderComponent(node, scope, trace, instancePath);
   const attrs = effective(node, scope);
-  if (tag === "lui:Page") {
+  if (tag === "lui:Scene") {
     const viewport = document.createElement("div"); decorate(viewport, node, instancePath); viewport.classList.add("lui-node", "page-root");
     const designWidth = Number(attrs.Width); const designHeight = Number(attrs.Height);
     const design = document.createElement("div"); design.className = "lui-page-design";
@@ -621,7 +622,7 @@ function renderNode(node: SerializableNode, scope: Record<string, unknown> = {},
     new ResizeObserver(applyScale).observe(viewport); requestAnimationFrame(applyScale);
     return viewport;
   }
-  if (tag === "lui:Component") {
+  if (tag === "lui:Page" || tag === "lui:Component") {
     const element = document.createElement("div"); decorate(element, node, instancePath); element.classList.add("lui-node", "control-root");
     applyLayout(element, "Component", attrs);
     element.append(fragmentChildren(visualChildren(node), scope, trace, instancePath)); applyChildLayout(element, attrs); return element;
@@ -804,7 +805,7 @@ function defaultValue(node: SerializableNode, key: string): string {
   if (key === "MaxWidth" || key === "MaxHeight") return "无限";
   if (key === "HorizontalAlignment" || key === "VerticalAlignment") return "拉伸";
   if (key === "TextHorizontalAlignment" || key === "TextVerticalAlignment") return "居中";
-  if (key === "ClipToBounds") return canonicalTag(node.tag) === "lui:Page" ? "是" : "否";
+  if (key === "ClipToBounds") return canonicalTag(node.tag) === "lui:Scene" ? "是" : "否";
   if (key === "ChildLayout") return "自由";
   if (key === "TextStrokeWidth") return "0";
   if (key === "Wrap" || key === "Fill") return "否";
@@ -835,6 +836,12 @@ function propertyInput(host: HTMLElement, node: SerializableNode, key: string): 
   const reset=document.createElement('button');reset.type='button';reset.textContent='复位';reset.disabled=explicit===undefined;
   reset.title='删除显式属性，恢复继承';reset.onclick=()=>resetAttribute(node,key);label.append(reset);
   const bound=parseBinding(value);
+  if (/^\{布局(?:\s|\})/.test(value)) {
+    const expression=document.createElement('input');expression.value=value;expression.title='布局表达式（纯数据计算）';
+    const error=document.createElement('small');error.className='property-error';
+    expression.onchange=()=>{if(!parseLayoutExpression(expression.value)){error.textContent='布局表达式无效';return;}error.textContent='';writeAttribute(node,key,expression.value);};
+    label.append(expression,error);host.append(label);return;
+  }
   if(bound){
     const section=document.createElement('fieldset');section.className='binding-options';
     const error=document.createElement('small');error.className='property-error';
@@ -971,7 +978,7 @@ function tagChoices(node: SerializableNode): string[] {
   const imported = model?.root ? Object.entries(model.root.attrs).filter(([name]) => directoryAlias(name)).flatMap(([name]) => {
     const alias = directoryAlias(name)?.alias ?? ""; const directory = model?.root?.attrs[name] ?? ""; return Object.keys(catalog[directory] ?? {}).map((component) => `${alias}:${component}`);
   }) : [];
-  return [...BUILTIN_TAGS.filter((tag) => !["lui:Page", "lui:Component", "页面", "控件", "组件"].includes(tag)), ...imported];
+  return [...BUILTIN_TAGS.filter((tag) => !["lui:Scene", "lui:Page", "lui:Component", "场景", "页面", "控件", "组件"].includes(tag)), ...imported];
 }
 
 /** Imported components publish exactly the props they consume. */
@@ -1018,13 +1025,6 @@ function collapsibleSection(title: string): HTMLElement {
 function layoutKey(source: string, path: readonly number[], instancePath = ""): string { return `${source}|${path.join(".")}|${instancePath}`; }
 
 function layoutResult(host: HTMLElement, node: SerializableNode): void {
-  if(previewBackend==='engine'){
-    const section=collapsibleSection('真实引擎布局结果');
-    const info=document.createElement('pre');info.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px';
-    info.textContent=enginePickProbe?.sourcePath===node.source&&enginePickProbe.nodePath===node.nodePath.join('.')
-      ?JSON.stringify(enginePickProbe.probe,null,2):'在真实预览中点选节点，读取 Runtime 的几何、字体与画刷结果。';
-    section.append(info);host.append(section);return;
-  }
   const prefix = `${node.source}|${node.nodePath.join(".")}|`;
   const result = layouts.get(layoutKey(node.source, node.nodePath, selected?.instancePath)) ?? [...layouts].find(([key]) => key.startsWith(prefix))?.[1];
   const section = document.createElement("section"); section.className = "layout-result";
@@ -1052,7 +1052,7 @@ function layoutResult(host: HTMLElement, node: SerializableNode): void {
   const coordinate = document.createElement("span"); coordinate.className = "box-model-coordinate"; coordinate.textContent = `${measure(result.x)}, ${measure(result.y)}`;
   position.append(positionLabel, coordinate, margin); section.append(position);
   const note = document.createElement("p"); note.className = "layout-self-note";
-  const clipped = sourceValue(node, "裁剪超出") || (canonicalTag(node.tag ?? "") === "lui:Page" ? "是" : "否");
+  const clipped = sourceValue(node, "裁剪超出") || (canonicalTag(node.tag ?? "") === "lui:Scene" ? "是" : "否");
   note.textContent = `自身尺寸：${measure(result.width)} × ${measure(result.height)}　裁剪超出：${clipped}`;
   section.append(note);
   host.append(section);
@@ -1076,7 +1076,7 @@ function properties(node: SerializableNode | undefined): void {
     const canonical = canonicalTag(tag) ?? tag;
     const definition = controlDefinition(canonical);
     if (definition?.category) return definition.category;
-    if (["lui:Page", "lui:Component", "lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set"].includes(canonical)) return "结构";
+    if (["lui:Scene", "lui:Page", "lui:Component", "lui:If", "lui:For", "lui:Slot", "lui:PagePresenter", "lui:Preview", "lui:Set"].includes(canonical)) return "结构";
     if (["Viewbox", "Grid", "Canvas", "SafeArea", "Scroll"].includes(canonical)) return "布局";
     if (["Text", "Card", "Section", "Progress"].includes(canonical)) return "展示";
     if (["Button", "Toggle", "Slider"].includes(canonical)) return "输入";
@@ -1128,7 +1128,14 @@ function properties(node: SerializableNode | undefined): void {
     for (const key of valid) propertyInput(section, node, key);
     host.append(section);
   }
-  const illegal = Object.keys(node.attrs ?? {}).map(name => attributeKey(node, name)).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !directoryAlias(key));
+  if(canonicalTag(node.tag)==='VirtualList'){
+    const section=collapsibleSection('列表模板与状态');
+    for(const key of ['Each','StableKey','ScrollState','SelectedKey'])propertyInput(section,node,key);
+    host.append(section);
+  }
+  const layoutDeclarations=Object.keys(node.attrs??{}).filter(key=>key.startsWith('布局:'));
+  if(layoutDeclarations.length){const section=collapsibleSection('局部布局计算');for(const key of layoutDeclarations)propertyInput(section,node,key);host.append(section);}
+  const illegal = Object.keys(node.attrs ?? {}).map(name => attributeKey(node, name)).filter((key) => !available.has(key) && key !== "x:Ref" && !key.startsWith("Preview.") && !key.startsWith('布局:') && !directoryAlias(key));
   if (illegal.length) { const note = document.createElement("p"); note.className = "property-note"; note.textContent = `源代码保留 ${[...new Set(illegal)].map(sourceAttribute).join("、")}；这些属性不适用于当前标签，诊断中可定位并手动删除或迁移。`; host.append(note); }
   layoutResult(host, node);
   applySearch();host.scrollTop=previousScroll;
@@ -1456,42 +1463,27 @@ function collectLayoutData(): void {
 
 function draw(refreshChrome = true): void {
   const canvas = byId("canvas"); const tree = byId("outline");
-  if(previewBackend==='schematic'||canvas.dataset.previewBackend!==previewBackend)canvas.innerHTML='';
+  canvas.innerHTML='';
   if (refreshChrome) tree.innerHTML = "";
   if (!model?.root) return;
-  const isPage = canonicalTag(model.root.tag) === "lui:Page";
-  canvas.classList.toggle("control-preview", !isPage);
-  byId("device-label").hidden = !isPage;
+  const isScene = canonicalTag(model.root.tag) === "lui:Scene";
+  canvas.classList.toggle("control-preview", !isScene);
+  byId("device-label").hidden = !isScene;
   const [width, height] = byId<HTMLSelectElement>("device").value.split("x");
-  canvas.style.width = isPage ? `${width}px` : "max-content";
-  canvas.style.height = isPage ? `${height}px` : "auto";
-  canvas.style.minHeight = isPage ? `${height}px` : "0";
+  canvas.style.width = isScene ? `${width}px` : "max-content";
+  canvas.style.height = isScene ? `${height}px` : "auto";
+  canvas.style.minHeight = isScene ? `${height}px` : "0";
   if (refreshChrome) outline(model.root, tree);
-  canvas.dataset.previewBackend = previewBackend;
-  if(previewBackend==='schematic')canvas.append(renderNode(model.root));
-  else{
-    canvas.style.width=`${width}px`;canvas.style.height=`${height}px`;
-    let status=canvas.querySelector<HTMLDivElement>('.engine-status');
-    if(!status){status=document.createElement('div');status.className='engine-status';canvas.append(status);}
-    status.textContent=engineError?`真实预览未就绪：${engineError}`:'真实引擎预览；内嵌隔离不可用时请在独立窗口打开。';
-    if(engineUrl){
-      const open=document.createElement('button');open.textContent='打开隔离预览窗口';open.onclick=()=>vscode.postMessage({type:'openEngine'});status.append(open);
-      let frame=canvas.querySelector('iframe');if(!frame){frame=document.createElement('iframe');frame.allow='cross-origin-isolated';frame.style.cssText='width:100%;height:calc(100% - 60px);border:0';canvas.append(frame);}
-      if(frame.src!==engineUrl)frame.src=engineUrl;
-    }
-  }
-  if (!(model.diagnostics ?? []).some(issue => issue.severity === 'error')) {
-    try { vscode.postMessage({ type:'engineSnapshot', snapshot:{revision:++engineRevision,width:Number(width)||390,height:Number(height)||844,node:engineNodes(model.root,previewScope)[0]} }); }
-    catch(error) { designerEditError=String(error); }
-  }
-  if (!isPage&&previewBackend==='schematic') measureControlPreview(canvas);
+  canvas.dataset.previewBackend = 'schematic';
+  canvas.append(renderNode(model.root,previewScope));
+  if (!isScene) measureControlPreview(canvas);
   if (refreshChrome) properties(resolvePicked(selected));
   const diagnostics = byId("diagnostics"); diagnostics.innerHTML = "";
   for (const issue of model.diagnostics ?? []) { const item = document.createElement("p"); item.textContent = `⚠ ${issue.message}`; diagnostics.append(item); }
   if (sourceEditError) { const item = document.createElement("p"); item.textContent = `⚠ 源码同步未完成：${sourceEditError}`; diagnostics.append(item); }
   if (designerEditError) { const item = document.createElement("p"); item.textContent = `⚠ 属性修改未完成：${designerEditError}`; diagnostics.append(item); }
   applyHighlights();
-  requestAnimationFrame(() => { if(previewBackend==='schematic')collectLayoutData();else layouts.clear(); if (refreshChrome) properties(resolvePicked(selected)); updateArtboard(); });
+  requestAnimationFrame(() => { collectLayoutData(); if (refreshChrome) properties(resolvePicked(selected)); updateArtboard(); });
 }
 
 function clampZoom(value: number): number { return Math.max(.05, Math.min(64, value)); }
@@ -1552,7 +1544,7 @@ function zoomAt(clientX: number, clientY: number, nextZoom: number): void {
 
 function pick(node: SerializableNode, instancePath?: string): void {
   selected = nodeRef(node, instancePath);
-  if(previewBackend==='engine'){properties(node);applyHighlights();}else draw();
+  draw();
   // The embedded editor remains bound to its document.  A user may explicitly
   // locate a root-document node, but selecting an imported implementation never
   // switches the source editor or opens a native editor group.
@@ -1562,6 +1554,7 @@ function pick(node: SerializableNode, instancePath?: string): void {
 function applyModel(payload: ModelPayload): void {
   if (payload.generation <= lastModelGeneration) return;
   lastModelGeneration = payload.generation;
+  const changedDocument=rootSource!==payload.rootSource;
   const fontGeneration = payload.generation;
   document.body.dataset.luiFontsReady = "false";
   let fontStyles = document.getElementById("lui-project-fonts") as HTMLStyleElement | null;
@@ -1587,7 +1580,10 @@ function applyModel(payload: ModelPayload): void {
     const latestNode = nodeAtPath(rootForSource(selected.source), selected.nodePath);
     selected = latestVersion !== undefined && latestNode?.kind === "element" ? { ...nodeRef(latestNode, selected.instancePath), version: latestVersion } : undefined;
   }
-  byId<HTMLSelectElement>("device").value = payload.device;
+  if(changedDocument||!byId<HTMLSelectElement>('device').value)byId<HTMLSelectElement>("device").value = payload.device;
+  // Product previews are deterministic and source-only. Binding 预览内容 is
+  // the single preview-data source; sidecar scene files are not executed.
+  previewScope={};
   if (!activeSource || !sources[activeSource.source]) activateSource(rootSource);
   else {
     const incoming = payload.sources[activeSource.source];
@@ -1608,37 +1604,7 @@ function applyModel(payload: ModelPayload): void {
   if (!designerEditInFlight) flushDesignerEdits();
 }
 
-let engineRevision=0;
-let engineUrl='',engineError='正在准备官方引擎与字体';
-let previewBackend='engine';
 let previewScope:Record<string,unknown>={};
-const scenePresets:Record<string,Record<string,unknown>>={
-  '标记样例':{},'名称：收起':{view:{nameDisplayVisible:true,nameEditorVisible:false,nameErrorVisible:false}},
-  '名称：编辑':{view:{nameDisplayVisible:false,nameEditorVisible:true,nameErrorVisible:false,playerNameDraft:'登塔者'}},
-  '记录：空列表':{view:{empty:true,hasBest:false,noBest:true,entries:[]}},
-  '塔内：战斗':{view:{battleVisible:true,organizeVisible:false,betweenVisible:false}},
-  '塔内：层间':{view:{battleVisible:true,organizeVisible:false,betweenVisible:true}},
-};
-const sceneSelect=document.createElement('select');sceneSelect.title='场景数据预设（独立样例，不读取存档）';
-for(const title of Object.keys(scenePresets)){const option=document.createElement('option');option.textContent=title;sceneSelect.append(option);}
-sceneSelect.onchange=()=>{previewScope=scenePresets[sceneSelect.value];draw();};document.querySelector('main>header')?.prepend(sceneSelect);
-const backend=document.createElement('select');backend.title='预览后端';
-for(const [value,title]of [['engine','UrhoX 真实预览'],['schematic','结构示意（非实机验收）']]){const option=document.createElement('option');option.value=value;option.textContent=title;backend.append(option);}
-backend.onchange=()=>{previewBackend=backend.value;draw();};document.querySelector('main>header')?.prepend(backend);
-window.addEventListener('message',event=>{const message=event.data;if(message.type==='engineReady'){engineUrl=message.url??'';engineError=message.error??'';draw();}
-  if(message.type==='enginePick'&&message.revision===engineRevision){
-    const path=String(message.nodePath).split('.').filter(Boolean).map(Number);
-    const node=nodeAtPath(rootForSource(message.sourcePath),path);
-    if(node){enginePickProbe=message;pick(node);}
-  }
-});
-/** Resolve only declarative sample data. No Lua backend is loaded or evaluated. */
-function engineNodes(node: SerializableNode, scope: Record<string,unknown> = {}): unknown[] {
-  return buildEngineSnapshot(node,scope,{
-    tag:node=>canonicalTag(node.tag)??node.tag!,attrs:effective,
-    children:visualChildren,component:node=>componentTemplate(node)?.template,
-  });
-}
 
 function applyReload(payload: SourceReloadPayload): void {
   reconcileSource(payload.source);
@@ -1751,16 +1717,20 @@ function setupArtboardViewport(): void {
   }, { passive: false });
 }
 
-window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceReloadPayload | SourceEditResultPayload | DesignerEditResultPayload | SaveSourceResultPayload>) => {
+window.addEventListener("message", (event: MessageEvent<ModelPayload | SourceReloadPayload | SourceEditResultPayload | DesignerEditResultPayload | SaveSourceResultPayload | ExternalPickPayload>) => {
   if (event.data.type === "model") applyModel(event.data);
   if (event.data.type === "source") applyReload(event.data);
   if (event.data.type === "sourceEditResult") applySourceEditResult(event.data);
   if (event.data.type === "designerEditResult") applyDesignerEditResult(event.data);
   if (event.data.type === "saveSourceResult") applySaveSourceResult(event.data);
+  if (event.data.type === "externalPick") {
+    const node = nodeAtPath(rootForSource(event.data.source), event.data.path);
+    if (node) { activateSource(event.data.source); pick(node, event.data.instancePath); }
+  }
 });
 
 byId<HTMLSelectElement>("device").onchange = () => draw();
-byId<HTMLButtonElement>("deploy").onclick = () => vscode.postMessage({ type: "deploy" });
+byId<HTMLButtonElement>("run").onclick = () => vscode.postMessage({ type: "runProject" });
 byId("canvas").addEventListener("click", pickVisualTarget);
 byId<HTMLButtonElement>("fit").onclick = fitArtboard;
 byId<HTMLButtonElement>("actual-size").onclick = () => { canvasZoom = 1; updateArtboard(); };

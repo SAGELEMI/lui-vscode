@@ -2,12 +2,53 @@
 -- 文本使用引擎 NanoVG 测量；非 LUI 叶控件保留原生 Yoga 测量。
 local UI = require("urhox-libs/UI")
 local Contract = require("LUI.Contract")
+local Refresh = require("LUI.Refresh")
+local Dirty = require("LUI.Dirty")
+local MeasureBudget = require("LUI.MeasureBudget")
+local NativeText = require("LUI.NativeText")
+local TextTrimming = require("LUI.TextTrimming")
+NativeText.Install()
 ---@class LuiMeasureStats
 ---@field measurements number
 ---@field arrangements number
 ---@class LuiMeasure
 ---@field stats LuiMeasureStats
-local Measure = { stats = { measurements = 0, arrangements = 0 } }
+local Measure = { stats = { measurements = 0, arrangements = 0, invalidations = 0 } }
+local batchDepth, invalidated = 0, nil
+
+function Measure.BeginBatch()
+    if batchDepth == 0 then invalidated = {} end
+    batchDepth = batchDepth + 1
+end
+
+function Measure.EndBatch()
+    batchDepth = math.max(0, batchDepth - 1)
+    if batchDepth == 0 then invalidated = nil end
+end
+
+local paintOnly = { backgroundColor=true, backgroundGradient=true, borderColor=true,
+    fontColor=true, textColor=true, opacity=true, borderRadius=true, zIndex=true,
+    hoverBackgroundColor=true, hoverBackgroundGradient=true, pressedBackgroundColor=true,
+    pressedBackgroundGradient=true, placeholderColor=true, cursorColor=true,
+    textStrokeColor=true, textAlign=true, verticalAlign=true, disabled=true,
+    visibility=true, translateX=true, translateY=true }
+
+function Measure.IsPaintProperty(key)
+    return paintOnly[key] == true or type(key) == "string" and key:match("^on[A-Z]") ~= nil
+end
+
+local function fontVersion()
+    return type(UI.GetFontVersion) == "function" and UI.GetFontVersion() or 0
+end
+
+local function textKey(widget, width)
+    local props = widget.props or {}
+    local theme = UI.Theme
+    return table.concat({ tostring(width), tostring(widget.displayText_ or props.text),
+        tostring(props.fontSize), tostring(props.fontFamily), tostring(props.fontWeight),
+        tostring(props.lineHeight), tostring(props.letterSpacing), tostring(props.whiteSpace), tostring(props.maxLines),
+        tostring(theme and theme.GetScale and theme.GetScale() or 1), tostring(fontVersion()) }, ":")
+end
 
 function Measure.Insets(props)
     local p = props.padding or 0
@@ -30,25 +71,52 @@ local function measureLeaf(widget, width)
         local theme = UI.Theme
         local pixels = type(theme) == "table" and theme.FontSize and theme.FontSize(size) or size
         local face = type(theme) == "table" and theme.FontFace and theme.FontFace(props.fontFamily or "sans", props.fontWeight) or "sans"
+        -- Keep completed native phases when the shared list budget postpones
+        -- the next call. A costly first phase must not restart forever.
+        local phaseKey = textKey(widget, width) .. ":" .. Measure.Revision(widget)
+        local phases = widget.luiNativeMeasureCache_
+        if not phases then phases = {}; widget.luiNativeMeasureCache_ = phases end
+        if not phases[phaseKey] then
+            if (phases.count or 0) >= 8 then phases = {}; widget.luiNativeMeasureCache_ = phases end
+            phases.count = (phases.count or 0) + 1
+            phases[phaseKey] = {}
+        end
+        local values = phases[phaseKey]
+        local function native(stage, fn, ...)
+            if not values[stage] then
+                values[stage] = table.pack(NativeText.WithOwner(widget, fn, ...))
+            end
+            return table.unpack(values[stage], 1, values[stage].n)
+        end
         if UI.MeasureTextFit then
             -- CSS line-height 是字号的倍数，NVG line-height 却乘字体自身行度量。
             -- 单行必须使用 advance width；glyph bounds 可能比 advance 窄，导致自身宽度标签意外折行。
-            local line = UI.MeasureTextFit("Mg", { fontSize = pixels, minFontSize = pixels, fontFace = face, lineHeight = 1 })
+            -- MeasureTextFit skips measurement when both bounds are absent.
+            local line = native("line", UI.MeasureTextFit, "Mg", { fontSize = pixels, minFontSize = pixels,
+                fontFace = face, lineHeight = 1, width = 1000000 })
             -- Studio 与 Runtime 共享显式 CSS 行盒契约，不能再由引擎字体主题猜测。
             local logicalLineHeight = pixels * (tonumber(props.lineHeight) or Contract.defaults.lineHeight)
             local nativeLineHeight = line.height > 0 and logicalLineHeight / line.height or Contract.defaults.lineHeight
-            local natural = UI.MeasureTextWidth and UI.MeasureTextWidth(text, pixels, face) or nil
+            local natural = UI.MeasureTextWidth and native("width", UI.MeasureTextWidth, text, pixels, face, props.letterSpacing) or nil
             local contentWidth = width and math.max(0, width - left - right) or nil
-            local singleLine = props.whiteSpace == "nowrap" or (not text:find("\n", 1, true) and natural and (not contentWidth or natural <= contentWidth + 0.01))
+            local singleLine = TextTrimming.Enabled(widget) or props.whiteSpace == "nowrap" or (not text:find("\n", 1, true) and natural and (not contentWidth or natural <= contentWidth + 0.01))
             widget.luiTextLayout_ = { singleLine = singleLine, nativeLineHeight = nativeLineHeight, logicalLineHeight = logicalLineHeight }
             if singleLine and natural then
                 return math.max(props.minWidth or 0, math.ceil(natural) + left + right),
                     math.max(props.minHeight or 0, (text == "" and 0 or logicalLineHeight) + top + bottom)
             end
-            local fit = UI.MeasureTextFit(text, { fontSize = pixels, minFontSize = pixels, fontFace = face,
-                width = contentWidth, multiline = widget.luiText_ == "Text", lineHeight = nativeLineHeight })
+            local fit = native("fit", UI.MeasureTextFit, text, { fontSize = pixels, minFontSize = pixels, fontFace = face,
+                width = contentWidth, multiline = widget.luiText_ == "Text", lineHeight = nativeLineHeight,
+                letterSpacing = props.letterSpacing })
+            -- Native Label may narrow the wrap width for glyph overhang. Reuse
+            -- its actual text measurement (never its previous layout height).
+            local drawn = widget.luiDrawnTextMeasure_
+            local textHeight = fit.height
+            if drawn and drawn.key == textKey(widget, contentWidth) then
+                textHeight = math.max(textHeight, drawn.height)
+            end
             return math.max(props.minWidth or 0, math.ceil(fit.width) + left + right),
-                math.max(props.minHeight or 0, (text == "" and 0 or math.max(logicalLineHeight, fit.height)) + top + bottom)
+                math.max(props.minHeight or 0, (text == "" and 0 or math.max(logicalLineHeight, textHeight)) + top + bottom)
         end
     end
     local layout = (widget.luiNativeGetLayout_ or widget.GetLayout)(widget)
@@ -62,10 +130,6 @@ local function measureLeaf(widget, width)
         declaredSize(props.height, props.minHeight, layout.h)
 end
 
-local function fontVersion()
-    return type(UI.GetFontVersion) == "function" and UI.GetFontVersion() or 0
-end
-
 function Measure.Revision(widget)
     return tostring(widget.luiRevision_ or 0) .. ":" .. tostring(fontVersion())
 end
@@ -76,9 +140,16 @@ function Measure.Participates(widget)
 end
 
 function Measure.Invalidate(widget)
-    while widget do
+    local seen = {}
+    while widget and not seen[widget] do
+        seen[widget] = true
+        if invalidated and invalidated[widget] then break end
+        if invalidated then invalidated[widget] = true end
+        Measure.stats.invalidations = Measure.stats.invalidations + 1
         widget.luiRevision_ = (widget.luiRevision_ or 0) + 1
-        widget.luiDesiredCache_, widget.luiLeafCache_ = nil, nil
+        widget.luiDesiredCache_, widget.luiLeafCache_, widget.luiNativeMeasureCache_, widget.luiNativeTextPhases_ = nil, nil, nil, nil
+        widget.luiTextTrimming_ = nil
+        if widget.luiLayoutInvalidationBoundary_ then break end
         widget = widget.parent
     end
 end
@@ -97,10 +168,8 @@ function Measure.Cached(widget, width, height, calculate)
 end
 
 function Measure.Leaf(widget, width)
-    if widget.luiRefreshCaption_ then widget.luiRefreshCaption_(widget) end
-    local props = widget.props or {}
-    local key = table.concat({ tostring(width), tostring(props.fontSize), tostring(widget.displayText_ or props.text),
-        tostring(props.fontFamily), tostring(props.fontWeight), Measure.Revision(widget) }, ":")
+    Refresh.Caption(widget)
+    local key = textKey(widget, width) .. ":" .. Measure.Revision(widget)
     local cache = widget.luiLeafCache_
     if cache and cache[key] then
         widget.luiTextLayout_ = cache[key][3]
@@ -125,18 +194,29 @@ function Measure.Observe(widget)
     if widget.luiObserved_ then return end
     widget.luiObserved_ = true
     local setText, setStyle, setVisible = widget.SetText, widget.SetStyle, widget.SetVisible
+    local destroy = widget.Destroy
+    if destroy then
+        function widget:Destroy(...)
+            -- Native UI retains keyboard focus independently of the widget tree.
+            if UI.GetFocus and UI.ClearFocus and UI.GetFocus() == self then UI.ClearFocus() end
+            return destroy(self, ...)
+        end
+    end
     if setVisible then
         function widget:SetVisible(visible)
             local changed = self.props.visible ~= visible
             local result = setVisible(self, visible)
-            if changed then Measure.Invalidate(self) end
+            if changed then Measure.Invalidate(self); Dirty.Mark(self, visible ~= false) end
             return result
         end
     end
     if setText then
         function widget:SetText(text)
             local changed = self.props.text ~= text
-            local result = setText(self, text)
+            local result
+            if changed and self.autoWidth_ then
+                NativeText.Construct(function() result=setText(self,text);return self end)
+            else result=setText(self,text) end
             if self.luiText_ == "Text" then ownsTextLayout(self) end
             if changed then Measure.Invalidate(self) end
             return result
@@ -144,12 +224,17 @@ function Measure.Observe(widget)
     end
     if setStyle then
         function widget:SetStyle(style)
-            local paintOnly = { backgroundColor=true, borderColor=true, fontColor=true, opacity=true }
             local geometryChanged = false
             for key, value in pairs(style) do
-                if not paintOnly[key] and self.props[key] ~= value then geometryChanged = true end
+                if not Measure.IsPaintProperty(key) and self.props[key] ~= value then geometryChanged = true end
             end
-            local result = setStyle(self, style)
+            local result
+            local measures = style.fontSize~=nil or (self.autoWidth_ and (style.text~=nil or style.textTransform~=nil
+                or style.fontFamily~=nil or style.fontWeight~=nil or style.letterSpacing~=nil
+                or style.padding~=nil or style.paddingHorizontal~=nil or style.paddingLeft~=nil or style.paddingRight~=nil))
+            if measures then
+                NativeText.Construct(function() result=setStyle(self,style);return self end)
+            else result=setStyle(self,style) end
             if geometryChanged then Measure.Invalidate(self) end
             return result
         end
@@ -163,16 +248,50 @@ function Measure.AttachText(widget)
         local rect = self:GetAbsoluteLayout()
         Measure.Leaf(self, rect.w)
         local layout = self.luiTextLayout_
-        local whiteSpace, lineHeight, verticalAlign = self.props.whiteSpace, self.props.lineHeight, self.props.verticalAlign
+        local previousDisplayText = self.displayText_
+        local trimmed
+        if TextTrimming.Enabled(self) then
+            local left, _, right = Measure.Insets(self.props)
+            local theme, props = UI.Theme, self.props
+            local size = tonumber(props.fontSize) or Contract.defaults.fontSize
+            local pixels = theme and theme.FontSize and theme.FontSize(size) or size
+            local face = theme and theme.FontFace and theme.FontFace(props.fontFamily or "sans", props.fontWeight) or "sans"
+            -- Resolve before changing render props: a budget pause leaves the
+            -- authored and native display state untouched for the next frame.
+            trimmed = TextTrimming.Resolve(self, previousDisplayText or props.text,
+                math.max(0, rect.w - left - right), pixels, face, props.letterSpacing)
+        end
+        local whiteSpace, lineHeight, verticalAlign, minFontSize = self.props.whiteSpace, self.props.lineHeight, self.props.verticalAlign, self.props.minFontSize
         if layout then
             self.props.whiteSpace = layout.singleLine and "nowrap" or "normal"
             self.props.lineHeight = layout.nativeLineHeight
-            self.props.verticalAlign = verticalAlign or "top"
+            self.props.verticalAlign = "top"
+            self.props.minFontSize = self.props.fontSize or Contract.defaults.fontSize
         end
         ownsTextLayout(self)
-        baseRender(self, nvg)
+        if trimmed ~= nil then self.displayText_ = trimmed end
+        local previousFontVersion = self.fontVersion_
+        local ok, err = pcall(baseRender, self, nvg)
         -- Native line-height is a drawing detail, not authored state.
-        self.props.whiteSpace, self.props.lineHeight, self.props.verticalAlign = whiteSpace, lineHeight, verticalAlign
+        self.props.whiteSpace, self.props.lineHeight, self.props.verticalAlign, self.props.minFontSize = whiteSpace, lineHeight, verticalAlign, minFontSize
+        self.displayText_ = previousDisplayText
+        if not ok then
+            -- Native Label updates this flag before measuring its baseline.
+            -- A deferred C call must retry that phase on the next render.
+            self.fontVersion_ = previousFontVersion
+            error(err, 0)
+        end
+        local metrics = layout and not layout.singleLine and self.multilineMetrics_
+        if metrics and type(metrics.textHeight) == "number" and metrics.textHeight > 0 then
+            local left, top, right, bottom = Measure.Insets(self.props)
+            local key = textKey(self, math.max(0, rect.w - left - right))
+            local previous = self.luiDrawnTextMeasure_
+            self.luiDrawnTextMeasure_ = { key = key, height = metrics.textHeight }
+            if (not previous or previous.key ~= key or math.abs(previous.height - metrics.textHeight) > 0.1)
+                and metrics.textHeight > rect.h - top - bottom + 0.1 then
+                Measure.Invalidate(self)
+            end
+        end
     end
 end
 

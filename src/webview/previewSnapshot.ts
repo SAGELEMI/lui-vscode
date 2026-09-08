@@ -26,7 +26,46 @@ export function resolvePreviewAttributes<N extends SnapshotNode>(node:N, scope:R
 }
 export interface EngineNode {
   kind: string; tag?: string; text?: string; attrs?: Record<string,unknown>;
+  rawAttrs?: Record<string,string>;
   children?: EngineNode[]; sourcePath?: string; nodePath?: string;
+}
+export interface DeclarationDocument {
+  node: EngineNode;
+  properties?: SnapshotNode['properties'];
+  imports: Record<string,Record<string,string>>;
+}
+export interface DeclarationSnapshot {
+  node: EngineNode;
+  documents: Record<string,DeclarationDocument>;
+  data: Record<string,unknown>;
+}
+/** Preserve authored declarations. Only the shared Lua Runtime may expand them. */
+export function buildDeclarationSnapshot<N extends SnapshotNode>(root:N, data:Record<string,unknown>, rules:{
+  tag(node:N):string;
+  attributeKey?(node:N,key:string):string;
+  component(node:N):N|undefined;
+}):DeclarationSnapshot {
+  const documents:Record<string,DeclarationDocument>=Object.create(null);
+  function document(source:N):DeclarationDocument {
+    if(documents[source.source])return documents[source.source]!;
+    const result:DeclarationDocument={node:{kind:'Element'},properties:source.properties,imports:Object.create(null)};
+    documents[source.source]=result;
+    function visit(node:N):EngineNode {
+      const attrs:Record<string,unknown>=Object.create(null);
+      for(const [key,value]of Object.entries(node.attrs))attrs[rules.attributeKey?.(node,key)??canonicalAttribute(key)]=value;
+      const tag=node.kind==='element'?rules.tag(node):undefined;
+      if(tag?.includes(':')&&!tag.startsWith('lui:')&&!tag.includes('.')) {
+        const component=rules.component(node);if(!component)throw Error(`未登记组件：${tag}`);
+        const [alias,name]=tag.split(':');
+        (result.imports[alias!]??=Object.create(null))[name!]=component.source;
+        document(component);
+      }
+      return {kind:node.kind==='text'?'Text':'Element',tag,text:node.text,attrs,rawAttrs:{...node.attrs},
+        sourcePath:node.source,nodePath:node.nodePath.join('.'),children:(node.children??[]).filter(child=>child.kind!=='comment').map(child=>visit(child as N))};
+    }
+    result.node=visit(source);return result;
+  }
+  return {node:document(root).node,documents,data};
 }
 interface SnapshotRules<N extends SnapshotNode> {
   tag(node:N):string;

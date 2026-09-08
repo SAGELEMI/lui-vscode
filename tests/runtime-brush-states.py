@@ -7,6 +7,10 @@ from lupa.lua54 import LuaRuntime
 lua=LuaRuntime(unpack_returned_tuples=True)
 lua.globals().read_adapter=lambda name:(root/'packages/runtime-urhox-lua/adapter'/name).read_text(encoding='utf-8-sig')
 lua.execute(r'''
+table.insert(package.searchers,1,function(name)
+ if name:sub(1,4)=='LUI.' then return assert(load(read_adapter(name:sub(5)..'.lua'),'@'..name)) end
+end)
+package.loaded['urhox-libs/UI']={}
 local Widget={}
 function Widget.ResolveGradientDirection(direction,x,y,w,h) return x,y,x+w,y end
 package.loaded['urhox-libs/UI/Core/Widget']=Widget
@@ -63,5 +67,6 @@ local nextProps={};Brush.ApplyBackground(nextProps,b)
 LiveProps.Apply(widget,'Button',{Background={value=b.source}},nextProps)
 widget.state.hovered=false
 assert(draw().from[3]==255 and draw().x==20,'replacement main gradient draws current paint and stops')
+assert(require('LUI.Measure').stats.invalidations==0,'paint replacement never invalidates geometry')
 print('PASS brush drawing: native fallback, distinct main/hover gradients and stops, solid state suppresses main gradient, live gradient/solid/nil replacements preserve explicit states, exceptions restore draw-scoped props.')
 ''')

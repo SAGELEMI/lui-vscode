@@ -9,7 +9,6 @@ local Brush = require("LUI.Brush")
 ---@field ApplyLabel fun(props: table?)
 ---@field AttachLabel fun(widget: any)
 ---@field DrawSingleLine fun(nvg: any, x: number, y: number, text: string, color: number[], props: table?): number
----@type LuiTypography
 local Typography = {}
 local Fidelity = Contract["renderFidelity"] or {}
 local TypographyFidelity = Fidelity["typography"] or {}

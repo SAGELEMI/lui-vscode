@@ -48,8 +48,8 @@ test("the LUI custom editor has one tag and does not create a native editor grou
   assert.match(designer, /spacePanHeld/);
   assert.doesNotMatch(host, /id="control-constraints"/);
   assert.doesNotMatch(designer, /controlAvailableWidth|controlAvailableHeight/);
-  assert.match(designer, /canvas\.style\.width = isPage \? `\$\{width\}px` : "max-content"/);
-  assert.match(designer, /byId\("device-label"\)\.hidden = !isPage/);
+  assert.match(designer, /canvas\.style\.width = isScene \? `\$\{width\}px` : "max-content"/);
+  assert.match(designer, /byId\("device-label"\)\.hidden = !isScene/);
   assert.match(css, /#design-workbench > main \{ grid-column: 3; min-width: 0; overflow: hidden;/);
   assert.match(css, /#inspector \{ grid-column: 4;/);
   assert.doesNotMatch(host, /id="left-tabs"/);

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { dirname } from "node:path";
-import { EnginePreviewHost } from './enginePreviewHost.js';
+import { dirname, relative } from "node:path";
+import { ProjectPreviewHost, type ProjectPreviewInput, type ProjectPreviewSelection } from "./projectPreviewHost.js";
+import { verifyRuntimeFiles } from './runtimeIntegrity.js';
 import { deployGuidance, matchesRuntime } from "../scripts/lib/guidance.mjs";
 import { readComponentProperties, isLayoutProperty, type ComponentProperties } from '../packages/spec/src/properties.js';
 import { createHash, randomBytes } from "node:crypto";
@@ -17,13 +18,15 @@ const MANIFEST_FILE = "runtime-manifest.json";
 const REGISTRY_FILE = "Registry.lua";
 const LUI_SELECTOR: vscode.DocumentSelector = { language: "lui", scheme: "file" };
 let bundledManifestUri: vscode.Uri | undefined;
+let projectPreviewController: ProjectPreviewController | undefined;
 
-interface RuntimeStatus { root: vscode.Uri; installed: boolean; version?: string; layoutContract?: string; message: string; }
-interface WebviewMessage { type: "ready" | "engineSnapshot" | "openEngine" | "setAttribute" | "resetAttribute" | "setTag" | "sourceEdit" | "saveSource" | "copy" | "deploy" | "openComponent" | "openProperty"; snapshot?: Record<string,unknown>; requestId?: number; start?: number; path?: number[]; source?: string; name?: string; value?: string; version?: number; text?: string; baseText?: string; patch?: SourcePatch; changes?: SourcePatch[]; origin?: string; }
+interface RuntimeStatus { root: vscode.Uri; installed: boolean; synchronized?: boolean; version?: string; layoutContract?: string; message: string; }
+interface WebviewMessage { type: "ready" | "setAttribute" | "resetAttribute" | "setTag" | "sourceEdit" | "saveSource" | "copy" | "runProject" | "openComponent" | "openProperty"; requestId?: number; start?: number; path?: number[]; source?: string; name?: string; value?: string; version?: number; text?: string; baseText?: string; patch?: SourcePatch; changes?: SourcePatch[]; origin?: string; }
 interface SerializableNode { kind: LuiNode["kind"]; tag?: string; text?: string; start: number; end: number; openTagEnd?: number; closeTagStart?: number; source: string; nodePath: number[]; displayName: string; attrs: Record<string, string>; children: SerializableNode[]; properties?: ComponentProperties; propertiesError?: string; codeSource?: string; }
 interface SourcePayload extends VersionedSource { displayPath: string; diagnostics: LuiDiagnostic[]; }
 interface CatalogBundle { catalog: Record<string, Record<string, SerializableNode>>; sources: Record<string, SourcePayload>; completionImports: LuiCompletionImport[]; actionSymbols: Record<string, string[]>; }
 interface ProjectFont { family: string; weight: string; uri: string; sha256: string; resource: string; }
+interface DirectoryComponent { name: string; displayName: string; directory: string; markup: string; code: string; uri: vscode.Uri; }
 
 function createUuid(): string { return randomBytes(18).toString("base64url"); }
 function sha256(value: Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
@@ -161,7 +164,10 @@ export async function runtimeStatus(root = workspaceRoot(), expectedManifest = b
   let synchronized = false;
   try { synchronized = !!expectedManifest && matchesRuntime(project, manifestBytes, await vscode.workspace.fs.readFile(expectedManifest)); }
   catch { return { root, installed: true, version, layoutContract, message: "插件携带的运行时清单无法读取；请检查插件安装。" }; }
-  return { root, installed: true, version, layoutContract, message: synchronized ? `UrhoX/Lua ${version} 运行时已部署且版本匹配。` : "Studio 与 Runtime 版本、布局契约或哈希不匹配；请部署升级。" };
+  const failures=await verifyRuntimeFiles(parsed,file=>vscode.workspace.fs.readFile(uriPath(directory,file)));
+  if(expectedManifest){const expectedDirectory=vscode.Uri.joinPath(expectedManifest,'..');const expected=await readJson(expectedManifest);failures.push(...(await verifyRuntimeFiles(expected,file=>vscode.workspace.fs.readFile(uriPath(expectedDirectory,file)))).map(message=>'插件：'+message));}
+  synchronized=synchronized&&failures.length===0;
+  return { root, installed: true, synchronized, version, layoutContract, message: synchronized ? `UrhoX/Lua ${version} 运行时版本与实际文件哈希匹配。` : `Studio 与 Runtime 版本、布局契约或实际文件哈希不匹配；请部署升级。${failures.length?' '+failures.slice(0,3).join('；'):''}` };
 }
 
 async function collectAdapterFiles(source: vscode.Uri, relative = ""): Promise<Array<[string, vscode.Uri]>> {
@@ -192,15 +198,46 @@ async function collectLuiFiles(directory: vscode.Uri, relative = ""): Promise<Ar
   return found;
 }
 
+function componentDirectoriesOf(config: Record<string, unknown> | undefined): string[] {
+  const entries = config?.componentDirectories;
+  return Array.isArray(entries)
+    ? entries.filter((value): value is string => typeof value === "string" && value.length > 0 && !value.startsWith("/") && !value.includes("..") && !value.includes("\\"))
+    : [];
+}
+
+async function directoryComponents(root: vscode.Uri, directory: string): Promise<DirectoryComponent[]> {
+  const scripts = uriPath(root, "scripts");
+  const components: DirectoryComponent[] = [];
+  const seen = new Map<string, string>();
+  for (const [relativePath, uri] of await collectLuiFiles(uriPath(scripts, ...directory.split("/")))) {
+    const text = asText(await vscode.workspace.fs.readFile(uri));
+    const parsed = parseLui(text);
+    if (!parsed.root || canonicalTag(parsed.root.tag) !== "lui:Component" || parsed.diagnostics.some(item => item.severity === "error")) continue;
+    const value = (canonical: string) => parsed.root!.attrs.find(attribute => canonicalAttribute(attribute.name) === canonical)?.value.trim() ?? "";
+    const name = value("x:Name"); const displayName = value("x:DisplayName");
+    const markup = `${directory}/${relativePath}`; const code = `${markup}.lua`;
+    if (!name) throw new Error(`LUI 组件 ${markup} 缺少名称。`);
+    if (!displayName) throw new Error(`LUI 组件 ${markup} 缺少副名称；目录组件的公开标签只能来自副名称。`);
+    const previous = seen.get(displayName);
+    if (previous) throw new Error(`LUI 组件副名称“${displayName}”重复：${previous} 与 ${markup}。`);
+    if (!await exists(uriPath(scripts, ...code.split("/")))) throw new Error(`LUI 注册失败：缺少配对 MVVM 后端 ${code}。`);
+    seen.set(displayName, markup);
+    components.push({ name, displayName, directory, markup, code, uri });
+  }
+  return components.sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"));
+}
+
 function luaString(value: string): string { return JSON.stringify(value); }
 async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
   const scripts = uriPath(root, "scripts"); const configUri = uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE);
-  const config = (await readJson(configUri)) ?? { schemaVersion: 3, adapter: "urhox-lua", sourceRoots: ["Presentation/Pages", "Presentation/Components"] };
+  const config = (await readJson(configUri)) ?? { schemaVersion: 5, adapter: "urhox-lua", sourceRoots: ["Presentation"], componentDirectories: ["Presentation/Components"] };
   const roots = Array.isArray(config.sourceRoots) ? config.sourceRoots.filter((value): value is string => typeof value === "string") : [];
-  const pages: Array<{ name: string; markup: string; code: string }> = []; const controls: Array<{ name: string; markup: string; code: string }> = [];
+  const scenes: Array<{ name: string; displayName: string; directory?: string; markup: string; code: string }> = [];
+  const pages: Array<{ name: string; displayName: string; directory?: string; markup: string; code: string }> = [];
+  const controls: Array<{ name: string; displayName: string; directory?: string; markup: string; code: string }> = [];
   const seenMarkup = new Set<string>(); const registeredNames = new Map<string, string>();
   for (const sourceRoot of roots) for (const [relative, uri] of await collectLuiFiles(uriPath(scripts, ...sourceRoot.split("/")))) {
-    const markup = `${sourceRoot}/${relative}`; const parsed = parseLui(asText(await vscode.workspace.fs.readFile(uri))).root;
+    const markup = `${sourceRoot}/${relative}`; const parsed = parseLui(asText(await vscode.workspace.fs.readFile(uri)), Number(config.schemaVersion ?? 5)).root;
     const name = parsed?.attrs.find((attribute) => canonicalAttribute(attribute.name) === "x:Name")?.value ?? relative.replace(/\.lui$/, "");
     if (seenMarkup.has(markup)) continue;
     seenMarkup.add(markup);
@@ -209,45 +246,64 @@ async function updateProjectRegistry(root: vscode.Uri): Promise<void> {
     const existingMarkup = registeredNames.get(name);
     if (existingMarkup && existingMarkup !== markup) throw new Error(`LUI 注册失败：名称“${name}”同时用于 ${existingMarkup} 与 ${markup}。`);
     registeredNames.set(name, markup);
-    const item = { name, markup, code: `${markup}.lua` };
-    if (canonicalTag(parsed?.tag) === "lui:Component") controls.push(item); else if (canonicalTag(parsed?.tag) === "lui:Page") pages.push(item);
+    const displayName = parsed?.attrs.find(attribute => canonicalAttribute(attribute.name) === "x:DisplayName")?.value ?? name;
+    if (canonicalTag(parsed?.tag) === "lui:Scene") {
+      scenes.push({ name, displayName, markup, code: `${markup}.lua` });
+    } else if (canonicalTag(parsed?.tag) === "lui:Page") {
+      pages.push({ name, displayName, markup, code: `${markup}.lua` });
+    } else if (canonicalTag(parsed?.tag) === "lui:Component") {
+      const directory = componentDirectoriesOf(config).find(value => markup.startsWith(value + "/"));
+      if (!displayName) throw new Error(`LUI 组件 ${markup} 缺少副名称。`);
+      controls.push({ name, displayName, directory, markup, code: `${markup}.lua` });
+    }
   }
-  pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); controls.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-  const row = (item: { name: string; markup: string; code: string }) => `[${luaString(item.name)}] = { markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
-  const tableRows = (items: Array<{ name: string; markup: string; code: string }>) => items.length ? `\n        ${items.map(row).join("\n        ")}\n    ` : "";
-  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；新建或保存 .lui 时会更新。\n-- Lua：local Registry = require(\"LUI.Registry\"); local descriptor = Registry:Get(\"页面名\")\nlocal Registry = {\n    pages = {${tableRows(pages)}},\n    controls = {${tableRows(controls)}},\n}\n\n-- components 是 0.7 及更早 Runtime 的兼容别名。\nRegistry.components = Registry.controls\nfunction Registry:Get(name) return self.pages[name] or self.controls[name] end\n\nreturn Registry\n`;
+  for (const directory of componentDirectoriesOf(config)) for (const item of await directoryComponents(root, directory)) {
+    if (!controls.some(control => control.markup === item.markup)) controls.push(item);
+  }
+  scenes.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); pages.sort((a, b) => a.name.localeCompare(b.name, "zh-CN")); controls.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  const row = (item: { name: string; displayName: string; directory?: string; markup: string; code: string }) => `[${luaString(item.name)}] = { name = ${luaString(item.name)}, displayName = ${luaString(item.displayName)},${item.directory ? ` directory = ${luaString(item.directory)},` : ""} markup = ${luaString(item.markup)}, code = ${luaString(item.code)} },`;
+  const tableRows = (items: Array<{ name: string; displayName: string; directory?: string; markup: string; code: string }>) => items.length ? `\n        ${items.map(row).join("\n        ")}\n    ` : "";
+  const directoryRows = componentDirectoriesOf(config).map(directory => {
+    const items = controls.filter(item => item.directory === directory);
+    return `[${luaString(directory)}] = {${items.length ? `\n            ${items.map(item => `[${luaString(item.displayName)}] = controls[${luaString(item.name)}],`).join("\n            ")}\n        ` : ""}},`;
+  });
+  const registry = `-- 此文件由 LUI Studio 自动维护。不要手改；组件公开标签只来自 .lui 根副名称。\nlocal controls = {${tableRows(controls)}}\nlocal Registry = {\n    scenes = {${tableRows(scenes)}},\n    pages = {${tableRows(pages)}},\n    controls = controls,\n    directoryComponents = {${directoryRows.length ? `\n        ${directoryRows.join("\n        ")}\n    ` : ""}},\n}\nfunction Registry:Get(name) return self.scenes[name] or self.pages[name] or self.controls[name] end\nfunction Registry:GetDirectoryComponent(directory, displayName) local entries=self.directoryComponents[directory]; return entries and entries[displayName] or nil end\nreturn Registry\n`;
   const destination = uriPath(root, ...RUNTIME_DIRECTORY, REGISTRY_FILE);
   await vscode.workspace.fs.writeFile(destination, Buffer.from(registry, "utf8")); await writeMetaIfAbsent(destination);
 }
 
-function luaClassName(name: string, kind: "页面" | "控件"): string {
+function luaClassName(name: string, kind: "场景" | "页面" | "控件"): string {
   const ascii = name.replace(/[^A-Za-z0-9_]/g, "").replace(/^[^A-Za-z_]+/, "");
-  return `${ascii || (kind === "页面" ? "Page" : "Control")}View`;
+  return `${ascii || (kind === "场景" ? "Scene" : kind === "页面" ? "Page" : "Control")}View`;
 }
 
-function templateFor(kind: "页面" | "控件", name: string, displayName: string): { markup: string; code: string } {
-  const markup = kind === "页面"
-    ? `<!-- ${displayName}：390×844 是设计坐标；设备预设只影响页面预览。 -->\n<页面 名称="${name}" 副名称="${displayName}" 宽度="390" 高度="844" 裁剪超出="是">\n  <容器 子项排列="垂直">\n    <文本 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${displayName}'}" 字号="28" />\n  </容器>\n</页面>\n`
+function templateFor(kind: "场景" | "页面" | "控件", name: string, displayName: string): { markup: string; code: string } {
+  const markup = kind === "场景"
+    ? `<!-- ${displayName}：390×844 是场景设计坐标；设备预设只影响场景预览。 -->\n<场景 名称="${name}" 副名称="${displayName}" 宽度="390" 高度="844" 裁剪超出="是">\n  <容器 子项排列="垂直">\n    <文本 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${displayName}'}" 字号="28" />\n  </容器>\n</场景>\n`
+    : kind === "页面"
+    ? `<!-- ${displayName}：受页面呈现器控制，使用宿主尺寸，不获得设备坐标。 -->\n<页面 名称="${name}" 副名称="${displayName}" 填充="是" 最小宽度="0" 最小高度="0">\n  <容器 子项排列="垂直">\n    <文本 文本="{绑定 view.title, 模式=单向, 更新源触发=默认, 预览内容='${displayName}'}" 字号="24" />\n  </容器>\n</页面>\n`
     : `<!-- ${displayName}：Components 中的自定义控件；宽高默认自动测量，不获得设备安全区。 -->\n<控件 名称="${name}" 副名称="${displayName}" 内边距="8">\n  <容器>\n    <内容呈现器 />\n  </容器>\n</控件>\n`;
   const objectName = luaClassName(name, kind);
-  const constructorArgs = kind === "页面" ? "presentation, runtime, descriptor" : "parentContext, runtime, descriptor, props, slots";
-  const init = kind === "页面"
+  const constructorArgs = kind === "控件" ? "parentContext, runtime, descriptor, props, slots" : kind === "页面" ? "presentation, runtime, descriptor, parameters, parentContext" : "presentation, runtime, descriptor";
+  const init = kind === "场景"
     ? `    self.presentation_, self.runtime_, self.descriptor_ = presentation, runtime, descriptor\n    self.view_ = { title = ${luaString(name)} }`
+    : kind === "页面"
+    ? `    self.presentation_, self.runtime_, self.descriptor_ = presentation, runtime, descriptor\n    self.parameters_, self.parentContext_ = parameters or {}, parentContext\n    self.view_ = { title = ${luaString(name)} }`
     : `    self.parentContext_, self.runtime_, self.descriptor_ = parentContext, runtime, descriptor\n    self.props_, self.slots_, self.view_ = props or {}, slots or {}, {}`;
-  const context = kind === "页面"
+  const context = kind !== "控件"
     ? `    return { view = self.view_, presentation = self.presentation_, owner = self, actions = {\n        -- Save = function() end, -- 对应 {动作 Save}；领域动作才写在这里。\n    } }`
     : `    return { view = self.view_, props = self.props_, slots = self.slots_,\n        presentation = self.parentContext_ and self.parentContext_.presentation,\n        componentStack = self.parentContext_ and self.parentContext_.componentStack,\n        actions = self.parentContext_ and self.parentContext_.actions or {}, owner = self }`;
   const code = `-- ${name} 的同名 LUI 类。静态布局、外观、文案、绑定、列表模板和受控内置命令优先写在 ${name}.lui。\n-- 这里只放领域数据、异步、存档及复杂 {动作 ...}；view 是绑定数据，context.refs 是 x:Ref，bindings 可 Notify/Commit。\nlocal ${objectName} = {}\n${objectName}.__index = ${objectName}\n\nfunction ${objectName}.New(${constructorArgs})\n    local self = setmetatable({}, ${objectName})\n    self:Init(${constructorArgs})\n    self:InitializeComponent()\n    return self\nend\n\nfunction ${objectName}:Init(${constructorArgs})\n${init}\nend\n\nfunction ${objectName}:CreateContext()\n${context}\nend\n\n-- 等价 WPF 的 InitializeComponent：只渲染同名 .lui，不会再次加载本文件。\nfunction ${objectName}:InitializeComponent()\n    local root, context = self.runtime_:RenderMarkup(self.descriptor_.markup, self:CreateContext(), self.parentContext_)\n    if not root then error(context or \"LUI 标记渲染失败\") end\n    self.root_, self.context_ = root, context\n    return root\nend\n\nfunction ${objectName}:GetRoot() return self.root_ end\nfunction ${objectName}:OnLoaded(root, context)\n    -- 需要挂载后访问控件时：local control = context.refs.SomeRef\nend\nfunction ${objectName}:Dispose() self.root_, self.context_ = nil, nil end\n\nreturn ${objectName}\n`;
   const declaration = `\n-- 公开属性使用UTF-8字符串键。内部读取 self.props_["标题"]，LUI用 {绑定 props['标题']}。\n-- 类型：string/number/boolean/table/event；可填写default与description。公共布局属性无需重复声明。\n${objectName}.Properties = {\n    -- ["标题"] = { type = "string", default = "", description = "显示标题" },\n    -- ["确认"] = { type = "event", description = "调用方动作" },\n}\n`;
-  return { markup, code: kind === '页面' ? code : code.replace(`${objectName}.__index = ${objectName}\n`, `${objectName}.__index = ${objectName}\n${declaration}`) };
+  return { markup, code: kind === '控件' ? code.replace(`${objectName}.__index = ${objectName}\n`, `${objectName}.__index = ${objectName}\n${declaration}`) : code };
 }
 
 async function createLuiPair(): Promise<void> {
   const root = workspaceRoot(); if (!root) { vscode.window.showErrorMessage("请先打开 Maker 游戏项目。"); return; }
-  const kind = await vscode.window.showQuickPick(["页面", "控件"], { placeHolder: "选择 LUI 文件类型" }) as "页面" | "控件" | undefined; if (!kind) return;
+  const kind = await vscode.window.showQuickPick(["场景", "页面", "控件"], { placeHolder: "选择 LUI 文件类型" }) as "场景" | "页面" | "控件" | undefined; if (!kind) return;
   const name = await vscode.window.showInputBox({ prompt: "中文设计名称", placeHolder: kind === "页面" ? "新页面" : "新控件", validateInput: (value) => value.trim() ? undefined : "名称不能为空。" }); if (!name) return;
   const safeName = name.replace(/[\\/:*?\"<>|]/g, ""); if (!safeName) return;
-  const folder = kind === "页面" ? ["scripts", "Presentation", "Pages"] : ["scripts", "Presentation", "Components"];
+  const folder = kind === "场景" ? ["scripts", "Presentation", "Scenes"] : kind === "页面" ? ["scripts", "Presentation", "Pages"] : ["scripts", "Presentation", "Components"];
   const markupUri = uriPath(root, ...folder, `${safeName}.lui`); const codeUri = uriPath(root, ...folder, `${safeName}.lui.lua`);
   if (await exists(markupUri) || await exists(codeUri)) { vscode.window.showErrorMessage(`已存在：${safeName}`); return; }
   const displayName = await vscode.window.showInputBox({ prompt: "副名称（设计器中的可读名称）", placeHolder: kind === "页面" ? "新页面" : "新控件", validateInput: (value) => !value.trim() ? "副名称不能为空。" : value.trim() === name.trim() ? "副名称不能与名称相同。" : undefined });
@@ -259,10 +315,12 @@ async function createLuiPair(): Promise<void> {
   vscode.window.showInformationMessage(`已新建 ${kind}、MVVM 后端并更新 LUI 注册表。`);
 }
 
+interface DeployRuntimeOptions { root?: vscode.Uri; confirm?: boolean; guidance?: boolean; notify?: boolean; }
+
 /** A runtime upgrade has one recoverable snapshot and never owns user design files or configuration. */
-export async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): Promise<void> {
-  const root = workspaceRoot();
-  if (!root) { vscode.window.showErrorMessage("请先打开一个项目工作区。"); return; }
+export async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext, options: DeployRuntimeOptions = {}): Promise<boolean> {
+  const root = options.root ?? workspaceRoot();
+  if (!root) { vscode.window.showErrorMessage("请先打开一个项目工作区。"); return false; }
   const source = vscode.Uri.joinPath(context.extensionUri, "runtime", "urhox-lua");
   const destinationRoot = uriPath(root, ...RUNTIME_DIRECTORY);
   const files = await collectAdapterFiles(source);
@@ -272,8 +330,10 @@ export async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): P
     if (relative === CONFIG_FILE || !(await exists(destination))) continue;
     if (sha256(await vscode.workspace.fs.readFile(sourceFile)) !== sha256(await vscode.workspace.fs.readFile(destination))) changed.push(relative);
   }
-  const action = await vscode.window.showInformationMessage(changed.length ? `LUI 运行时将更新：${changed.join("、")}。旧版本只保留一份 .backup-last。` : "部署或补齐 LUI UrhoX/Lua 运行时（现有运行时没有哈希差异）。", "部署", "取消");
-  if (action !== "部署") return;
+  if (options.confirm !== false) {
+    const action = await vscode.window.showInformationMessage(changed.length ? `LUI 运行时将更新：${changed.join("、")}。旧版本只保留一份 .backup-last。` : "部署或补齐 LUI UrhoX/Lua 运行时（现有运行时没有哈希差异）。", "部署", "取消");
+    if (action !== "部署") return false;
+  }
   const backupRoot = vscode.Uri.joinPath(destinationRoot, ".backup-last");
   let backedUp = false;
   for (const [relative, sourceFile] of files) {
@@ -295,7 +355,7 @@ export async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): P
   }
   const config = uriPath(destinationRoot, CONFIG_FILE);
   if (!(await exists(config))) {
-    const defaultConfig = { schemaVersion: 3, adapter: "urhox-lua", version: "0.4.0", sourceRoots: ["Presentation/Pages", "Presentation/Components", "Presentation/Modals"], componentDirectories: {} };
+    const defaultConfig = { schemaVersion: 5, adapter: "urhox-lua", version: "3.0.0", sourceRoots: ["Presentation"], componentDirectories: ["Presentation/Components"] };
     await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(defaultConfig, null, 2) + "\n", "utf8"));
     await writeMetaIfAbsent(config);
   }
@@ -307,19 +367,22 @@ export async function deployUrhoXLuaRuntime(context: vscode.ExtensionContext): P
   projectConfig.layoutContract = manifest.layoutContract;
   projectConfig.runtimeManifestHash = sha256(manifestBytes);
   await vscode.workspace.fs.writeFile(config, Buffer.from(JSON.stringify(projectConfig, null, 2) + "\n", "utf8"));
-  const guidance = await deployGuidance(context.extensionUri.fsPath, root.fsPath, {
-    async read(path) {
-      try { return await vscode.workspace.fs.readFile(vscode.Uri.file(path)); }
-      catch (error) { if (error instanceof vscode.FileSystemError && error.code === "FileNotFound") return undefined; throw error; }
-    },
-    async write(path, bytes) {
-      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(path)));
-      await vscode.workspace.fs.writeFile(vscode.Uri.file(path), bytes);
-    },
-  });
-  if (guidance.preserved.length) vscode.window.showWarningMessage(`LUI 已保留用户修改的资料：${guidance.preserved.join("、")}`);
-  vscode.window.showInformationMessage(`已交付 LUI ${guidance.version} 文档、示例与 AI skills：docs/lui/README.md。`);
-  vscode.window.showInformationMessage(backedUp ? "LUI 运行时已更新，旧运行时保留在 .backup-last。" : "LUI 运行时已部署；没有需要备份的旧运行时。");
+  if (options.guidance !== false) {
+    const guidance = await deployGuidance(context.extensionUri.fsPath, root.fsPath, {
+      async read(path) {
+        try { return await vscode.workspace.fs.readFile(vscode.Uri.file(path)); }
+        catch (error) { if (error instanceof vscode.FileSystemError && error.code === "FileNotFound") return undefined; throw error; }
+      },
+      async write(path, bytes) {
+        await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(path)));
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(path), bytes);
+      },
+    });
+    if (guidance.preserved.length) vscode.window.showWarningMessage(`LUI 已保留用户修改的资料：${guidance.preserved.join("、")}`);
+    if (options.notify !== false) vscode.window.showInformationMessage(`已交付 LUI ${guidance.version} 文档、示例与 AI skills：docs/lui/README.md。`);
+  }
+  if (options.notify !== false) vscode.window.showInformationMessage(backedUp ? "LUI 运行时已更新，旧运行时保留在 .backup-last。" : "LUI 运行时已部署；没有需要备份的旧运行时。");
+  return true;
 }
 
 async function collectComponentCatalog(root: vscode.Uri | undefined): Promise<CatalogBundle> {
@@ -327,19 +390,16 @@ async function collectComponentCatalog(root: vscode.Uri | undefined): Promise<Ca
   if (!root) return empty;
   const config = await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE));
   const directories = config?.componentDirectories;
-  if (!directories || typeof directories !== "object") return empty;
+  if (!Array.isArray(directories)) return empty;
   const catalog: CatalogBundle["catalog"] = {};
   const sources: CatalogBundle["sources"] = {};
   const completionImports: LuiCompletionImport[] = [];
   const actionSymbols: Record<string, string[]> = {};
-  for (const [directory, registered] of Object.entries(directories as Record<string, unknown>)) {
-    if (!registered || typeof registered !== "object") continue;
+  for (const directory of componentDirectoriesOf(config)) {
     catalog[directory] = {};
     const components: Array<{ name: string; properties: string[] }> = [];
-    for (const [name, descriptor] of Object.entries(registered as Record<string, unknown>)) {
-      const markup = typeof descriptor === "string" ? descriptor : (descriptor && typeof descriptor === "object" ? (descriptor as { markup?: unknown }).markup : undefined);
-      if (typeof markup !== "string") continue;
-      const uri = uriPath(root, "scripts", ...markup.split("/"));
+    for (const descriptor of await directoryComponents(root, directory)) {
+      const name = descriptor.displayName; const uri = descriptor.uri;
       try {
         const componentDocument = await vscode.workspace.openTextDocument(uri);
         const payload = sourcePayload(componentDocument);
@@ -360,35 +420,171 @@ async function collectComponentCatalog(root: vscode.Uri | undefined): Promise<Ca
   return { catalog, sources, completionImports, actionSymbols };
 }
 
+function compareVersions(left: string, right: string): number {
+  const parts = (value: string) => value.split(".").map(part => Number.parseInt(part, 10) || 0);
+  const a = parts(left); const b = parts(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+async function makerProjectRoot(): Promise<vscode.Uri> {
+  const active = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = active ? vscode.workspace.getWorkspaceFolder(active)?.uri : undefined;
+  const candidates = [activeFolder, ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri)].filter((uri, index, values): uri is vscode.Uri => !!uri && values.findIndex(value => value?.toString() === uri.toString()) === index);
+  for (const root of candidates) if (await exists(uriPath(root, ".project", "project.json"))) return root;
+  throw new Error("当前工作区不是 Maker 项目：缺少 .project/project.json。");
+}
+
+async function ensureProjectRuntime(context: vscode.ExtensionContext, root: vscode.Uri): Promise<void> {
+  const status = await runtimeStatus(root, uriPath(context.extensionUri, "runtime", "urhox-lua", MANIFEST_FILE));
+  if (status?.synchronized) return;
+  const expected = await readJson(uriPath(context.extensionUri, "runtime", "urhox-lua", MANIFEST_FILE));
+  const expectedVersion = typeof expected?.version === "string" ? expected.version : undefined;
+  if (status?.installed && status.version && expectedVersion && compareVersions(status.version, expectedVersion) > 0) {
+    throw new Error(`项目 LUI Runtime ${status.version} 高于当前 Studio ${expectedVersion}，请先更新 LUI Studio；为避免降级，本次未改写项目。`);
+  }
+  if (!await deployUrhoXLuaRuntime(context, { root, confirm: false, guidance: false, notify: false })) throw new Error("LUI Runtime 智能部署未完成。");
+  const verified = await runtimeStatus(root, uriPath(context.extensionUri, "runtime", "urhox-lua", MANIFEST_FILE));
+  if (!verified?.synchronized) throw new Error(verified?.message ?? "LUI Runtime 智能部署后的校验未通过。");
+}
+
+async function collectPreviewFiles(root: vscode.Uri): Promise<Map<string, Uint8Array>> {
+  const files = new Map<string, Uint8Array>();
+  let total = 0;
+  const visit = async (directory: vscode.Uri, prefix: string): Promise<void> => {
+    if (!await exists(directory)) return;
+    for (const [name, type] of await vscode.workspace.fs.readDirectory(directory)) {
+      if (name === ".backup-last") continue;
+      const uri = vscode.Uri.joinPath(directory, name); const path = prefix ? `${prefix}/${name}` : name;
+      if (type === vscode.FileType.Directory) await visit(uri, path);
+      else if (type === vscode.FileType.File) {
+        const bytes = await vscode.workspace.fs.readFile(uri); total += bytes.length;
+        if (total > 256 * 1024 * 1024) throw new Error("项目预览资源超过 256 MB；请移除非运行资源或使用 Maker 构建预览。");
+        files.set(path, bytes);
+      }
+    }
+  };
+  await visit(uriPath(root, "scripts"), "");
+  await visit(uriPath(root, "assets"), "");
+  for (const document of vscode.workspace.textDocuments) {
+    if (document.uri.scheme !== "file" || !document.isDirty) continue;
+    const projectPath = relative(root.fsPath, document.uri.fsPath).replaceAll("\\", "/");
+    const resourcePath = projectPath.startsWith("scripts/") ? projectPath.slice(8) : projectPath.startsWith("assets/") ? projectPath.slice(7) : undefined;
+    if (resourcePath && files.has(resourcePath)) files.set(resourcePath, Buffer.from(document.getText(), "utf8"));
+  }
+  return files;
+}
+
+async function projectPreviewInput(root: vscode.Uri): Promise<ProjectPreviewInput> {
+  const project = await readJson(uriPath(root, ".project", "project.json"));
+  const entry = typeof project?.entry === "string" ? project.entry.replaceAll("\\", "/") : "";
+  if (!entry || entry.startsWith("/") || entry.includes("..") || !entry.endsWith(".lua")) throw new Error(".project/project.json 的 entry 必须是 scripts 下的 Lua 文件。");
+  const files = await collectPreviewFiles(root);
+  if (!files.has(entry)) throw new Error(`项目入口不存在：scripts/${entry}`);
+  const config = await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE));
+  const sourceRoots = Array.isArray(config?.sourceRoots) ? config.sourceRoots.filter((value): value is string => typeof value === "string") : [];
+  const sourcePaths = new Set<string>();
+  for (const sourceRoot of sourceRoots) {
+    if (!sourceRoot || sourceRoot.startsWith("/") || sourceRoot.includes("..")) continue;
+    for (const [path] of await collectLuiFiles(uriPath(root, "scripts", ...sourceRoot.split("/")))) sourcePaths.add(`${sourceRoot}/${path}`);
+  }
+  const publish = project?.taptap_publish as { title?: unknown } | undefined;
+  return {
+    entry,
+    files,
+    sourcePaths,
+    title: typeof publish?.title === "string" ? publish.title : vscode.workspace.asRelativePath(root, false),
+    device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "390x844")
+  };
+}
+
+class ProjectPreviewController implements vscode.Disposable {
+  private host?: ProjectPreviewHost;
+  private root?: vscode.Uri;
+  private watcher?: vscode.FileSystemWatcher;
+  private readonly documentChange: vscode.Disposable;
+
+  constructor(private readonly context: vscode.ExtensionContext, private readonly provider: LuiPreviewProvider) {
+    this.documentChange = vscode.workspace.onDidChangeTextDocument(event => {
+      if (!this.root || event.document.uri.scheme !== "file") return;
+      const changedPath = relative(this.root.fsPath, event.document.uri.fsPath).replaceAll("\\", "/");
+      if (changedPath.startsWith("scripts/") || changedPath.startsWith("assets/")) this.host?.markDirty();
+    });
+  }
+
+  public async run(): Promise<void> {
+    const root = await makerProjectRoot();
+    if (this.host && this.root?.toString() === root.toString()) { this.host.reveal(); return; }
+    await ensureProjectRuntime(this.context, root);
+    const input = await projectPreviewInput(root);
+    this.stop(); this.root = root;
+    const host = new ProjectPreviewHost(); this.host = host;
+    host.onPick = selection => { void this.openSelection(selection); };
+    host.onRefreshRequested = async () => { if (!this.root || this.host !== host) return; host.update(await projectPreviewInput(this.root), false); };
+    try {
+      await host.start(uriPath(this.context.globalStorageUri, "engine-cache").fsPath, input);
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
+    this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, "{scripts,assets}/**/*"));
+    this.watcher.onDidCreate(() => host.markDirty()); this.watcher.onDidChange(() => host.markDirty()); this.watcher.onDidDelete(() => host.markDirty());
+    await vscode.env.openExternal(vscode.Uri.parse(host.url));
+  }
+
+  public async refresh(): Promise<void> {
+    if (!this.host || !this.root) { await this.run(); return; }
+    this.host.update(await projectPreviewInput(this.root), true);
+  }
+
+  public stop(): void {
+    this.watcher?.dispose(); this.watcher = undefined;
+    this.host?.dispose(); this.host = undefined; this.root = undefined;
+  }
+
+  public dispose(): void { this.stop(); this.documentChange.dispose(); }
+
+  private async openSelection(selection: ProjectPreviewSelection): Promise<void> {
+    if (!this.root || selection.sourcePath.startsWith("/") || selection.sourcePath.includes("..") || !selection.sourcePath.endsWith(".lui")) return;
+    const uri = uriPath(this.root, "scripts", ...selection.sourcePath.split("/"));
+    if (!await exists(uri)) { vscode.window.showWarningMessage(`项目预览定位的 LUI 文件不存在：${selection.sourcePath}`); return; }
+    const path = selection.nodePath ? selection.nodePath.split(".").filter(Boolean).map(value => Number.parseInt(value, 10)) : [];
+    if (path.some(value => !Number.isInteger(value) || value < 0)) return;
+    await this.provider.openSelection(uri, path, selection.instancePath);
+  }
+}
+
 export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = "lui.preview";
+  private readonly panels = new Map<string, vscode.WebviewPanel>();
+  private readonly readyPanels = new Set<string>();
+  private readonly pendingSelections = new Map<string, { path: number[]; instancePath?: string }>();
   constructor(private readonly context: vscode.ExtensionContext) {}
 
+  public async openSelection(uri: vscode.Uri, path: number[], instancePath?: string): Promise<void> {
+    const key = uri.toString(); this.pendingSelections.set(key, { path, instancePath });
+    await vscode.commands.executeCommand("vscode.openWith", uri, LuiPreviewProvider.viewType);
+    this.deliverSelection(key);
+  }
+
+  private deliverSelection(key: string): void {
+    const panel = this.panels.get(key); const selection = this.pendingSelections.get(key);
+    if (!panel || !selection || !this.readyPanels.has(key)) return;
+    this.pendingSelections.delete(key);
+    void panel.webview.postMessage({ type: "externalPick", source: key, path: selection.path, instancePath: selection.instancePath });
+  }
+
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
+    const panelKey = document.uri.toString(); this.panels.set(panelKey, panel);
     const workspace = workspaceRoot();
     panel.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media"), ...(workspace ? [workspace] : [])] };
     panel.webview.html = previewHtml(panel.webview, this.context.extensionUri);
     let allowedSources = new Set<string>([document.uri.toString()]);
     let updateGeneration = 0;
     let cachedComponents: CatalogBundle | undefined;
-    const engine=new EnginePreviewHost();let engineStarting=false,disposed=false;
-    engine.onPick=selection=>{if(!disposed)panel.webview.postMessage({type:'enginePick',...selection});};
-    let previewFonts: Array<{family:string;weights:Record<string,string>}> = [];
-    let previewTheme: unknown;
-    const startEngine=async()=>{
-      if(engineStarting)return;engineStarting=true;
-      try {
-        const bundle=await projectFonts(workspace,panel.webview);
-        if(!workspace||bundle.errors.length||!bundle.fonts.length)throw new Error(bundle.errors.join('\n')||'请在 lui.project.json 声明同源字体');
-        const files=await Promise.all(bundle.fonts.map(async font=>({path:font.resource,sha256:font.sha256,bytes:await vscode.workspace.fs.readFile(uriPath(workspace,'assets',...font.resource.split('/')))})));
-        const families=new Map<string,Record<string,string>>();for(const font of bundle.fonts){const weights=families.get(font.family)??{};weights[font.weight]=font.resource;families.set(font.family,weights);}
-        previewFonts=Array.from(families,([family,weights])=>({family,weights}));
-        previewTheme=(await readJson(uriPath(workspace,...RUNTIME_DIRECTORY,CONFIG_FILE)))?.theme;
-        await engine.start(uriPath(this.context.globalStorageUri,'engine-cache').fsPath,uriPath(this.context.extensionUri,'runtime','urhox-lua').fsPath,files);
-        if(disposed){engine.dispose();return;}
-        panel.webview.postMessage({type:'engineReady',url:engine.url});
-      }catch(error){panel.webview.postMessage({type:'engineReady',error:String(error)});}
-    };
     const update = async (refreshComponents = false) => {
       const generation = ++updateGeneration;
       const rootSource = sourcePayload(document);
@@ -416,6 +612,7 @@ export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
       for (const message of fontBundle.errors) parsed.diagnostics.push({ message, severity: "error", range: { start: 0, end: 1 } });
       if (generation !== updateGeneration) return;
       panel.webview.postMessage({ type: "model", generation, model: { root: serialized, diagnostics: parsed.diagnostics }, catalog: bundle.catalog, sources: bundle.sources, completionImports: bundle.completionImports, actionSymbols: bundle.actionSymbols, rootSource: rootSource.source, device: vscode.workspace.getConfiguration("lui").get<string>("preview.defaultDevice", "390x844"), fonts: fontBundle.fonts });
+      this.deliverSelection(panelKey);
     };
     const changes = vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.uri.fsPath.endsWith('.lui.lua')) { void update(true); return; }
@@ -426,12 +623,10 @@ export class LuiPreviewProvider implements vscode.CustomTextEditorProvider {
     });
     const backends = vscode.workspace.createFileSystemWatcher('**/*.lui.lua');
     const backendChanges = [backends.onDidCreate(() => void update(true)), backends.onDidChange(() => void update(true)), backends.onDidDelete(() => void update(true))];
-    panel.onDidDispose(() => { disposed=true;engine.dispose();changes.dispose(); backends.dispose(); backendChanges.forEach(d => d.dispose()); });
+    panel.onDidDispose(() => { if(this.panels.get(panelKey)===panel)this.panels.delete(panelKey);this.readyPanels.delete(panelKey);changes.dispose(); backends.dispose();backendChanges.forEach(d => d.dispose()); });
     panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-      if (message.type === "ready") { void startEngine();await update(); return; }
-      if(message.type==='engineSnapshot'){if(message.snapshot&&JSON.stringify(message.snapshot).length<8_000_000)engine.update({...message.snapshot,fonts:previewFonts,theme:previewTheme});return;}
-      if(message.type==='openEngine'){if(engine.url)await vscode.env.openExternal(vscode.Uri.parse(engine.url));return;}
-      if (message.type === "deploy") { await deployUrhoXLuaRuntime(this.context); return; }
+      if (message.type === "ready") { await update(); this.readyPanels.add(panelKey); this.deliverSelection(panelKey); return; }
+      if (message.type === "runProject") { await vscode.commands.executeCommand("lui.runProjectPreview"); return; }
       if (message.type === "copy") { if (typeof message.text === "string" && message.text.length > 0) await vscode.env.clipboard.writeText(message.text); return; }
       if (message.type === "openComponent" && typeof message.source === "string" && allowedSources.has(message.source)) {
         await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.parse(message.source), LuiPreviewProvider.viewType);
@@ -553,13 +748,12 @@ async function completionImportsFor(document: vscode.TextDocument): Promise<LuiC
   const root = workspaceRoot();
   const imports = namespaceImports(parseLui(document.getText()));
   const config = root ? await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE)) : undefined;
-  const directories = config?.componentDirectories as Record<string, Record<string, unknown>> | undefined;
   return await Promise.all(imports.map(async ({ alias, directory }) => {
-    const components = await Promise.all(Object.entries(directories?.[directory] ?? {}).map(async ([name, descriptor]) => {
-      const markup = typeof descriptor === "string" ? descriptor : (descriptor && typeof descriptor === "object" ? (descriptor as { markup?: unknown }).markup : undefined);
-      const uri = root && typeof markup === "string" ? uriPath(root, "scripts", ...markup.split("/")) : undefined;
+    const descriptors = root && componentDirectoriesOf(config).includes(directory) ? await directoryComponents(root, directory) : [];
+    const components = await Promise.all(descriptors.map(async (descriptor) => {
+      const name = descriptor.displayName; const uri = descriptor.uri;
       let properties: string[] = []; let definitions: ComponentProperties | undefined;
-      if (uri && await exists(uri)) {
+      if (await exists(uri)) {
         const parsed = parseLui((await vscode.workspace.openTextDocument(uri)).getText());
         if (parsed.root) { const node = serializeNode(parsed.root, uri); await attachProperties(node, uri); definitions = node.properties; }
         properties = definitions ? Object.keys(definitions) : [...new Set([...asText(await vscode.workspace.fs.readFile(uri)).matchAll(/\{绑定\s+props\.([A-Za-z][A-Za-z0-9_-]*)/g)].map((match) => match[1]!))].sort();
@@ -586,13 +780,15 @@ function registerLanguageServices(context: vscode.ExtensionContext): void {
   const diagnostics = vscode.languages.createDiagnosticCollection("lui");
   const refresh = async (document: vscode.TextDocument) => {
     if (document.languageId !== "lui") return;
-    const parsed = parseLui(document.getText());
+    const root = workspaceRoot();
+    const config = root ? await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE)) : undefined;
+    const parsed = parseLui(document.getText(), Number(config?.schemaVersion ?? 5));
     const own = parsed.root ? serializeNode(parsed.root, document.uri) : undefined;
     if (own) await attachProperties(own, document.uri);
     const issues = [...parsed.diagnostics, ...validateComponentProperties(parsed, await completionImportsFor(document), own?.properties)].map((item) => diagnosticFor(document, item));
-    const root = workspaceRoot();
-    const config = root ? await readJson(uriPath(root, ...RUNTIME_DIRECTORY, CONFIG_FILE)) : undefined;
-    if (Number(config?.schemaVersion ?? 1) < 3) issues.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), "LUI 项目仍在旧组件配置；请迁移到 v3 componentDirectories 与目录:别名。", vscode.DiagnosticSeverity.Warning));
+    if (Number(config?.schemaVersion ?? 1) < 5 || !Array.isArray(config?.componentDirectories)) issues.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), "LUI 项目仍使用旧页面语义；请运行场景迁移并升级到 schema 5。", vscode.DiagnosticSeverity.Warning));
+    const obsoletePreview = vscode.Uri.file(`${document.uri.fsPath}.preview.json`);
+    if (await exists(obsoletePreview)) issues.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), "已废弃 .lui.preview.json；请将预览值迁入绑定的预览内容并删除 sidecar。", vscode.DiagnosticSeverity.Error));
     diagnostics.set(document.uri, issues);
   };
   context.subscriptions.push(diagnostics, vscode.workspace.onDidOpenTextDocument(refresh), vscode.workspace.onDidChangeTextDocument((event) => void refresh(event.document)), vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
@@ -668,8 +864,8 @@ function previewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "preview.css"));
   const designer = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "designer.js"));
   const nonce = createUuid();
-return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http://127.0.0.1:*; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
-<section id="design-workbench"><aside id="outline-panel"><h1>LUI 结构</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><label id="device-label">设备 <select id="device"><option>358x425</option><option>377x496</option><option>360x800</option><option>390x844</option><option>640x1024</option><option>768x1024</option></select></label><span id="zoom-tools"><button id="fit" title="按中间画板视口适应">适应</button><button id="actual-size" title="显示 100%">100%</button><button id="zoom-out" title="缩小画板视图">−</button><output id="zoom-value">100%</output><button id="zoom-in" title="放大画板视图">＋</button></span><button id="deploy">部署 UrhoX/Lua 运行时</button></header><section id="diagnostics"></section><div id="stage" aria-label="中间设计画板；可滚动、中键或空格拖拽平移，Ctrl 加滚轮缩放"><div id="stage-content"><div id="artboard"><div id="canvas"></div></div></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
+return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"></head><body>
+<section id="design-workbench"><aside id="outline-panel"><h1>LUI 结构</h1><section id="outline"></section></aside><div id="outline-divider" role="separator" aria-label="调整结构树宽度"><button id="outline-collapse" title="收起结构树">‹</button></div><main><header><span id="preview-kind">结构示意</span><label id="device-label">设备 <select id="device"><option>358x425</option><option>377x496</option><option>360x800</option><option>390x844</option><option>640x1024</option><option>768x1024</option></select></label><span id="zoom-tools"><button id="fit" title="按中间画板视口适应">适应</button><button id="actual-size" title="显示 100%">100%</button><button id="zoom-out" title="缩小画板视图">−</button><output id="zoom-value">100%</output><button id="zoom-in" title="放大画板视图">＋</button></span><button id="run">运行</button></header><section id="diagnostics"></section><div id="stage" aria-label="中间设计画板；可滚动、中键或空格拖拽平移，Ctrl 加滚轮缩放"><div id="stage-content"><div id="artboard"><div id="canvas"></div></div></div></div></main><aside id="inspector"><button id="collapse" title="收起属性面板">收起</button><section id="properties"><h2>当前节点属性</h2><p>在组件树或画布选择一个节点。</p></section></aside></section>
 <div id="splitter" role="separator" aria-label="调整设计预览与源码高度"><button id="source-collapse" title="折叠源码">⌄</button><button id="source-maximize" title="源码最大化">⛶</button></div>
 <section id="source-panel"><div id="source-editor"></div></section>
 <script nonce="${nonce}" src="${designer}"></script></body></html>`;
@@ -678,12 +874,21 @@ return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http
 export function activate(context: vscode.ExtensionContext): void {
   bundledManifestUri = vscode.Uri.joinPath(context.extensionUri, "runtime", "urhox-lua", MANIFEST_FILE);
   registerLanguageServices(context);
-  context.subscriptions.push(vscode.window.registerCustomEditorProvider(LuiPreviewProvider.viewType, new LuiPreviewProvider(context), { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false }));
+  const provider = new LuiPreviewProvider(context);
+  projectPreviewController = new ProjectPreviewController(context, provider);
+  context.subscriptions.push(projectPreviewController, vscode.window.registerCustomEditorProvider(LuiPreviewProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false }));
   context.subscriptions.push(vscode.commands.registerCommand("lui.openPreview", async () => {
     const editor = vscode.window.activeTextEditor;
     if (editor?.document.languageId === "lui") await vscode.commands.executeCommand("vscode.openWith", editor.document.uri, LuiPreviewProvider.viewType);
   }));
   context.subscriptions.push(vscode.commands.registerCommand("lui.deployUrhoXLuaRuntime", () => deployUrhoXLuaRuntime(context)));
+  const previewAction = async (action: () => Promise<void>) => {
+    try { await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "LUI 项目预览" }, action); }
+    catch (error) { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)); }
+  };
+  context.subscriptions.push(vscode.commands.registerCommand("lui.runProjectPreview", () => previewAction(() => projectPreviewController!.run())));
+  context.subscriptions.push(vscode.commands.registerCommand("lui.refreshProjectPreview", () => previewAction(() => projectPreviewController!.refresh())));
+  context.subscriptions.push(vscode.commands.registerCommand("lui.stopProjectPreview", () => projectPreviewController!.stop()));
   context.subscriptions.push(vscode.commands.registerCommand("lui.checkWorkspace", async () => {
     const status = await runtimeStatus();
     if (!status) return;
@@ -699,4 +904,4 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand("lui.createPair", createLuiPair));
 }
 
-export function deactivate(): void {}
+export function deactivate(): void { projectPreviewController?.dispose(); projectPreviewController = undefined; }

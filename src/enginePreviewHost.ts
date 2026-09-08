@@ -110,7 +110,9 @@ export class EnginePreviewHost {
         req.on('end',()=>{try{
           const pick=JSON.parse(body);
           const find=(node:any):boolean=>!!node&&(node.sourcePath===pick.sourcePath&&node.nodePath===pick.nodePath||(node.children??[]).some(find));
-          if(pick.revision!==(this.snapshot as any)?.revision||typeof pick.sourcePath!=='string'||typeof pick.nodePath!=='string'||!find((this.snapshot as any)?.node)){res.writeHead(409).end();return;}
+          const snapshot=this.snapshot as any;
+          const known=find(snapshot?.node)||Object.values(snapshot?.documents??{}).some((document:any)=>find(document?.node));
+          if(pick.revision!==snapshot?.revision||typeof pick.sourcePath!=='string'||typeof pick.nodePath!=='string'||!known){res.writeHead(409).end();return;}
           this.onPick?.({revision:pick.revision,sourcePath:pick.sourcePath,nodePath:pick.nodePath,probe:pick.probe});res.writeHead(204).end();
         }catch{res.writeHead(400).end();}});return;
       }
@@ -202,7 +204,7 @@ package.loaded['Presentation.Components']={}
 local Runtime=require('LUI.Runtime')
 local runtime=setmetatable({config_={sourceRoots={},componentDirectories={}},documents_={},code_={},isV2_=true,fontFiles_={}},Runtime)
 function runtime:LoadCode() error('真实预览禁止执行业务 Lua') end
-function runtime:LoadDocument() error('真实预览只接收当前文档快照') end
+function runtime:LoadDocument(path) return self.documents_[path], '真实预览只接收当前文档快照' end
 local function emit(name,payload)
  local data=VariantMap();data['name']=name;data['payload']=cjson.encode(payload);SendEvent('EmitToPlugin',data)
 end
@@ -212,6 +214,20 @@ local revision=-1
 local root
 local modals={}
 local activeModals={}
+local function probeLayout(content)
+ local result={}
+ local function finite(value)
+  if type(value)=='number' and (value~=value or value==math.huge or value==-math.huge) then return tostring(value) end
+  return value
+ end
+ -- EmitToPlugin has a bounded message buffer. Geometry probes omit unrelated
+ -- paint diagnostics so ordinary component trees remain valid JSON messages.
+ for _,node in ipairs(runtime:LayoutProbe(content)) do
+  result[#result+1]={x=finite(node.x),y=finite(node.y),width=finite(node.width),height=finite(node.height),
+   sourcePath=node.sourcePath,nodePath=node.nodePath,instance=#result+1,name=node.name}
+ end
+ return result
+end
 local buildNode=runtime.BuildNode
 function runtime:BuildNode(node,context)
  local widget=buildNode(self,node,context)
@@ -233,20 +249,23 @@ function LuiPreviewUpdate(_,event)
    visualConfiguration=configuration
   end
   modals={}
-  local context={view={},props={},refs={},actions={},imports={},componentStack={}}
-  local content=assert(runtime:BuildNode(next.node,context),'空预览文档')
+  local content,context=runtime:BuildPreview(next)
+  assert(content,context or '空预览文档')
   -- Modal:Open auto-mounts when parentless. A neutral host prevents a root
   -- modal from mounting itself, and allows component documents to be viewed.
   local candidate=UI.Panel{width='100%',height='100%',backgroundColor={0,0,0,0},children={content}}
   local reported=false
+  local completedLayouts=0
   runtime:AfterLayout(candidate,function(_,vg)
    if reported then return end
+   completedLayouts=completedLayouts+1
+   if next.probeLayout and completedLayouts<(next.probeLayoutFrames or 20) then return end
    reported=true
    local passed,checkError=xpcall(function()
     if next.runChecks then require('LUI.LayoutChecks').Run(runtime,vg) end
    end,debug.traceback)
    if not passed then emit('lui-preview-error',{message=checkError});return end
-   if not next.runOverlayChecks then emit('lui-preview-applied',{revision=revision,checks=next.runChecks==true}) end
+   if not next.runOverlayChecks then emit('lui-preview-applied',{revision=revision,checks=next.runChecks==true,layout=next.probeLayout and probeLayout(content) or nil}) end
   end)
   local previous=root
   for _,modal in ipairs(activeModals) do modal:Close() end

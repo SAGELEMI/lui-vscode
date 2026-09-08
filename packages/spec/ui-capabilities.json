@@ -9,8 +9,8 @@
     "typography": ["FontFamily", "FontSize", "FontWeight", "FontStyle", "Color", "LineHeight", "LetterSpacing", "TextWrapping", "TextTrimming", "TextHorizontalAlignment", "TextVerticalAlignment"]
   },
   "structuralTags": ["lui:If", "lui:For", "lui:Slot", "lui:Preview", "lui:Set", "lui:Action", "lui:Resource"],
-  "rootTags": ["lui:Page", "lui:Component"],
-  "builtInVisualTags": ["Container", "Grid", "Canvas", "Viewbox", "StackPanel", "WrapPanel", "DockPanel", "UniformGrid", "Border", "Scroll", "ContentControl", "Text", "Button", "Card", "Progress", "Toggle", "Slider", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen", "Panel", "Row"],
+  "rootTags": ["lui:Scene", "lui:Page", "lui:Component"],
+  "builtInVisualTags": ["lui:PagePresenter", "Container", "Grid", "Canvas", "Viewbox", "StackPanel", "WrapPanel", "DockPanel", "UniformGrid", "Border", "Scroll", "ContentControl", "Text", "Button", "Card", "Progress", "Toggle", "Slider", "SafeArea", "Modal", "Section", "Notice", "Screen", "FixedScreen", "Panel", "Row"],
   "textTags": ["Text", "Button", "TextField", "Checkbox", "Dropdown", "Toast", "Tabs", "Tooltip", "Badge", "List", "Chip", "Accordion", "Stepper", "Rating", "Breadcrumb", "Pagination", "Alert", "Timeline", "Menu", "Tree", "DatePicker", "TimePicker", "ColorPicker", "Table", "FileUpload", "RichText", "VirtualList", "ItemSlot", "SkillTree", "ChatWindow", "ItemTooltip"],
   "specific": {
     "Grid": ["RowDefinitions", "ColumnDefinitions", "RowSpacing", "ColumnSpacing"],
@@ -24,11 +24,12 @@
     "Toggle": ["Value", "Change", "Disabled"],
     "Slider": ["Value", "Min", "Max", "Change", "Disabled"],
     "Scroll": ["HorizontalScrollBarVisibility", "VerticalScrollBarVisibility", "ScrollbarColor"],
+    "VirtualList": ["Items", "Each", "StableKey", "ScrollState", "SelectedKey", "Select", "ScrollbarColor", "HorizontalScrollBarVisibility", "VerticalScrollBarVisibility"],
     "Modal": ["Title", "Close", "CloseOnOverlay", "ShowCloseButton"],
     "Section": ["Title", "Subtitle"],
     "Notice": ["Text", "Error"],
     "lui:If": ["Test"],
-    "lui:For": ["Items", "In"],
+    "lui:For": ["Items", "Each", "In"],
     "lui:Set": ["Path", "Value"]
   },
   "generatedControlAttributes": ["Text", "Title", "Subtitle", "Value", "Min", "Max", "Step", "Placeholder", "Items", "Data", "Options", "Icon", "Image", "Source", "Orientation", "Columns", "Rows", "Gap", "Type", "Visible"]

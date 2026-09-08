@@ -1,5 +1,7 @@
 # LUI 仓库导航
 
+2026-09-06 多行文字裁剪：`adapter/Measure.lua` 为行高校准提供有限宽度，使用原生 Label 实际字形换行高度补充期望尺寸，正文顶部绘制，文本缓存包含行高/字距/换行/字体缩放。新增 `scripts/test-game-text-engine.mjs` 验证生产天赋详情、升级回执、多步长名称、滚动末尾与稳定帧；只使用内存存档。图像证据和限制见目标游戏项目索引；正常 build/stamp/deploy 交付，不手改游戏适配器。
+
 2026-09-06 远程推送准备：当前2.6.0正式源、契约、回归脚本与验收资料一起提交；`.tmp/` 为本地临时文件，与artifacts/dist/runtime一起保持忽略。适配器默认配置及package-lock两个workspace版本已与2.6.0同步。此轮推送前检查为76项Node、TypeScript、文档96链接/9片段；仍保留总验收中未关闭的全状态与设备输入边界。
 
 2026-09-06：2.6.0 接续入口 `docs/workspace-2.6.0-acceptance.md`。新增正式适配器 `Overlays.lua`（独立视口覆盖树/输入栈）、`LiveProps.lua`（标量刷新）、`BuiltinValues.lua`、`NativeControls.lua`（经官方源核对的专用映射）。原始帧测试 `scripts/test-engine-parity.mjs`、覆盖层 `scripts/test-engine-overlays.mjs`、通知 `scripts/test-notification-engine.mjs` 均为独立数据夹具；不执行游戏业务或用户存档，不能据局部证据宣称全标签像素一致。新文件由正式 build/stamp/deploy 生成交付，勿手改部署副本。

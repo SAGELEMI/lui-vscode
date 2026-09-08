@@ -3,6 +3,7 @@
 local UI = require("urhox-libs/UI")
 local Measure = require("LUI.Measure")
 local Typography = require("LUI.Typography")
+local Refresh = require("LUI.Refresh")
 ---@type { defaults: { lineHeight: number, button: { textHorizontalAlignment: string, textVerticalAlignment: string, disabledTextColor: number[] } } }
 local Contract = require("LUI.Contract")
 local Caption = {}
@@ -21,7 +22,7 @@ function Caption.Attach(widget, refresh)
     widget.luiRefreshCaption_ = refresh
     local baseRender = widget.Render
     function widget:Render(nvg)
-        if refresh then refresh(self) end
+        Refresh.Caption(self)
         local props = self.props
         local text = tostring(props.text or "")
         -- Native Render reads props.text directly. Restore it even if drawing fails;

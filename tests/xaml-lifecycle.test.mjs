@@ -15,6 +15,13 @@ test("templates and runtime use same-name InitializeComponent classes and pure m
   assert.match(runtime, /function Runtime:CreateRegistered/);
   assert.match(runtime, /function Runtime:RenderMarkup/);
   assert.match(runtime, /function Runtime:CreateComponent/);
+  assert.match(runtime, /function Runtime:CreateScene/);
+  assert.match(runtime, /function Runtime:CreatePage/);
+  assert.match(runtime, /function Runtime:StagePageReplacement/);
+  assert.match(runtime, /addPagePresenterEntry\(presenter, nextRoot\)/);
+  assert.match(runtime, /removePagePresenterEntry\(presenter, transition\.oldRoot\)[\s\S]*disposePageInstance\(transition\.oldInstance, transition\.oldRoot\)/);
+  assert.match(runtime, /transition\.nextRoot:SetStyle\(\{ zIndex = 2, pointerEvents = "box-none" \}\)/);
+  assert.match(runtime, /luiLayoutInvalidationBoundary_ = true/);
   assert.match(runtime, /local alias, componentName/);
   assert.match(runtime, /for attributeName, attributeValue in pairs\(attrs\)/);
   assert.match(runtime, /instanceErr or \("LUI 组件实例化失败："/);

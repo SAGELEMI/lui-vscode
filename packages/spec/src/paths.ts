@@ -1,8 +1,8 @@
-/** Data-only paths: ASCII dot paths plus quoted UTF-8 string keys. */
-export function pathKeys(path: string): string[] | undefined {
+/** Data-only paths: quoted keys remain strings; numeric indices are Lua 1-based. */
+export function pathKeys(path: string): Array<string|number> | undefined {
   const head = /^[A-Za-z][A-Za-z0-9_-]*/.exec(path);
   if (!head) return;
-  const keys = [head[0]]; let i = head[0].length;
+  const keys:Array<string|number> = [head[0]]; let i = head[0].length;
   while (i < path.length) {
     if (path[i] === '.') {
       const token = /^[A-Za-z][A-Za-z0-9_-]*/.exec(path.slice(++i));
@@ -15,14 +15,18 @@ export function pathKeys(path: string): string[] | undefined {
       }
       if (!value || path[i++] !== quote || path[i++] !== ']') return;
       keys.push(value);
+    } else if(path[i]==='['){
+      const token=/^\[([1-9]\d*)\]/.exec(path.slice(i));if(!token)return;
+      const value=Number(token[1]);if(!Number.isSafeInteger(value))return;
+      keys.push(value);i+=token[0].length;
     } else return;
   }
-  if (keys.some(k => ['__proto__', 'prototype', 'constructor'].includes(k))) return;
+  if (keys.some(k => typeof k==='string'&&['__proto__', 'prototype', 'constructor'].includes(k))) return;
   return keys;
 }
 export function readPath(scope: unknown, path: string): unknown {
   const keys = pathKeys(path); if (!keys) return;
   let result: any = scope;
-  for (const key of keys) { if (!result || typeof result !== 'object') return; result = result[key]; }
+  for (const key of keys) { if (!result || typeof result !== 'object') return; result = result[Array.isArray(result)&&typeof key==='number'?key-1:key]; }
   return result;
 }

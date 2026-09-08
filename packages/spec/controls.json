@@ -39,7 +39,7 @@
     { "tag": "Spine", "name": "骨骼动画", "ui": "Spine", "category": "媒体", "events": ["Complete"] },
     { "tag": "SpriteSheet", "name": "精灵表", "ui": "SpriteSheet", "category": "媒体", "events": ["Complete"] },
     { "tag": "Sprite", "name": "精灵", "ui": "Sprite", "category": "媒体" },
-    { "tag": "VirtualList", "name": "虚拟列表", "ui": "VirtualList", "category": "数据", "events": ["Select"] },
+    { "tag": "VirtualList", "name": "虚拟列表", "ui": "VirtualList", "category": "数据", "children": true, "events": ["Select"] },
     { "tag": "DragDropContext", "name": "拖放上下文", "ui": "DragDropContext", "category": "交互", "children": true, "events": ["DragStart", "DragEnd", "DragCancel"] },
     { "tag": "ItemSlot", "name": "物品槽", "ui": "ItemSlot", "category": "交互", "events": ["Click", "Change"] },
     { "tag": "SkillTree", "name": "技能树", "ui": "SkillTree", "category": "交互", "events": ["Select", "Change"] },

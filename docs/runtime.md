@@ -1,10 +1,10 @@
 # UrhoX Lua 运行时接入
 
-[返回文档入口](README.md)。适用版本：2.6.0。
+[返回文档入口](README.md)。适用版本：3.0.0。
 
 ## 部署与路径
 
-运行时部署在 scripts/LUI，使用 `require("LUI")` 创建入口。scripts 是资源根，标记路径写 Presentation/Pages/Welcome.lui，不加 scripts/ 前缀。默认配置 schemaVersion 为 3；sourceRoots 限制允许加载的后端，componentDirectories 登记按目录调用的公开组件。
+运行时部署在 scripts/LUI，使用 `require("LUI")` 创建入口。scripts 是资源根，标记路径写 `Presentation/Scenes/Welcome.lui`，不加 scripts/ 前缀。默认配置 `schemaVersion` 为 5；`sourceRoots` 限制允许加载的后端，`componentDirectories` 是纯目录白名单，公开组件名只来自 `<控件>` 根的 `副名称`。注册表分别维护 `scenes`、`pages`、`controls`。
 
 LUI Studio 从配置的 sourceRoots 扫描配对文件维护 Registry.lua；手动接入可用示例 Registry 作为结构参考。页面名和控件名在注册表中不得冲突；不要编辑正在被 Studio 自动维护的注册表来绕过源文件问题。
 
@@ -22,7 +22,7 @@ Modal 使用响应式 fullscreen 预设（屏幕的90%），保留关闭事件�
 
 回归必须运行原生 Modal 的 Open/Close/IsOpen 生命周期；普通 Panel 不得伪造这些方法。无 Yoga/绘制环境的生命周期测试不能作为视觉验收。
 
-Runtime 顶层依赖 `urhox-libs/UI`、`Presentation.Components` 和引擎的 cjson/资源读取。即使只用基础文本，也需要能加载 Presentation.Components 模块。
+Runtime 顶层依赖 `urhox-libs/UI` 和引擎的 cjson/资源读取。通用控件和纯数据预览不依赖项目 Lua；仅使用下方旧宿主标签时才延迟加载 `Presentation.Components`。
 
 2.5.0 启动前可调用 `LUI.Project.Validate(expectedVersion, expectedContract)`，一次检查项目配置、Runtime 清单、字体资源和 Registry 中所有页面／控件文件。项目字体在 `lui.project.json` 中按 family、weight、resource、sha256 声明；Studio 校验实际文件 SHA-256，Runtime 校验资源存在并把同一 normal/bold 路径交给 `UI.Init`。
 
@@ -30,20 +30,22 @@ Runtime 顶层依赖 `urhox-libs/UI`、`Presentation.Components` 和引擎的 cj
 
 | 标签 | 调用约定 |
 | --- | --- |
-| 卡片 | Components.Card(children, props) |
 | 分区 | Components.Section(title, children, subtitle) |
 | 提示 | Components.Notice(text, isError) |
 | 屏幕 | Components.Screen(nil, children, props) |
 | 固定屏幕 | Components.FixedScreen(nil, contentWidget, props) |
 
-这些函数不是此包自动生成的游戏业务实现。复用项目已有适配；新项目先实现所用标签的宿主约定。教学示例只用通用容器，仍需要该模块可以加载。不应把无尽塔页签列表、楼层奖励等业务组件当成内置 LUI 功能。
+这些函数不是此包自动生成的游戏业务实现。复用项目已有适配；新项目先实现所用标签的宿主约定。只使用通用容器的教学示例无需该模块。不应把无尽塔页签列表、楼层奖励等业务组件当成内置 LUI 功能。
 
 ## 公开入口
 
 | 入口 | 返回与用途 |
 | --- | --- |
 | LUI.New() | Runtime 实例，读取当前项目配置；失败状态保存在 configError_ |
-| runtime:CreateRegistered(name, presentation, properties, slots) | 页面/控件类实例；未找到等情况返回 nil, error；构造期也可能抛 Lua 错误 |
+| runtime:CreateScene(name, presentation) | 创建拥有设备设计画布的顶层场景实例 |
+| runtime:CreatePage(name, parentContext, parameters) | 创建宿主尺寸的受控页面实例及独立生命周期 |
+| runtime:StagePageReplacement(presenter, pageName, parameters) | 将候选页面完成关键布局和首帧后提升，下一帧释放旧页 |
+| runtime:CreateRegistered(name, presentation, properties, slots) | 兼容创建已登记的场景、页面或控件；新代码优先使用分类入口 |
 | runtime:CreateComponent(markupPath, parentContext, props, slots) | 加载同名后端并建立组件实例 |
 | runtime:RenderMarkup(markupPath, declaration, inherited) | root, context 或 nil, error；仅渲染标记，不再次加载后端 |
 | instance:GetRoot() | 获取可挂载的 UI 根 |
@@ -53,6 +55,8 @@ Runtime 顶层依赖 `urhox-libs/UI`、`Presentation.Components` 和引擎的 cj
 | runtime:GetReferenceRect(root, ref, instancePath?) | 返回目标绝对布局矩形与控件，供教程或诊断定位 |
 | runtime:MountGlobalOverlay(host, overlay, layer) | 将通知、教程等覆盖层按数值层级稳定挂载，不依赖页眉或弹窗容器 |
 | runtime:RefreshComponent(context.refs.Detail) | 显式刷新组件内部根，返回新根或 nil, error；调用处布局宿主与兄弟控件保留，引用自动更新 |
+| runtime:NotifyChanged(context, paths) | 标记依赖；路径可为字符串或数组，同帧渲染合并刷新；省略路径标记当前作用域全部绑定 |
+| runtime:UpdateContext(root, declaration) | 将 view/props/actions 的字段合入当前上下文并原位刷新；原地修改嵌套表时传 changedPaths |
 
 旧 Render / RenderRegistered 与 Build 后端仅为兼容入口，新类使用 New → Init → InitializeComponent → RenderMarkup。
 
@@ -66,11 +70,13 @@ Runtime 顶层依赖 `urhox-libs/UI`、`Presentation.Components` 和引擎的 cj
 
 布局缺省值以 `packages/spec/layout-contract.json` 为唯一正式源；`stamp-runtime.mjs` 生成 `Contract.lua` 并更新清单哈希，再执行部署命令。文本测量按内容/宽度/字体版本缓存；文字或样式更新使所属祖先布局失效，静止帧不重复测量和分配槽位。
 
+声明文本的原生几何测量使用逻辑坐标，不把弹窗动画或绘制变换写入多行测量缓存；绘制仍保留动画。LUI 的固定字号不会被引擎翻译附加适配再次缩小，内容翻译保留；非 LUI 调用保持原生行为。
+
 项目配置可临时设置 `layoutDiagnostics: true`：页面真实绘制第 3 帧输出当前节点探针；设为 `"summary"` 只输出真实引擎检查和静止帧重测计数，避免大量逐节点日志。不改变导航和数据，不标记远端错误已处理。验收后关闭此开关。探针数据不替代同状态截图/交互验收。
 
-数据改变需要明确刷新路径：Notify 只通知回调；2.6.0 已支持的标量绑定在根绘制前原位更新，其余专用属性使用控件 setter，结构变化由宿主重建。完整范围与 Notify/Commit 语义见 [绑定与事件](bindings.md)。缓存中的标记与后端不会因磁盘变化自动失效；开发时重新建立 Runtime/页面再验证新文件。
+游戏配置 `changeTracking: "notify"` 后，修改数据调用 `runtime:NotifyChanged(context, paths)`，同帧通知合并到相关绑定和祖先。`runtime:UpdateContext(root, {view=nextView, actions=nextActions, changedPaths={"view.state.selectedKey"}})` 差量合入上下文并刷新已有树，包括脱离设计根挂载的原生 Modal。原地改表需显式 paths；没有启用 notify 的旧项目继续兼容扫描。条件和重复项按稳定 key/id 增删对应子树，未变化的控件与滚动区保留。完整语义见 [绑定与事件](bindings.md)。声明和表达式按加载版本缓存，修改文件后重建 Runtime。
 
-局部详情更新先更新当前页面 context.view/actions，再调用 RefreshComponent；失败时恢复页面上下文并显示错误，不用整页重建掩盖失败。该入口只用于带引用的导入组件，保留布局宿主、替换内部树并清理旧实例，不是自动响应式绑定。每个组件创建独立 refs；新实例在替换前完成创建。颜色样式只重绘，尺寸或文字变化使测量缓存失效。可见性绑定返回 nil 时折叠，不影响其他普通字段的合法 nil。
+局部详情更新使用 `UpdateContext`，或修改数据后调用 `NotifyChanged`，保留组件实例、焦点和滚动。`RefreshComponent` 为旧项目保留，显式替换被引用组件的内部树并清理旧实例；普通选择操作无需调用它。每个组件创建独立 refs。颜色样式只重绘，尺寸或文字变化使测量缓存失效。可见性绑定返回 nil 时折叠，不影响其他普通字段的合法 nil。
 
 转换层严格区分缺省、`nil`、空字符串、`0` 与 `false`。导入组件的动态公开属性不缓存父级旧值；滚动条 gutter、内容框、布局探针和点击坐标使用同一套逻辑尺寸。复合按钮内部文本继承按钮字重，显式 LUI 外观和颜色仍优先。
 
@@ -100,6 +106,19 @@ Runtime 顶层依赖 `urhox-libs/UI`、`Presentation.Components` 和引擎的 cj
 
 `ButtonCaption.lua` 在现有 UI 上下文绘制标题，保留原生按钮状态、背景和事件。两项文字对齐由正式 Parser 映射，不依赖原生 Button 硬编码居中；非法静态或动态枚举值报错。默认禁用文字为共享契约的灰色。
 
-按钮文本及两项对齐支持绑定；单次绑定只在构建时取值，其他模式在绘制前读取当前上下文。根布局先更新标题，再计算缓存尺寸，避免文字变化后沿用旧宽度。静态文本仍可用 SetText 更新；静态对齐可通过 SetStyle 的 textHorizontalAlignment/textVerticalAlignment 设置中文枚举。结构变化仍需现有重建或 RefreshComponent，Notify 不是通用自动绑定。
+按钮文本及两项对齐支持绑定；单次绑定只在构建时取值，其他模式在变化后读取当前上下文。根布局先更新标题，再计算缓存尺寸，避免文字变化后沿用旧宽度。静态文本仍可用 SetText 更新；静态对齐可通过 SetStyle 的 textHorizontalAlignment/textVerticalAlignment 设置中文枚举。2.7.0 的条件和重复项收到通知后更新对应子树；旧项目未启用 notify 时保留兼容扫描。
 
 构建自动运行 stamp-runtime，按正式源生成 Contract 和运行时哈希；部署后应核对版本、revision 与每个 Lua 文件哈希。
+## 刷新与滚动性能
+
+绑定语法和数据路径有界缓存，声明文件缓存最多保留最近使用的 256 份；已经挂载的控件保留自己的声明引用，不受淘汰影响。绑定值仍按当前上下文读取，重复渲染的嵌套组件共用一次遍历。折叠节点先刷新自身可见性，再跳过子树；恢复显示时应用隐藏期间的数据变化。`RefreshComponent` 仍可显式替换局部组件。
+
+滚动区支持触摸与鼠标按住正文拖动，使用接收控件的局部坐标，适配 DPR 和祖先缩放。惯性按经过时间积分，滑块拖动范围与实际绘制边界一致；抬起、取消和失焦会清理拖动状态。`tests/runtime-performance-input.py` 使用校验过的官方原生控件代码验证这些边界，数据夹具结果不代表手机帧率。
+
+原生 Gesture 将取消也转为 PanEnd，所以适配器仅在指针捕获期间订阅 `UI.Input.PointerCancel`，先清理取消状态，下一次更新释放订阅，避免修改正在遍历的监听数组。`scripts/test-engine-scroll-performance.mjs` 验证正式引擎的触摸、鼠标、滑块、锚点和取消管线；当前 Web 引擎会把 CDP touchCancel 映射为普通 PointerUp，报告单独保留此宿主限制。
+
+## 显式性能采样（2.7.0）
+
+正式运行默认不开启详细采样和逐帧日志。需要采样时调用 `require("LUI.PerformanceSession").Start(runtime, {scene="仓库滚动", device="测试环境名称", workload="1000条固定数据", run="1"})`，结束时调用返回对象的 `Stop()`。返回报告记录引擎 Update.TimeStep 的 P95/P99、8.33ms 与 16.67ms 帧预算、Lua 内存和 LUI 工作计数；不会自行写文件、读取存档或强制 GC。`StartWork(label)` / `EndWork(token)` 默认使用引擎 `Time.GetSystemTime`（或 `time.GetSystemTime`）记录同步调用的经过时间，展开毫秒计数回绕；它不是 CPU 用时、CPU 百分比或 GPU 用时。报告列明时钟来源与毫秒刻度，实际分辨率可能更粗。测试可通过 `options.clock` 注入返回秒数的函数；原生时钟不可用时回退 `os.clock`，报告明确标为平台相关，不假定它是墙钟时间；没有可用时钟时标记不可用。
+
+桌面正式引擎负载脚本 `scripts/test-engine-runtime-load.mjs` 将浏览器主线程忙碌时间与引擎帧间隔分开记录，并用 CDP SystemInfo 的 cpuTime 差采集专属测试浏览器进程组 CPU；同时保留单核总和与全部逻辑核归一化值，不称为整机 CPU。三轮报告可交给 `scripts/compare-performance-sessions.mjs --baseline b1.json b2.json b3.json --candidate c1.json c2.json c3.json`；条件不一致时拒绝比较，主要指标退化超过 10% 时返回失败。`scripts/compare-engine-runtime-load.mjs` 可从同次采样的引擎身份旁证补充实际 Lua 文件哈希，不改写原始报告。桌面数据不代表手机温度、耗电或最低帧率保证。

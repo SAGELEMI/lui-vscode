@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, readdir } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import luaparse from "luaparse";
@@ -23,7 +23,7 @@ export async function checkDocs(root, deployed = false) {
       links++;
     }
     for (const [, code] of source.matchAll(/```xml\s*\n([\s\S]*?)```/g)) {
-      const document = spec.parseLui(/^\s*<(页面|控件)\b/u.test(code) || /^\s*<(页面|控件)\s/u.test(code) ? code : `<控件 名称="DocSnippet">${code}</控件>`);
+      const document = spec.parseLui(/^\s*<(场景|页面|控件)\b/u.test(code) || /^\s*<(场景|页面|控件)\s/u.test(code) ? code : `<控件 名称="DocSnippet">${code}</控件>`);
       assert.deepEqual(document.diagnostics.filter((d) => d.severity === "error"), [], `${path}: XML example`);
       snippets++;
     }
@@ -35,10 +35,17 @@ export async function checkDocs(root, deployed = false) {
   const tutorial = join(root, deployed ? "docs/lui/examples/tutorial" : "examples/tutorial");
   const config = JSON.parse(await readFile(join(tutorial, "lui.project.json"), "utf8"));
   const imports = [];
-  for (const [directory, registered] of Object.entries(config.componentDirectories)) {
+  assert.equal(config.schemaVersion, 5);
+  assert.ok(Array.isArray(config.componentDirectories));
+  for (const directory of config.componentDirectories) {
     const components = [];
-    for (const [name, descriptor] of Object.entries(registered)) {
-      const file = descriptor.markup.replace(/^Presentation\//, "");
+    const localDirectory = directory.replace(/^Presentation\//, "");
+    for (const entry of await readdir(join(tutorial, localDirectory))) {
+      if (!entry.endsWith(".lui")) continue;
+      const file = join(localDirectory, entry).replaceAll("\\", "/");
+      const parsed = spec.parseLui(await readFile(join(tutorial, file), "utf8"), config.schemaVersion);
+      const name = parsed.root?.attrs.find(attribute => attribute.name === "副名称")?.value;
+      assert.ok(name, `${file}: missing 副名称`);
       const declaration = spec.readComponentProperties(await readFile(join(tutorial, file + ".lua"), "utf8"));
       assert.equal(declaration.error, undefined);
       assert.ok(declaration.properties);

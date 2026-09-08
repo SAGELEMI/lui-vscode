@@ -79,12 +79,19 @@ test("WPF-style bindings retain mode, trigger, format and Studio preview content
   });
 });
 
-test("only Page or Control may be a document root, and Page owns positive design coordinates", () => {
+test("Scene, Page or Control may be a document root and only Scene owns positive design coordinates", () => {
   assert.ok(parseLui('<网格 />').diagnostics.some((item) => item.message.includes("根节点只能")));
-  assert.ok(parseLui('<页面 名称="P"><网格 /></页面>').diagnostics.some((item) => item.message.includes("宽度")));
-  const nested = parseLui('<页面 名称="P" 宽度="390" 高度="844"><网格><控件 名称="C"><网格 /></控件></网格></页面>');
+  assert.ok(parseLui('<场景 名称="S"><网格 /></场景>').diagnostics.some((item) => item.message.includes("宽度")));
+  assert.equal(parseLui('<页面 名称="P"><网格 /></页面>').diagnostics.filter((item) => item.severity === "error").length, 0);
+  const nested = parseLui('<场景 名称="S" 宽度="390" 高度="844"><网格><页面 名称="P"><网格 /></页面></网格></场景>');
   assert.ok(nested.diagnostics.some((item) => item.message.includes("不能嵌套")));
   assert.equal(parseLui('<控件 名称="C" 内边距="8"><网格 /></控件>').diagnostics.filter((item) => item.severity === "error").length, 0);
+});
+
+test("schema 4 keeps legacy Page device semantics and emits a migration warning", () => {
+  const legacy = parseLui('<页面 名称="Legacy" 宽度="390" 高度="844"><容器 /></页面>', 4);
+  assert.equal(legacy.root.tag, '场景');
+  assert.ok(legacy.diagnostics.some((item) => item.severity === 'warning' && item.message.includes('schema 5')));
 });
 
 test("only roots require a registry name while anonymous child nodes remain readable", () => {
@@ -189,11 +196,12 @@ test("binding preview content is the only current preview-data syntax and legacy
   assert.equal(doc.diagnostics.filter((item) => item.message.includes("预览状态已移除")).length, 2);
 });
 
-test("legacy English markup stays readable with Chinese migration diagnostics", () => {
+test("legacy English built-ins migrate but component names are never invented globally", () => {
   const doc = parseLui('<lui:Page xmlns:lui="urn:lui" xmlns:积木="Presentation/Components" x:Name="Tower"><积木:Header x:Name="Header" /></lui:Page>');
   assert.ok(doc.diagnostics.some((item) => item.severity === "warning" && item.message.includes("目录:积木")));
   assert.ok(doc.diagnostics.some((item) => item.message.includes("<页面>")));
-  assert.ok(doc.diagnostics.some((item) => item.message.includes("<积木:页眉>")));
+  assert.equal(doc.root.children[0].tag, "积木:Header");
+  assert.ok(!doc.diagnostics.some((item) => item.message.includes("<积木:页眉>")));
 });
 
 test("tag edits update both Chinese opening and closing tags", () => {

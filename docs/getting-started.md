@@ -1,6 +1,6 @@
 # 快速入门
 
-[返回文档入口](README.md)。适用版本：2.4.6。
+[返回文档入口](README.md)。适用版本：3.0.0。
 
 ## 准备项目
 
@@ -10,9 +10,9 @@
 
 运行 **LUI: 检查运行时部署**，确认插件携带版本、布局契约与部署清单哈希匹配。随后确认 [宿主依赖](runtime.md)；该状态检查不验证游戏业务宿主是否实现完整。
 
-## 创建页面
+## 创建场景、页面或控件
 
-执行 **LUI: 新建页面或组件（MVVM）**，选页面并输入互不相同的名称、副名称。生成位置为 scripts/Presentation/Pages，下方同名 Lua 类会调用 InitializeComponent。创建/保存 LUI 时，Studio 根据 sourceRoots 更新 scripts/LUI/Registry.lua。
+执行 **LUI: 新建场景、页面或控件（MVVM）** 并输入名称、副名称。场景生成到 `scripts/Presentation/Scenes`，受控页面生成到 `scripts/Presentation/Pages`，可复用控件生成到 `scripts/Presentation/Components`。同名 Lua 类调用 `InitializeComponent`；创建或保存时，Studio 根据 `sourceRoots` 更新 `scripts/LUI/Registry.lua`。
 
 打开 [Welcome.lui](../examples/tutorial/Pages/Welcome.lui) 与 [Welcome.lui.lua](../examples/tutorial/Pages/Welcome.lui.lua)，学习静态布局、预览文本、运行时 view 与动作表的分工。用完整配对文件替换示例目标文件前确认目标不存在；不要仅复制标记。
 

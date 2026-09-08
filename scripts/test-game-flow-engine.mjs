@@ -5,13 +5,15 @@ import {readFile,readdir,writeFile,mkdir} from 'node:fs/promises';
 import {resolve,relative} from 'node:path';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
+import {verifyEngineRuntime} from './lib/preview-fixture.mjs';
 const require=createRequire(import.meta.url);
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {EnginePreviewHost}=require('../dist/enginePreviewHost.cjs');
 const game=resolve(process.argv[2]);
 const width=Number(process.argv[3]||390),height=Number(process.argv[4]||844);
 assert.ok(Number.isInteger(width)&&width>=320&&width<=1920&&Number.isInteger(height)&&height>=320&&height<=1920,'fixture viewport requires integer dimensions in 320..1920');
-const output=resolve(`artifacts/game-flow-engine-20260906/summary-final/${width}x${height}`);await mkdir(output,{recursive:true});
+const outputIndex=process.argv.indexOf('--output');
+const output=resolve(outputIndex>=0?process.argv[outputIndex+1]:`artifacts/game-flow-engine-20260906/summary-final/${width}x${height}`);await mkdir(output,{recursive:true});
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const config=JSON.parse(await readFile(resolve(game,'scripts/LUI/lui.project.json'),'utf8'));
 const projection={},identities={};
@@ -30,7 +32,7 @@ const storage=`local slots={};FixtureStorage={reads=0,writes=0,paths={}}
 local M={}
 function M.Exists(path) return slots[path]~=nil end
 function M.Read(path) assert(path=='saves/save_a.json' or path=='saves/save_b.json');FixtureStorage.reads=FixtureStorage.reads+1;return slots[path],slots[path] and nil or 'missing' end
-function M.Write(path,text) assert(path=='saves/save_a.json' or path=='saves/save_b.json');assert(type(text)=='string');FixtureStorage.writes=FixtureStorage.writes+1;FixtureStorage.paths[path]=true;slots[path]=text;return true,nil end
+function M.Write(path,text) assert(path=='saves/save_a.json' or path=='saves/save_b.json');assert(type(text)=='string');FixtureStorage.writes=FixtureStorage.writes+1;if FixtureStorage.failWrites then return false,'隔离存储不可写' end;FixtureStorage.paths[path]=true;slots[path]=text;return true,nil end
 return M`;
 projection['Save/LocalSlotStorage.lua']=Buffer.from(storage).toString('base64');
 const fonts=[];for(const family of config.fonts)for(const font of Object.values(family.weights))fonts.push({path:font.resource,sha256:font.sha256,bytes:await readFile(resolve(game,'assets',font.resource))});
@@ -137,7 +139,11 @@ try{
     if name=='reward-selected' then check('reward-claim',text(refs.DetailPanel,'领取奖励')) end
    end
    if name=='reward-claimed' then check('exit-tower',p.currentView_.context_.refs.ExitTowerButton) end
-   if name=='settlement' then check('settlement-close',text(p.resultModal_.contentContainer_,'返回封面')) end
+   if name=='settlement' then check('settlement-close',p.resultView_.context_.refs.HomeButton) end
+   if p.saveOverlayView_ then
+    check('save-retry',p.saveOverlayView_.context_.refs.RetrySave)
+    assert(UI.FindWidgetAt(1,1)==p.saveOverlay_,'save blocker must capture input outside the card')
+   end
    return checks
   end
   function FixtureSummary(name,vg)
@@ -169,7 +175,8 @@ try{
  await step('warehouse',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover');FixturePresentation.currentView_.context_.actions.OpenWarehouse()`,{page:'warehouse',step:'warehouse_intro'});
  await step('loadout',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover');FixturePresentation.currentView_.context_.actions.OpenTower()`,{page:'loadout',step:'loadout_intro'});
  await step('loadout-ready',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'loadout',step:'loadout_select'});
- await step('battle-paused',`FixturePresentation:StartSelectedRun();assert(FixtureApp:HasRun())`,{page:'tower',step:'battle_intro',phase:'battle'});
+ await step('empty-talents-confirm',`FixturePresentation.currentView_.context_.actions.StartRun();assert(FixturePresentation.resultKind_=='loadout_confirm')`,{page:'loadout',step:'loadout_select',result:'loadout_confirm'});
+ await step('battle-paused',`FixturePresentation.resultView_.context_.actions.EnterWithoutTalents();assert(FixtureApp:HasRun())`,{page:'tower',step:'battle_intro',phase:'battle'});
  await step('battle-resumed-save',`assert(FixtureApp:SaveNow());FixturePresentation:CloseTutorialCoach();FixturePresentation:CloseTutorial();
   FixtureApp=require('App').New();local ready,reason=FixtureApp:Initialize();assert(ready,reason);FixturePresentation=require('Presentation').New(FixtureApp);FixtureApp:SetPresentation(FixturePresentation);FixturePresentation:Render()`,{page:'tower',step:'battle_intro',phase:'battle'});
  await step('battle-active',`assert(FixturePresentation:AdvanceTutorialCoach());FixtureApp:Update(0.2);FixturePresentation:RefreshTower();FixturePresentation:Update(0.2)`,{page:'tower',step:'reward',phase:'battle'});
@@ -177,11 +184,16 @@ try{
  await step('reward-selected',`local view=FixturePresentation.resultView_;local scroll=FixtureFind(view.context_.refs.RewardList,function(w) return w.ScrollToBottom~=nil end);assert(scroll,'native reward scroll');scroll:ScrollToBottom();view.context_.actions.SelectReward(view.context_.view.rows[#view.context_.view.rows])`,{page:'tower',step:'reward',phase:'reward',result:'reward'});
  await step('reward-claimed',`FixturePresentation.resultView_.context_.actions.ClaimReward();FixturePresentation:Update(0.6)`,{page:'tower',step:'exit_intro',phase:'between'});
  await step('settlement',`FixturePresentation.currentView_.context_.actions.ExitTower();FixturePresentation:Update(0.6)`,{page:'tower',step:'records_intro'});
- await step('records',`FixturePresentation:FinishSettlement();FixturePresentation.currentView_.context_.actions.OpenRecords()`,{page:'records',step:'records_intro',records:1});
+ await step('records',`FixturePresentation.resultView_.context_.actions.Confirm();FixturePresentation.currentView_.context_.actions.OpenRecords()`,{page:'records',step:'records_intro',records:1});
  await step('completed',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'records',step:'complete'});
  await step('replay-skipped',`assert(FixtureApp:StartTutorialReplay());FixturePresentation:Navigate('cover');assert(FixturePresentation:SkipTutorial())`,{page:'cover',step:'complete'});
  await step('skip-restored',`FixtureApp=require('App').New();assert(FixtureApp:Initialize());FixturePresentation=require('Presentation').New(FixtureApp);FixtureApp:SetPresentation(FixturePresentation);FixturePresentation:Render()`,{page:'cover',step:'complete',records:1});
+ await step('focus-before-save-fault',`FixturePresentation:OpenSettings();FixtureSettings=FixturePresentation.settingsView_;FixtureSettings.context_.actions.BeginRename();FixtureField=FixtureSettings.context_.refs.PlayerName;require('urhox-libs/UI').SetFocus(FixtureField);assert(require('urhox-libs/UI').GetFocus()==FixtureField)`,{page:'cover',step:'complete',records:1});
+ await step('save-fault',`FixtureStorage.failWrites=true;assert(not FixtureApp:SaveNow());FixturePresentation:Update(1/60);assert(FixturePresentation.saveOverlay_);assert(FixtureSettings.suspended_);local UI=require('urhox-libs/UI');assert(UI.GetFocus()==nil);local draft=FixtureField:GetValue();local event=VariantMap();event['Text']='不应输入';UI.HandleTextInput(nil,event);assert(FixtureField:GetValue()==draft,'suspended field must not receive keyboard input');FixtureSaveRoot=FixturePresentation.saveOverlay_;FixtureSaveView=FixturePresentation.saveOverlayView_;FixtureSaveRetry=FixtureSaveView.context_.refs.RetrySave.props.onClick`,{page:'cover',step:'complete',records:1});
+ await step('save-retry-failed',`FixtureSaveRetry();assert(FixturePresentation.saveOverlay_==FixtureSaveRoot and FixturePresentation.saveOverlayView_==FixtureSaveView,'failed retry must keep root/owner');assert(not FixtureSaveView.disposed_)`,{page:'cover',step:'complete',records:1});
+ await step('save-retry-recovered',`FixtureStorage.failWrites=false;FixtureSaveRetry();FixturePresentation:Update(1/60);assert(not FixturePresentation.saveOverlay_ and not FixturePresentation.saveOverlayView_ and FixtureSaveView.disposed_);assert(FixturePresentation.settingsView_==FixtureSettings and not FixtureSettings.suspended_ and require('Presentation.Dialog').Get(FixtureSettings):IsOpen(),'original settings modal resumes after save recovery');local writes=FixtureStorage.writes;FixtureSaveRetry();assert(FixtureStorage.writes==writes,'stale retry callback must be inert');FixtureSaveRetry,FixtureSaveRoot,FixtureSaveView,FixtureSettings,FixtureField=nil,nil,nil,nil,nil`,{page:'cover',step:'complete',records:1});
  report.identity=await(await fetch(host.url+'identity.json')).json();
+ report.runtime=await verifyEngineRuntime(report.identity,resolve('packages/runtime-urhox-lua/adapter'));
  assert.equal(report.blockedRequests.length,0,JSON.stringify(report.blockedRequests));
  assert.equal(report.errors.length,0,JSON.stringify(report.errors));report.passed=true;
 }catch(error){report.passed=false;report.failure=String(error);process.exitCode=1;console.error(error);}

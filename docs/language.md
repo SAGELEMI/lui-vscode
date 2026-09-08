@@ -47,7 +47,7 @@
 </页面>
 ```
 
-目录相对游戏 scripts 资源根，必须匹配 lui.project.json 的 componentDirectories。操作卡是登记的公开名称，不要求与文件名相同。裸全局组件名、未登记别名、越界路径及循环依赖不能用于新项目。Registry 负责实例发现，componentDirectories 负责带目录别名的组件调用，二者不能互相替代。详见 [组件](components.md)。
+目录相对游戏 scripts 资源根，必须位于 lui.project.json 的 componentDirectories 白名单。操作卡来自组件根的 `副名称`，不要求与文件名相同。裸全局组件名、未登记别名、越界路径及循环依赖不能用于新项目。Registry 由 Studio 根据 `.lui` 根与同名后端生成，配置和后端不能单独创造组件。详见 [组件](components.md)。
 
 ## 条件与重复项
 

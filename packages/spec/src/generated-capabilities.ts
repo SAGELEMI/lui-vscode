@@ -77,10 +77,12 @@ export const UI_CAPABILITIES = {
     "lui:Resource"
   ],
   "rootTags": [
+    "lui:Scene",
     "lui:Page",
     "lui:Component"
   ],
   "builtInVisualTags": [
+    "lui:PagePresenter",
     "Container",
     "Grid",
     "Canvas",
@@ -201,6 +203,17 @@ export const UI_CAPABILITIES = {
       "VerticalScrollBarVisibility",
       "ScrollbarColor"
     ],
+    "VirtualList": [
+      "Items",
+      "Each",
+      "StableKey",
+      "ScrollState",
+      "SelectedKey",
+      "Select",
+      "ScrollbarColor",
+      "HorizontalScrollBarVisibility",
+      "VerticalScrollBarVisibility"
+    ],
     "Modal": [
       "Title",
       "Close",
@@ -220,6 +233,7 @@ export const UI_CAPABILITIES = {
     ],
     "lui:For": [
       "Items",
+      "Each",
       "In"
     ],
     "lui:Set": [

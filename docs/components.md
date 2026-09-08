@@ -1,8 +1,8 @@
 # 组件与公开属性
 
-[返回文档入口](README.md)。适用版本：2.4.6。
+[返回文档入口](README.md)。适用版本：2.8.0。
 
-组件由根为控件的 .lui 与同名 .lui.lua 类组成。目录是导入命名空间，公开名称由配置登记。[ActionCard 示例](../examples/tutorial/Components/ActionCard.lui.lua) 展示完整生命周期。
+组件由根为控件的 .lui 与同名 .lui.lua 类组成。目录是导入命名空间，公开名称只取根节点的 `副名称`；配置只登记允许扫描的目录。[ActionCard 示例](../examples/tutorial/Components/ActionCard.lui.lua) 展示完整生命周期。
 
 ## 唯一接口声明
 
@@ -25,16 +25,13 @@ event 接收 `{动作 Confirm}` 动作字符串，不是 Lua 函数值；组件�
 
 ```json
 {
+  "schemaVersion": 4,
   "sourceRoots": ["Presentation"],
-  "componentDirectories": {
-    "Presentation/Components": {
-      "操作卡": { "markup": "Presentation/Components/ActionCard.lui", "code": "Presentation/Components/ActionCard.lui.lua" }
-    }
-  }
+  "componentDirectories": ["Presentation/Components"]
 }
 ```
 
-保留部署写入的版本、契约、哈希及其他登记。Runtime 按同名约定加载 `markup + ".lua"`，不支持以不同名称后端作为新组件模式。
+保留部署写入的版本、契约、哈希及其他登记。Studio 扫描目录中的 `.lui`，要求根 `副名称` 唯一且存在同名 `.lui.lua`，再生成运行时注册表。配置键、后端或硬编码映射不能单独创造组件。
 
 ```xml
 <页面 目录:积木="Presentation/Components" 名称="CardDemo" 宽度="390" 高度="844">

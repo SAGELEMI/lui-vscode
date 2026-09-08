@@ -12,7 +12,7 @@ await rm(resolve("runtime"), { recursive: true, force: true });
 await cp(resolve("packages/runtime-urhox-lua/adapter"), resolve("runtime/urhox-lua"), { recursive: true });
 
 const hostOptions = {
-  entryPoints: { extension: "src/extension.ts", enginePreviewHost: "src/enginePreviewHost.ts", previewSnapshot: "src/webview/previewSnapshot.ts", spec: "packages/spec/src/index.ts", sourceSync: "src/webview/sourceSync.ts" },
+  entryPoints: { extension: "src/extension.ts", enginePreviewHost: "src/enginePreviewHost.ts", projectPreviewHost: "src/projectPreviewHost.ts", previewSnapshot: "src/webview/previewSnapshot.ts", spec: "packages/spec/src/index.ts", sourceSync: "src/webview/sourceSync.ts" },
   outdir,
   bundle: true,
   platform: "node",

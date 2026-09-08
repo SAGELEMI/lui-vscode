@@ -42,7 +42,7 @@ function Project.Validate(expectedVersion, expectedContract)
     local fonts, files, fontError = Project.Fonts(config)
     if not fonts then return nil, fontError end
     local registry = require("LUI.Registry")
-    for kind, entries in pairs({ pages = registry.pages, controls = registry.controls }) do
+    for kind, entries in pairs({ scenes = registry.scenes, pages = registry.pages, controls = registry.controls }) do
         for name, descriptor in pairs(entries or {}) do
             if not cache:Exists(descriptor.markup) then return nil, "LUI 未找到" .. kind .. "标记：" .. name .. " -> " .. tostring(descriptor.markup) .. "（检查资源及 .meta uuid）" end
             if not cache:Exists(descriptor.code) then return nil, "LUI 未找到" .. kind .. "后端：" .. name .. " -> " .. tostring(descriptor.code) .. "（检查资源及 .meta uuid）" end

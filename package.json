@@ -3,7 +3,7 @@
   "displayName": "LUI Studio",
   "description": "A UTF-8 XAML-inspired UI language and safe design preview for game projects.",
   "icon": "icons/lui-studio.png",
-  "version": "2.6.0",
+  "version": "3.0.0",
   "publisher": "SAGELEMI",
   "license": "MIT",
   "repository": {
@@ -33,6 +33,9 @@
     "onLanguage:lui",
     "onCommand:lui.deployUrhoXLuaRuntime",
     "onCommand:lui.openPreview",
+    "onCommand:lui.runProjectPreview",
+    "onCommand:lui.refreshProjectPreview",
+    "onCommand:lui.stopProjectPreview",
     "onCommand:lui.generateActionStub",
     "onCommand:lui.createPair"
   ],
@@ -71,6 +74,18 @@
         "title": "LUI: 部署 UrhoX/Lua 运行时"
       },
       {
+        "command": "lui.runProjectPreview",
+        "title": "LUI: 运行项目预览"
+      },
+      {
+        "command": "lui.refreshProjectPreview",
+        "title": "LUI: 刷新项目预览"
+      },
+      {
+        "command": "lui.stopProjectPreview",
+        "title": "LUI: 停止项目预览"
+      },
+      {
         "command": "lui.checkWorkspace",
         "title": "LUI: 检查运行时部署"
       },
@@ -80,7 +95,7 @@
       },
       {
         "command": "lui.createPair",
-        "title": "LUI: 新建页面或组件（MVVM）"
+        "title": "LUI: 新建场景、页面或控件（MVVM）"
       }
     ],
     "customEditors": [
@@ -140,10 +155,11 @@
     "build": "node ./scripts/build.mjs",
     "deploy:urhox": "node ./scripts/deploy-runtime.mjs",
     "migrate:v07": "node ./scripts/migrate-lui-v07.mjs",
+    "migrate:scenes": "node ./scripts/migrate-scenes-v5.mjs",
     "check:lua": "node ./scripts/check-lua.mjs",
     "test": "npm run build && node --test ./tests/*.test.mjs",
     "check": "npm run test",
-    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-2.6.0.vsix",
+    "package:vsix": "npm run build && npx @vscode/vsce package --out ./dist/lui-vscode-3.0.0.vsix",
     "test:vscode": "node scripts/test-vscode-document.mjs",
     "test:browser": "node scripts/test-workspace-browser.mjs",
     "watch": "node ./scripts/build.mjs --watch",

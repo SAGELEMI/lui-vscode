@@ -138,10 +138,20 @@ async function stampLayoutContract() {
   await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
 }
 
+async function verifyBytes(directory) {
+  const manifest = JSON.parse(await readFile(join(sourceRoot, 'runtime-manifest.json'), 'utf8'));
+  for (const [name, expected] of Object.entries(manifest.files ?? {})) {
+    if (!/^[\w-]+\.lua$/.test(name)) throw new Error(`Invalid runtime manifest path: ${name}`);
+    const actual = createHash('sha256').update(await readFile(join(directory, name))).digest('hex');
+    if (actual !== expected) throw new Error(`LUI actual file hash mismatch: ${join(directory,name)}`);
+  }
+}
+await verifyBytes(sourceRoot);
 await scanMeta(scriptsRoot);
 if (!preserveBackup) await consolidateLegacyBackups();
 await deployDirectory(sourceRoot);
 await stampLayoutContract();
+await verifyBytes(targetRoot);
 if (!backupPrepared && !preserveBackup) await completeBackup();
 if (await pathExists(join(scriptsRoot, "Presentation"))) await ensureLuiMetadata(join(scriptsRoot, "Presentation"));
 const guidance = await deployGuidance(repositoryRoot, projectRoot, guidanceNodeIO);

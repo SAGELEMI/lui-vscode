@@ -37,7 +37,7 @@ return {
     Spine = { name = "骨骼动画", ui = "Spine", category = "媒体", children = false, bindable = nil, events = { "Complete" } },
     SpriteSheet = { name = "精灵表", ui = "SpriteSheet", category = "媒体", children = false, bindable = nil, events = { "Complete" } },
     Sprite = { name = "精灵", ui = "Sprite", category = "媒体", children = false, bindable = nil, events = {  } },
-    VirtualList = { name = "虚拟列表", ui = "VirtualList", category = "数据", children = false, bindable = nil, events = { "Select" } },
+    VirtualList = { name = "虚拟列表", ui = "VirtualList", category = "数据", children = true, bindable = nil, events = { "Select" } },
     DragDropContext = { name = "拖放上下文", ui = "DragDropContext", category = "交互", children = true, bindable = nil, events = { "DragStart", "DragEnd", "DragCancel" } },
     ItemSlot = { name = "物品槽", ui = "ItemSlot", category = "交互", children = false, bindable = nil, events = { "Click", "Change" } },
     SkillTree = { name = "技能树", ui = "SkillTree", category = "交互", children = false, bindable = nil, events = { "Select", "Change" } },

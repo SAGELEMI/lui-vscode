@@ -1,10 +1,10 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 5,
   "adapter": "urhox-lua",
-  "version": "2.6.0",
-  "layoutContract": "xaml-initialize-v1-unified-layout-hy-vx-v4-fidelity",
+  "version": "3.0.0",
+  "layoutContract": "xaml-initialize-v1-unified-layout-hy-vx-v6-source-components-progressive-paint",
   "sourceRoots": [
     "Presentation"
   ],
-  "componentDirectories": {}
+  "componentDirectories": []
 }

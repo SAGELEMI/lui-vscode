@@ -76,7 +76,7 @@ test("TextField uses its native value contract and constructor size before first
 test("bound Visibility remains live while literal collapsed nodes are pruned", async () => {
   const runtime = await readFile("packages/runtime-urhox-lua/adapter/Runtime.lua", "utf8");
   assert.match(runtime, /local visibilityBinding = bindingSpec\(attrs\.Visibility\)/);
-  assert.match(runtime, /if not visibilityBinding and isCollapsed\(visibility\) then return nil end/);
+  assert.match(runtime, /if not visibilityBinding and not Expressions\.Parse\(attrs\.Visibility\) and isCollapsed\(visibility\) then return nil end/);
   assert.match(runtime, /props\.visible = value ~= nil and not isCollapsed\(value\)/);
   assert.doesNotMatch(runtime, /bindingSpec\(attrs\.Visibility\) and visibility == nil/);
 });

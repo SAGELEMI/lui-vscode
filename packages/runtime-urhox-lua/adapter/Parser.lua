@@ -3,11 +3,8 @@ local Parser = {}
 local Controls = require("LUI.Controls")
 
 local tags = {
-    ["页面"] = "lui:Page", ["控件"] = "lui:Component", ["组件"] = "lui:Component", ["条件"] = "lui:If", ["重复项"] = "lui:For", ["循环"] = "lui:For", ["内容呈现器"] = "lui:Slot", ["插槽"] = "lui:Slot", ["预览"] = "lui:Preview", ["设值"] = "lui:Set",
+    ["场景"] = "lui:Scene", ["页面"] = "lui:Page", ["控件"] = "lui:Component", ["组件"] = "lui:Component", ["条件"] = "lui:If", ["重复项"] = "lui:For", ["循环"] = "lui:For", ["内容呈现器"] = "lui:Slot", ["插槽"] = "lui:Slot", ["页面呈现器"] = "lui:PagePresenter", ["预览"] = "lui:Preview", ["设值"] = "lui:Set",
     ["容器"] = "Container", ["网格"] = "Grid", ["画布"] = "Canvas", ["视图框"] = "Viewbox", ["堆叠面板"] = "StackPanel", ["换行面板"] = "WrapPanel", ["停靠面板"] = "DockPanel", ["均分网格"] = "UniformGrid", ["边框"] = "Border", ["内容控件"] = "ContentControl", ["面板"] = "Panel", ["横排"] = "Row", ["文本"] = "Text", ["按钮"] = "Button", ["卡片"] = "Card", ["滚动区"] = "Scroll", ["滚动查看器"] = "Scroll", ["进度条"] = "Progress", ["开关"] = "Toggle", ["滑块"] = "Slider", ["安全区"] = "SafeArea", ["弹窗"] = "Modal", ["分区"] = "Section", ["提示"] = "Notice", ["屏幕"] = "Screen", ["固定屏幕"] = "FixedScreen",
-}
-local components = {
-    Header = "页眉", EquipmentSlots = "装备槽", ScrollRegion = "滚动区域", InformationPanel = "信息面板", SelectionList = "选择列表", TabView = "页签视图",
 }
 local attributeAliases = {
     ["文字左右对齐"] = "TextHorizontalAlignment", ["文字上下对齐"] = "TextVerticalAlignment",
@@ -18,6 +15,9 @@ local attributeAliases = {
 -- LUI 2.0 universal layout-host attributes.  Kept separate from the legacy
 -- aliases above so old source remains readable without advertising it.
 attributeAliases["子项排列"] = "ChildLayout"
+attributeAliases["条目键"] = "StableKey"
+attributeAliases["滚动状态"] = "ScrollState"
+attributeAliases["选中键"] = "SelectedKey"
 attributeAliases["允许换行"] = "Wrap"
 attributeAliases["固定子项宽度"] = "ChildWidth"
 attributeAliases["固定子项高度"] = "ChildHeight"
@@ -64,7 +64,7 @@ local function canonicalTag(tag)
     local owner, property = tag:match("^(.+)%.(.+)$")
     if owner and property then return canonicalTag(owner) .. "." .. canonicalAttr(property) end
     local alias, component = tag:match("^([^:]+):(.+)$")
-    if alias and alias ~= "lui" then return alias .. ":" .. (components[component] or component) end
+    if alias and alias ~= "lui" then return alias .. ":" .. component end
     return tags[tag] or tag
 end
 
@@ -144,7 +144,20 @@ end
 
 function Parser.Read(path) return readResource(path) end
 
-function Parser.Parse(text, path)
+-- Layout comparisons may contain < or > inside quoted attribute values.
+-- Only an unquoted closing delimiter ends the opening tag.
+local function findTagClose(text, offset)
+    local quote
+    for index = offset, #text do
+        local char = text:sub(index, index)
+        if quote then
+            if char == quote then quote = nil end
+        elseif char == '"' or char == "'" then quote = char
+        elseif char == '>' then return index end
+    end
+end
+
+function Parser.Parse(text, path, schemaVersion)
     if type(text) ~= "string" then return nil, "LUI 源码必须是文本。" end
     if text:sub(1, 3) == "\239\187\191" then text = text:sub(4) end
     local pool, root, stack = makeSymbolPool(), nil, {}
@@ -163,7 +176,7 @@ function Parser.Parse(text, path)
             if not commentEnd then return nil, string.format("%s:%d LUI 注释未结束。", path, openStart) end
             offset = commentEnd + 3
         else
-            local originalClose = text:find(">", openStart + 1, true)
+            local originalClose = findTagClose(text, openStart + 1)
             if not originalClose then return nil, string.format("%s:%d LUI 标签未结束。", path, openStart) end
             local index = skipSpace(text, openStart + 1)
             local closing = false
@@ -199,27 +212,31 @@ function Parser.Parse(text, path)
     end
     if #stack > 0 then return nil, string.format("%s: <%s> 缺少结束标签。", path, stack[#stack].tag) end
     if not root then return nil, string.format("%s: LUI 文档缺少根元素。", path) end
-    if root.tag ~= "lui:Page" and root.tag ~= "lui:Component" then return nil, string.format("%s: LUI 根节点只能是 <页面> 或 <控件>。", path) end
-    if root.tag == "lui:Page" then
+    schemaVersion = tonumber(schemaVersion) or 5
+    if schemaVersion < 5 and root.tag == "lui:Page" then
+        root.tag, root.legacyPageScene = "lui:Scene", true
+    end
+    if root.tag ~= "lui:Scene" and root.tag ~= "lui:Page" and root.tag ~= "lui:Component" then return nil, string.format("%s: LUI 根节点只能是 <场景>、<页面> 或 <控件>。", path) end
+    if root.tag == "lui:Scene" then
         local width, height = tonumber(root.attrs.Width), tonumber(root.attrs.Height)
-        if not width or width <= 0 or not height or height <= 0 then return nil, string.format("%s: <页面> 的宽度和高度必须是正数 px。", path) end
+        if not width or width <= 0 or not height or height <= 0 then return nil, string.format("%s: <场景> 的宽度和高度必须是正数 px。", path) end
     end
     local function validateRootOnly(node)
         for _, child in ipairs(node.children or {}) do
-            if child.tag == "lui:Page" or child.tag == "lui:Component" then return false end
+            if child.tag == "lui:Scene" or child.tag == "lui:Page" or child.tag == "lui:Component" then return false end
             if not validateRootOnly(child) then return false end
         end
         return true
     end
-    if not validateRootOnly(root) then return nil, string.format("%s: <页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", path) end
+    if not validateRootOnly(root) then return nil, string.format("%s: <场景>、<页面> 与 <控件> 只能作为 LUI 文档根节点，不能嵌套。", path) end
     root.symbols = pool.names
     return root, nil
 end
 
-function Parser.Load(path)
+function Parser.Load(path, schemaVersion)
     local text, err = readResource(path)
     if not text then return nil, err end
-    return Parser.Parse(text, path)
+    return Parser.Parse(text, path, schemaVersion)
 end
 
 Parser.CanonicalAttribute = canonicalAttr

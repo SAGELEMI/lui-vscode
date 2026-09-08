@@ -1,10 +1,10 @@
 -- ScrollView 渲染适配：四种可见性按轴独立生效；保留 UI 库原有滚轮、触控和拖拽处理。
 -- 空内容的“显示”绘制满轨道指示条，不伪造内容尺寸或可滚动距离。
 local Contract = require("LUI.Contract")
+local ScrollInput = require("LUI.ScrollInput")
 ---@class LuiScrollbars
 ---@field Gutters fun(view: any): number, number
 ---@field Attach fun(widget: any, horizontal: string, vertical: string, tint: number[]?)
----@type LuiScrollbars
 local Scrollbars = {}
 local Defaults = Contract.defaults.scroll
 
@@ -19,6 +19,7 @@ function Scrollbars.Gutters(view)
 end
 
 function Scrollbars.Attach(widget, horizontal, vertical, tint)
+    ScrollInput.Attach(widget)
     -- 浏览器的常驻滚动条会参与内容框计算。UrhoX ScrollView 默认叠画，
     -- 因此把同样的 8px gutter 暴露给 LUI 布局宿主，避免覆盖条目。
     widget.luiHorizontalScrollbarMode_ = horizontal

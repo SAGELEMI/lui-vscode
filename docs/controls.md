@@ -1,12 +1,12 @@
 # 控件与属性参考
 
-[返回文档入口](README.md)。适用版本：2.6.0。
+[返回文档入口](README.md)。适用版本：3.0.0。
 
 本页由 scripts/generate-reference.mjs 从正式词汇与控件目录生成，运行 npm run docs:generate 更新。表格列出已登记语法，不代表 Studio 模拟全部复杂控件交互，或 Runtime 实现底层 UI 的全部属性；使用新能力时核对适配器及目标引擎 UI 文档。
 
 ## 根与结构
 
-页面、控件是文档根；条件、重复项控制构建；内容呈现器接受组件调用方内容。重复项的项目属性是当前项别名，与数据控件的项目集合属性含义不同。
+场景、页面、控件是文档根；页面呈现器负责受控页面切换；条件、重复项控制构建；内容呈现器接受组件调用方内容。重复项的项目属性是当前项别名，与数据控件的项目集合属性含义不同。
 
 ## 基础与布局标签
 
@@ -78,7 +78,7 @@
 | 骨骼动画 | Spine | 媒体 | — | 完成 | 否 |
 | 精灵表 | SpriteSheet | 媒体 | — | 完成 | 否 |
 | 精灵 | Sprite | 媒体 | — | — | 否 |
-| 虚拟列表 | VirtualList | 数据 | — | 选择 | 否 |
+| 虚拟列表 | VirtualList | 数据 | — | 选择 | 是 |
 | 拖放上下文 | DragDropContext | 交互 | — | 拖动开始、拖动结束、拖动取消 | 是 |
 | 物品槽 | ItemSlot | 交互 | — | 点击、变更 | 否 |
 | 技能树 | SkillTree | 交互 | — | 选择、变更 | 否 |
@@ -93,12 +93,12 @@
 | --- | --- | --- | --- |
 | 边框宽度 | BorderWidth | length | 按上下文 |
 | 边框颜色 | BorderColor | color | 按上下文 |
-| 滚动条颜色 | ScrollbarColor | color | 滚动查看器 |
+| 滚动条颜色 | ScrollbarColor | color | 滚动查看器、虚拟列表 |
 | 名称 | x:Name | 按控件约定 | 按上下文 |
 | 副名称 | x:DisplayName | 按控件约定 | 按上下文 |
 | 引用 | x:Ref | 按控件约定 | 按上下文 |
-| 水平滚动条可见性 | HorizontalScrollBarVisibility | 自动、显示、隐藏、禁用 | 滚动查看器 |
-| 垂直滚动条可见性 | VerticalScrollBarVisibility | 自动、显示、隐藏、禁用 | 滚动查看器 |
+| 水平滚动条可见性 | HorizontalScrollBarVisibility | 自动、显示、隐藏、禁用 | 滚动查看器、虚拟列表 |
+| 垂直滚动条可见性 | VerticalScrollBarVisibility | 自动、显示、隐藏、禁用 | 滚动查看器、虚拟列表 |
 | 宽度 | Width | length | 按上下文 |
 | 高度 | Height | length | 按上下文 |
 | 最小宽度 | MinWidth | length | 按上下文 |
@@ -183,7 +183,7 @@
 | 类型 | Type | 按控件约定 | 按上下文 |
 | 条件 | Test | 按控件约定 | 按上下文 |
 | 集合 | In | 按控件约定 | 按上下文 |
-| 循环项 | Each | 按控件约定 | 按上下文 |
+| 循环项 | Each | text | 按上下文 |
 | 路径 | Path | 按控件约定 | 按上下文 |
 | 插槽名 | Name | 按控件约定 | 按上下文 |
 | 错误 | Error | 按控件约定 | 按上下文 |
@@ -210,5 +210,8 @@
 | 轨道画刷 | TrackBrush | brush | 进度条 |
 | 进度画刷 | FillBrush | brush | 进度条 |
 | 进度方向 | ProgressDirection | 从左到右、从右到左、从上到下、从下到上 | 按上下文 |
+| 条目键 | StableKey | text | 按上下文 |
+| 滚动状态 | ScrollState | text | 按上下文 |
+| 选中键 | SelectedKey | text | 按上下文 |
 
 绑定模式、刷新限制和事件桥见 [绑定与事件](bindings.md)；尺寸和特殊轴向见 [布局](layout.md)。

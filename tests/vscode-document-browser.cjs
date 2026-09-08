@@ -12,7 +12,7 @@ exports.run = async () => {
   const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
   const temp = path.join(process.env.LUI_TEST_PROJECT,'scripts');
   await fs.mkdir(path.join(temp,'LUI'),{recursive:true}); await fs.mkdir(path.join(temp,'Components'));
-  await fs.writeFile(path.join(temp,'LUI/lui.project.json'),JSON.stringify({schemaVersion:3,sourceRoots:['Components'],componentDirectories:{Components:{'测试':'Components/Child.lui'}}}));
+  await fs.writeFile(path.join(temp,'LUI/lui.project.json'),JSON.stringify({schemaVersion:4,sourceRoots:['Components'],componentDirectories:['Components']}));
   await fs.writeFile(path.join(temp,'Components/Child.lui'),'<控件 名称="Child" 副名称="测试"><按钮 文本="{绑定 props[\'标题\']}" 宽度="90" 高度="40" 圆角="12" /></控件>');
   await fs.writeFile(path.join(temp,'Components/Child.lui.lua'),'local C={}\nC.Properties={ ["标题"]={type="string",default="默认子控件",description="实例标题"}, ["Title"]={type="number",default=7} }\nreturn C');
   const initial = '<控件 名称="Fixture" 宽度="300" 高度="180">\n  <容器>\n    <按钮 文本="A" 宽度="40" 高度="20" />\n  </容器>\n</控件>';

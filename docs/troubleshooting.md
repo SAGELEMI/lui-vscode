@@ -1,5 +1,7 @@
 # 排错
 
+多行正文首尾被裁、下方却有空白时，先比较 Label 的布局高度和 `multilineMetrics_.textHeight`。普通 MeasureTextFit 的宽度未包含 Label 为字形越界而收窄换行框的处理；Modal 缩放还可能使实际字形边界发生变化。当前 Measure 将真实绘制测量反馈给布局并使祖先测量缓存失效，稳定帧不反复排列；显式最大高度与滚动裁剪仍保留。行高校准必须传有限宽度，否则 MeasureTextFit 会直接返回零尺寸。仅增加业务面板高度或写“宽度100%”不能证明这个差异已消失。
+
 2.6.0：教程被 Modal 遮住时核对正式部署的 Overlays 与 Runtime 哈希，使用全屏 MountGlobalOverlay 接口，不仅设置 zIndex。描边报颜色类型错误时检查是否部署了兼容原生 RGBA 表的 Typography；两行通知需要在标记中声明最大高度/裁剪，不能仅在后端 SetStyle 后假定测量契约已同步。主题/字体变更提示未就绪时重开隔离预览，避免沿用原生控件旧配置。
 
 [返回文档入口](README.md)。适用版本：2.6.0。

@@ -64,8 +64,11 @@ function Widget:GetAbsoluteLayoutForHitTest() return self.layout end
 function Widget:AddChild(child) self.children[#self.children+1]=child;child.parent=self end
 function Widget:RemoveChild(child) for i,v in ipairs(self.children) do if v==child then table.remove(self.children,i);child.parent=nil;return end end end
 function Widget:Render() end
+function Widget:RenderFullBackground() end
 function Widget:MarkLayoutDirty() end
 function Widget:OnPointerDown() end
+function Widget:OnFocus() end
+function Widget:Destroy() self.destroyed=true end
 function Widget:SetText(text) self.props.text=text end
 function Widget.ExpandPaddingShorthand(props) return props end
 local function make(props) local w=setmetatable({}, {__index=Widget});w:Init(props);return w end
@@ -251,6 +254,16 @@ received=nil
 local chat=build("聊天窗口",{},'选择="{动作 Select}"',eventActions)
 chat.ShowItemTooltip=function() end
 chat:AddMessage({sender="测试",content="物品"})
+-- Input commits messages immediately; native rich-text geometry is prepared
+-- by the next guarded draw. Drawing remains a double in this state/event test.
+for _,name in ipairs({'nvgSave','nvgRestore','nvgIntersectScissor','nvgBeginPath',
+ 'nvgRoundedRect','nvgFillColor','nvgFill','nvgFontSize','nvgFontFace','nvgTextAlign','nvgText'}) do
+ _G[name]=function()end
+end
+function nvgRGBA(...)return{...}end
+NVG_ALIGN_LEFT,NVG_ALIGN_TOP=1,2
+require('LUI.MeasureBudget').BeginFrame(runtime,1)
+chat:Render(0)
 chat.messages_[1].richText.props.onItemClick(row,{x=0,y=0,w=5,h=5});assert(received==row,"ChatWindow callback preserves the first item parameter")
 -- VirtualList's declarative item factory remains unsupported. Exercise its
 -- real pool-item event method with injected widget construction infrastructure.
@@ -290,6 +303,34 @@ for _,tag in ipairs({"选项卡","步骤条","轮播"}) do
  local current=tag=="选项卡" and widget:GetActiveTab() or tag=="步骤条" and widget:GetActiveStep() or widget:GetCurrentIndex()
  assert(current==original,"Items refresh must not leak latest source through a one-time Value binding")
 end
+-- Use the official manager's focus and keyboard routing with native TextField.
+-- Destroying a submitted dialog must not leave its input accepting more Enter keys.
+MOUSEB_LEFT,MOUSEB_MIDDLE,MOUSEB_RIGHT=0,1,2
+ui={}
+package.loaded['urhox-libs/UI/Core/PointerEvent']=assert(load(native_read('urhox-libs/UI/Core/PointerEvent')))()
+local focusManager=assert(load(native_read('urhox-libs/UI/Core/UI'),'@official-1.29.7/UI'))()
+UI.GetFocus,UI.ClearFocus=focusManager.GetFocus,focusManager.ClearFocus
+KEY_RETURN,KEY_KP_ENTER=13,271
+local submits,blurs=0,0
+local editor
+editor=build('文本框',{text='登塔者'},'文本="{绑定 view.text}" 提交="{动作 Submit}"',{
+ Submit=function()submits=submits+1;editor:Destroy()end})
+editor.props.onBlur=function()assert(not editor.destroyed,'focus clears before native destruction');blurs=blurs+1 end
+focusManager.SetFocus(editor)
+focusManager.HandleKeyDown(KEY_RETURN)
+assert(submits==1 and editor.destroyed and UI.GetFocus()==nil and not editor.state.focused,'submitted TextField destruction releases native focus')
+focusManager.HandleKeyDown(KEY_RETURN)
+assert(submits==1,'Enter after disposal must not invoke the old dialog submit callback')
+local other=build('文本框',{text='仍在编辑'},'文本="{绑定 view.text}"')
+focusManager.SetFocus(other)
+editor:Destroy();editor:Destroy()
+assert(UI.GetFocus()==other and other.state.focused and blurs==1,'repeated destruction leaves another live editor focused')
+local unfocused=build('文本框',{text='未聚焦'},'文本="{绑定 view.text}"')
+unfocused:Destroy()
+assert(UI.GetFocus()==other,'destroying an unfocused widget cannot change another widget focus')
+other:Destroy();other:Destroy()
+assert(UI.GetFocus()==nil,'repeated focused-widget disposal is safe')
+print('Native focus disposal PASS: submitted TextField stops old Enter callbacks, blur precedes destruction, unrelated focus survives, repeated disposal is safe.')
 print("Native controls: official constructors/getters/setters, two-way callbacks, silent dynamic values, nil/defaults, bound lists, focus/state and error recovery PASS.")
 ''')
 

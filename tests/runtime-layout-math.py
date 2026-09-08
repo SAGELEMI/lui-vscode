@@ -49,6 +49,8 @@ function nvgRGBA(...) return {...} end
 NVG_ALIGN_LEFT,NVG_ALIGN_CENTER_VISUAL,NVG_ALIGN_RIGHT,NVG_ALIGN_MIDDLE=1,2,4,16
 local UI={Panel=make,Label=make,Button=make,ScrollView=make,Theme={FontSize=function(v) return v*4/3 end,FontFace=function() return "sans" end}}
 function UI.MeasureTextFit(text, options)
+    -- Native API does not measure when neither bound is finite.
+    if options.width == nil and options.height == nil then return {width=0,height=0} end
     local size=options.fontSize
     local natural=utf8.len(text)*size/2
     local width=options.width or natural
@@ -60,6 +62,12 @@ package.loaded["urhox-libs/UI"]=UI
 package.loaded["Presentation.Components"]={}
 local Runtime=require("LUI.Runtime")
 local Parser=require("LUI.Parser")
+-- These doubles test synchronous layout algebra without physical BeginFrame
+-- events. All fixture runtimes (including runpy dependents) explicitly inherit
+-- a deterministic, ample budget; dedicated budget tests and real-engine probes
+-- cover the production 2ms/64 limits.
+Runtime.luiMeasureBudget_={clock=function()return 0 end,seconds=1,limit=1000000,
+ calls=0,rows=0,frame=0,overrunMilliseconds=0}
 local runtime=setmetatable({isV2_=true,config_={componentDirectories={}}},Runtime)
 local liveSource={view={value="初始"}}
 local componentRuntime=setmetatable({
@@ -307,6 +315,30 @@ assert(live.refs.button.props.disabled==false,'false re-enables button')
 live.view.text='0012';render(liveRoot)
 assert(live.refs.label.props.text=='0012' and input.props.value=='0012','text refresh preserves numeric-looking names and leading zeroes')
 print('Runtime live scalar binding PASS: text/color/nil/one-time/disabled/gradient/native input/focus; no synthetic input events.')
+-- Native glyph overhang can add a wrap row after ordinary fit measurement.
+-- The feedback is an ink measurement, not a previous arranged widget height.
+local measured=make({text='A\nB',fontSize=12,lineHeight=1.45,whiteSpace='normal',verticalAlign='middle'})
+measured.luiText_='Text'
+local renderedHeight=100
+function measured:Render()
+    assert(self.props.lineHeight>0 and self.props.verticalAlign=='top')
+    self.multilineMetrics_={textHeight=renderedHeight}
+end
+Measure.AttachText(measured);Measure.Observe(measured)
+local _,initialHeight=Measure.Leaf(measured,90)
+assert(initialHeight>0 and initialHeight<renderedHeight)
+Measure.Frame(measured,0,0,90,initialHeight);measured:Render()
+local _,correctedHeight=Measure.Leaf(measured,90);near(correctedHeight,renderedHeight,'native wrap height feeds measurement')
+assert(measured.props.lineHeight==1.45 and measured.props.verticalAlign=='middle','drawing restores authored values')
+Measure.Frame(measured,0,0,90,correctedHeight)
+local revision=Measure.Revision(measured)
+for i=1,30 do measured:Render() end
+assert(Measure.Revision(measured)==revision,'stable native bounds do not invalidate every frame')
+measured:SetText('C\nD');local _,changedHeight=Measure.Leaf(measured,90)
+assert(changedHeight<correctedHeight,'changed text discards previous native measurement')
+measured.props.lineHeight=2;local _,spacedHeight=Measure.Leaf(measured,90)
+assert(spacedHeight>changedHeight,'line-height participates in leaf cache identity')
+print('Runtime text measurement PASS: finite calibration, native wrap bounds, stable frames, authored style restoration and text/line-height cache changes.')
 print("Runtime arrangement PASS: collapsed/free/flow/cache/identity, bound canvas rectangles survive recursive rendering, post-child layout callback.")
 print("Runtime parity PASS: resizing, nested percentages, bound function clicks, public event forwarding, bound slider limits, real adapter gradient drawing calls (no GPU).")
 print("Runtime algebra PASS: shared 1.45 line boxes/36px buttons/live defaults/falsey values/button inheritance/free-flow-fill/8px purple scrollbar contract/equipment anchors/30 frames/immutable declarations/identities; not a Yoga or visual result.")

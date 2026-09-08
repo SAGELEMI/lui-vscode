@@ -104,7 +104,7 @@ try {
   await mkdir('artifacts', { recursive: true });
   await page.click('#fit'); await settle();
   await page.screenshot({ path: 'artifacts/workspace-2.3.1-component.png' });
-  await open('Presentation/Pages/Loadout.lui');
+  await open('Presentation/Scenes/Loadout.lui');
   assert.deepEqual((await bounds()).canvas, [390, 844]); assert.equal(await page.locator('#device-label').isVisible(), true);
   await page.click('#actual-size');
   const pageScale = await page.locator('.page-root').getAttribute('data-page-scale');

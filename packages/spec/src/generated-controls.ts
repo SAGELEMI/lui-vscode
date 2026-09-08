@@ -337,6 +337,7 @@ export const UI_CONTROL_DEFINITIONS: readonly LuiControlDefinition[] = [
     "name": "虚拟列表",
     "ui": "VirtualList",
     "category": "数据",
+    "children": true,
     "events": [
       "Select"
     ]

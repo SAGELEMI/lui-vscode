@@ -1,6 +1,8 @@
 local UI = require("urhox-libs/UI")
 local Parser = require("LUI.Parser")
-local Components = require("Presentation.Components")
+-- Only legacy project-specific tags need this bridge. The shared Runtime and
+-- templated controls have no dependency on a game's Presentation modules.
+local function legacyComponents() return require("Presentation.Components") end
 ---@class LuiControlDescriptor
 ---@field ui string
 ---@field events string[]
@@ -16,15 +18,20 @@ end
 local Alignment = require("LUI.Alignment")
 local Paths = require("LUI.Paths")
 local Properties = require("LUI.Properties")
+local Expressions = require("LUI.LayoutExpressions")
+local Dirty = require("LUI.Dirty")
 local LiveProps = require("LUI.LiveProps")
----@class LuiScrollbars
----@field Gutters fun(view: any): number, number
----@field Attach fun(widget: any, horizontal: string, vertical: string, tint: number[]?)
 ---@type LuiScrollbars
 local Scrollbars = require("LUI.Scrollbars")
 local Measure = require("LUI.Measure")
+local MeasureBudget = require("LUI.MeasureBudget")
+local NativeText = require("LUI.NativeText")
+local RenderBudget = require("LUI.RenderBudget")
+local MeasureQueue = require("LUI.MeasureQueue")
+local NativeDeferred = require("LUI.NativeDeferred")
 local Contract = require("LUI.Contract")
 local Brush = require("LUI.Brush")
+local ButtonVariant = require("LUI.ButtonVariant")
 ---@type LuiTypography
 local Typography = require("LUI.Typography")
 local PageFrame = require("LUI.PageFrame")
@@ -36,6 +43,8 @@ local Project = require("LUI.Project")
 ---@field configError_ string?
 local Runtime = {}
 local Overlays = require("LUI.Overlays")
+local Refresh = require("LUI.Refresh")
+local Structure = require("LUI.Structure")
 Runtime.__index = Runtime
 local Defaults = Contract.defaults
 local Fidelity = Contract["renderFidelity"] or {
@@ -75,7 +84,9 @@ local function loadLuaModule(path, roots)
     return exported, nil
 end
 
-local function bindingSpec(value)
+local bindingCache, bindingCacheCount = {}, 0
+Runtime.stats = { bindingParses = 0 }
+local function parseBinding(value)
     if type(value) ~= "string" then return nil end
     local body = value:match("^{绑定%s+(.+)}$") or value:match("^{Binding%s+(.+)}$")
     if not body then return nil end
@@ -89,7 +100,7 @@ local function bindingSpec(value)
     end
     table.insert(parts, current)
     local path = (parts[1] or ""):match("^%s*(.-)%s*$")
-    if not Paths.Keys(path) then return nil end
+    if not Paths.IsValid(path) then return nil end
     local spec = { path = path, mode = "单向", updateSourceTrigger = "默认" }
     for index = 2, #parts do
         local key, option = parts[index]:match("^%s*([^=]+)%s*=%s*(.-)%s*$")
@@ -98,6 +109,17 @@ local function bindingSpec(value)
             if key == "模式" then spec.mode = option elseif key == "更新源触发" then spec.updateSourceTrigger = option elseif key == "字符串格式" then spec.stringFormat = option elseif key == "预览内容" then spec.previewContent = option end
         end
     end
+    return spec
+end
+
+local function bindingSpec(value)
+    if type(value) ~= "string" or value:sub(1, 1) ~= "{" then return nil end
+    local cached = bindingCache[value]
+    if cached ~= nil then return cached or nil end
+    Runtime.stats.bindingParses = Runtime.stats.bindingParses + 1
+    local spec = parseBinding(value)
+    if bindingCacheCount >= 4096 then bindingCache, bindingCacheCount = {}, 0 end
+    bindingCache[value], bindingCacheCount = spec or false, bindingCacheCount + 1
     return spec
 end
 
@@ -132,9 +154,19 @@ local function resolvePath(context, path)
 end
 
 local function resolve(value, context)
+    local expression = Expressions.Parse(value)
+    if expression then return Expressions.Evaluate(expression, context) end
     local spec = bindingSpec(value)
     if spec then
         local resolved = resolvePath(context, spec.path)
+        if resolved == nil and context.luiPreview_ and context.luiPreviewInlineFallback_~=false and spec.previewContent ~= nil
+            and not (context.luiComponentPreview_ and spec.path:match('^props[%[%.]')) then
+            resolved = spec.previewContent
+            if type(resolved) == 'string' and resolved:match('^%s*[%[{]') then
+                local ok, data = pcall(cjson.decode, resolved)
+                if ok then resolved = data end
+            end
+        end
         if spec.stringFormat and resolved ~= nil then return spec.stringFormat:gsub("{0}", tostring(resolved)) end
         return resolved
     end
@@ -538,6 +570,7 @@ local function layoutPanel(props, entries, mode, attrs, context, existing)
     local panel = existing or UI.Panel(props)
     if not existing then for _, entry in ipairs(entries) do panel:AddChild(entry.widget) end end
     panel.luiEntries_, panel.luiAttrs_, panel.luiContext_ = entries, attrs, context
+    Structure.Attach(panel, entries, context)
     local function panelInsets(target)
         local l, t, r, b = Measure.Insets(target.props)
         local gutterRight, gutterBottom = Scrollbars.Gutters(target)
@@ -571,9 +604,10 @@ local function layoutPanel(props, entries, mode, attrs, context, existing)
         local innerW = math.max(0, (explicitW or availableW or 0) - l - r)
         local innerH = math.max(0, (explicitH or availableH or 0) - t - b)
         local w, h, count = 0, 0, 0
-        local horizontal = mode == "水平"
+        local horizontal = mode == "水平" or mode == "水平反向"
+        local vertical = mode == "垂直" or mode == "垂直反向"
         local gap = tonumber(resolve(horizontal and attrs.HorizontalGap or attrs.VerticalGap, context)) or 0
-        local wrap = resolve(attrs.Wrap, context) == "是" and (horizontal or mode == "垂直")
+        local wrap = resolve(attrs.Wrap, context) == "是" and (horizontal or vertical)
         local lineMain, lineCross, maxMain, totalCross = 0, 0, 0, 0
         local crossGap = tonumber(resolve(horizontal and attrs.VerticalGap or attrs.HorizontalGap, context)) or 0
         for _, entry in ipairs(entries) do
@@ -588,13 +622,13 @@ local function layoutPanel(props, entries, mode, attrs, context, existing)
                 lineMain = lineMain + (lineMain > 0 and gap or 0) + mainSize
                 lineCross = math.max(lineCross, crossSize)
             end
-            if mode == "垂直" then h = h + ch; w = math.max(w, cw)
+            if vertical then h = h + ch; w = math.max(w, cw)
             elseif horizontal then w = w + cw; h = math.max(h, ch)
             else w, h = math.max(w, cw), math.max(h, ch) end
             count = count + 1
         end
         if horizontal then w = w + math.max(0, count - 1) * gap
-        elseif mode == "垂直" then h = h + math.max(0, count - 1) * gap end
+        elseif vertical then h = h + math.max(0, count - 1) * gap end
         if wrap then
             maxMain, totalCross = math.max(maxMain, lineMain), totalCross + lineCross
             w, h = horizontal and maxMain or totalCross, horizontal and totalCross or maxMain
@@ -626,12 +660,18 @@ local function layoutPanel(props, entries, mode, attrs, context, existing)
                 local slotH = self.props.scrollY and math.max(contentH, ch) or contentH
                 arrangeFrame(child, contentX, contentY, slotW, slotH, values, context)
             end
-        elseif mode == "水平" or mode == "垂直" then
-            local horizontal = mode == "水平"
+        elseif mode == "水平" or mode == "垂直" or mode == "水平反向" or mode == "垂直反向" then
+            local horizontal = mode == "水平" or mode == "水平反向"
+            local reverse = mode == "水平反向" or mode == "垂直反向"
+            local flowEntries = entries
+            if reverse then
+                flowEntries = {}
+                for index = #entries, 1, -1 do flowEntries[#flowEntries + 1] = entries[index] end
+            end
             local gap = tonumber(resolve(horizontal and attrs.HorizontalGap or attrs.VerticalGap, context)) or 0
             local available = horizontal and contentW or contentH
             local sizes, values, crossSizes, fills, used = {}, {}, {}, 0, math.max(0, #entries - 1) * gap
-            for index, entry in ipairs(entries) do
+            for index, entry in ipairs(flowEntries) do
                 local cw, ch, resolved = childSize(entry, contentW, contentH)
                 values[index] = resolved
                 local fill = resolved.Fill == "是"
@@ -645,7 +685,7 @@ local function layoutPanel(props, entries, mode, attrs, context, existing)
             local wrapping = resolve(attrs.Wrap, context) == "是"
             local cursor, crossCursor, lineCross = 0, 0, 0
             local crossGap = tonumber(resolve(horizontal and attrs.VerticalGap or attrs.HorizontalGap, context)) or 0
-            for index, entry in ipairs(entries) do
+            for index, entry in ipairs(flowEntries) do
                 local size = sizes[index] + (values[index].Fill == "是" and math.max(0, available - used) / math.max(1, fills) or 0)
                 -- Resolve a percentage against its parent once, not again
                 -- against the reduced flow slot (50% must never become 25%).
@@ -710,10 +750,14 @@ end
 local function configureVisualHost(props, children, attrs, context)
     if #children == 0 then return end
     local mode = resolve(attrs.ChildLayout, context) or Defaults.childLayout
-    props.flexDirection = mode == "水平" and "row" or "column"
+    if mode == "水平" then props.flexDirection = "row"
+    elseif mode == "水平反向" then props.flexDirection = "row-reverse"
+    elseif mode == "垂直反向" then props.flexDirection = "column-reverse"
+    else props.flexDirection = "column" end
     props.flexWrap = resolve(attrs.Wrap, context) == "是" and "wrap" or "nowrap"
-    props.gap = numberOrPercent(resolve(mode == "水平" and attrs.HorizontalGap or attrs.VerticalGap, context), 0) or 0
-    if mode == "垂直" then props.alignItems = "flex-start" end
+    local horizontal = mode == "水平" or mode == "水平反向"
+    props.gap = numberOrPercent(resolve(horizontal and attrs.HorizontalGap or attrs.VerticalGap, context), 0) or 0
+    if not horizontal then props.alignItems = "flex-start" end
 end
 
 -- DockPanel owns the remaining rectangle, exactly like WPF: each direct child
@@ -722,6 +766,7 @@ local function dockPanel(props, entries, attrs, context)
     props.children = {}
     local panel = UI.Panel(props)
     for _, entry in ipairs(entries) do panel:AddChild(entry.widget) end
+    Structure.Attach(panel, entries, context)
     local baseRender = panel.Render
     function panel:Render(nvg)
         local entries = participatingEntries(entries)
@@ -784,26 +829,26 @@ local function viewbox(children, attrs, context)
     return outer
 end
 
--- A Page is the only document root that owns device semantics.  Its Width and
+-- A Scene is the only document root that owns device semantics.  Its Width and
 -- Height are authored design coordinates (not a device mode); SafeArea gives
--- this surface the logical viewport and the page uniformly scales inside it.
-local function pageSurface(entries, attrs, context)
+-- this surface the logical viewport and the scene uniformly scales inside it.
+local function sceneSurface(entries, attrs, context)
     local designWidth = tonumber(resolve(attrs.Width, context)) or 0
     local designHeight = tonumber(resolve(attrs.Height, context)) or 0
-    if designWidth <= 0 or designHeight <= 0 then error("LUI <页面> 的宽度和高度必须是正数 px。") end
-    local page = UI.Panel { width = "100%", height = "100%", children = {} }
+    if designWidth <= 0 or designHeight <= 0 then error("LUI <场景> 的宽度和高度必须是正数 px。") end
+    local scene = UI.Panel { width = "100%", height = "100%", children = {} }
     local contentProps = {
         width = designWidth, height = designHeight, padding = thickness(resolve(attrs.Padding, context)),
         overflow = resolve(attrs.ClipToBounds, context) == "否" and "visible" or "hidden",
         transformOrigin = "top-left",
     }
-    local pageBrush = applyBrush(contentProps, "background", resolve(attrs.Background, context) or "#0b0713", "页面背景")
+    local pageBrush = applyBrush(contentProps, "background", resolve(attrs.Background, context) or "#0b0713", "场景背景")
     local content = unifiedPanel(contentProps, entries, attrs, context)
     Brush.AttachBackground(content, pageBrush)
     content.luiBackgroundBrush_ = pageBrush and pageBrush.source
-    page:AddChild(content)
-    local baseRender = page.Render
-    function page:Render(nvg)
+    scene:AddChild(content)
+    local baseRender = scene.Render
+    function scene:Render(nvg)
         local rect = self:GetAbsoluteLayout()
         local left, top, right, bottom = thicknessParts(resolve(attrs.Margin, context))
         local frame = PageFrame.Calculate(rect.w, rect.h, designWidth, designHeight, left, top, right, bottom)
@@ -811,14 +856,14 @@ local function pageSurface(entries, attrs, context)
         content.props.scale, content.props.transformOrigin = frame.scale, "top-left"
         local paddingLeft, paddingTop, paddingRight, paddingBottom = thicknessParts(resolve(attrs.Padding, context))
         self.luiLayoutProbe_ = {
-            kind = "Page", scale = frame.scale, x = content.renderOffsetX_, y = content.renderOffsetY_, width = designWidth, height = designHeight,
+            kind = "Scene", scale = frame.scale, x = content.renderOffsetX_, y = content.renderOffsetY_, width = designWidth, height = designHeight,
             viewportWidth = rect.w, viewportHeight = rect.h, availableWidth = frame.availableWidth, availableHeight = frame.availableHeight,
             safeLeft = left, safeTop = top, safeRight = right, safeBottom = bottom,
             contentWidth = math.max(0, designWidth - paddingLeft - paddingRight), contentHeight = math.max(0, designHeight - paddingTop - paddingBottom),
         }
         baseRender(self, nvg)
     end
-    return page
+    return scene
 end
 
 -- Controls deliberately have no SafeArea or document scale.  Their own
@@ -858,6 +903,116 @@ local function appendChildren(widget, children)
     return widget
 end
 
+local scheduledRuntimes = setmetatable({}, { __mode = 'k' })
+local schedulerReady = false
+local schedulerFrame = 0
+local schedulerNode, schedulerScriptObject
+local function schedulerIsIdle()
+    if next(scheduledRuntimes) ~= nil then return false end
+    if schedulerNode then
+        schedulerNode:Remove()
+        schedulerNode, schedulerScriptObject, schedulerReady = nil, nil, false
+    end
+    return true
+end
+function HandleLuiRuntimeBeginFrame(_,eventData)
+    if schedulerIsIdle() then return end
+    schedulerFrame = eventData and eventData.GetInt and eventData:GetInt('FrameNumber') or schedulerFrame + 1
+    for runtime in pairs(scheduledRuntimes) do
+        runtime:BeginFrame(schedulerFrame)
+    end
+end
+function HandleLuiRuntimeUpdate(_,eventData)
+    if schedulerIsIdle() then return end
+    for runtime in pairs(scheduledRuntimes) do
+        if runtime.preloader_ and runtime.preloader_.Update then runtime.preloader_:Update(1.5) end
+        if runtime.UpdatePageTransitions then runtime:UpdatePageTransitions() end
+        if runtime.luiPerformanceSession_ and eventData then
+            local dt=eventData.GetFloat and eventData:GetFloat('TimeStep') or eventData['TimeStep']:GetFloat()
+            runtime.luiPerformanceSession_:Frame(dt)
+        end
+    end
+end
+function HandleLuiRuntimeEndFrame()
+    if schedulerIsIdle() then return end
+    -- Visible Update/Render work has priority across every mounted runtime.
+    -- Background rows share the remaining frame slice in round-robin order.
+    MeasureQueue.Drain()
+end
+
+function Runtime:EnsureFrameScheduler()
+    scheduledRuntimes[self] = true
+    self.viewport_ = self.viewport_ or { width = 390, height = 844 }
+    self.contexts_ = self.contexts_ or setmetatable({}, { __mode = 'k' })
+    if not schedulerReady and Node ~= nil then
+        -- Match UI.Core.UI's public event-node pattern. A game's global
+        -- SubscribeToEvent replaces handlers on its LuaScript; this private
+        -- receiver isolates all three phases without retaining any runtime.
+        schedulerNode = Node()
+        schedulerScriptObject = schedulerNode:CreateScriptObject('LuaScriptObject')
+        for event, handler in pairs({ BeginFrame = HandleLuiRuntimeBeginFrame,
+            Update = HandleLuiRuntimeUpdate, EndFrame = HandleLuiRuntimeEndFrame }) do
+            schedulerScriptObject:SubscribeToEvent(event, function(_, eventType, eventData)
+                handler(eventType, eventData)
+            end)
+        end
+        schedulerReady = true
+    elseif not schedulerReady and type(SubscribeToEvent) == 'function' then
+        -- Pure-Lua hosts may provide only the global event test double.
+        -- BeginFrame precedes every UI Update and Render pass. Resetting in
+        -- Update would depend on handler order and could grant two budgets.
+        SubscribeToEvent('BeginFrame', 'HandleLuiRuntimeBeginFrame')
+        SubscribeToEvent('Update', 'HandleLuiRuntimeUpdate')
+        SubscribeToEvent('EndFrame', 'HandleLuiRuntimeEndFrame')
+        schedulerReady = true
+    end
+end
+
+function Runtime:BeginFrame(token)
+    self:EnsureFrameScheduler()
+    MeasureBudget.BeginFrame(self, token)
+    local width = self.previewViewport_ and self.previewViewport_.width or (type(UI.GetWidth)=='function' and UI.GetWidth())
+    local height = self.previewViewport_ and self.previewViewport_.height or (type(UI.GetHeight)=='function' and UI.GetHeight())
+    width = type(width)=='number' and width>0 and width or 390
+    height = type(height)=='number' and height>0 and height or 844
+    if self.viewport_.width~=width or self.viewport_.height~=height then
+        self.viewport_.width,self.viewport_.height=width,height
+        for context in pairs(self.contexts_) do Dirty.Notify(context, {'viewport.width','viewport.height'}) end
+    end
+end
+
+function Runtime:NotifyChanged(context, paths)
+    if context and context.luiRootContext_ then context=context.luiRootContext_ end
+    if context then Dirty.Notify(context, paths) end
+end
+
+function Runtime:UpdateContext(root, declaration)
+    local context=root and (root.luiRootContext_ or root.luiContext_)
+    if not context then return nil, '控件没有 LUI 上下文' end
+    local paths={}
+    for _,key in ipairs({'view','props','actions'}) do
+        local value=declaration[key]
+        if value~=nil and value~=context[key] then
+            local current=context[key]
+            if type(current)=='table' and type(value)=='table' and getmetatable(current)==nil then
+                for field,old in pairs(current) do
+                    if value[field]==nil then current[field]=nil;paths[#paths+1]=key..'['..string.format('%q',field)..']' end
+                end
+                for field,nextValue in pairs(value) do
+                    if current[field]~=nextValue then current[field]=nextValue;paths[#paths+1]=key..'['..string.format('%q',field)..']' end
+                end
+            else context[key]=value;paths[#paths+1]=key end
+        end
+    end
+    if #paths>0 then Dirty.Notify(context, paths) end
+    if declaration.changedPaths then Dirty.Notify(context,declaration.changedPaths) end
+    Refresh.Subtree(root)
+    for detached in pairs(context.luiDetachedRoots_ or {}) do
+        if detached~=root and not detached.luiDirtyDisposed_ then Refresh.Subtree(detached) end
+    end
+    return root,context
+end
+
 function Runtime.New()
     local self = setmetatable({}, Runtime)
     self:Init()
@@ -866,8 +1021,12 @@ end
 
 function Runtime:Init()
     self.config_, self.configError_ = Project.Read()
+    self.registry_ = require("LUI.Registry")
+    self.preloader_ = require("LUI.Preloader").New(self)
     self.documents_ = {}
     self.code_ = {}
+    self.pageTransitions_ = setmetatable({}, { __mode = "k" })
+    self:EnsureFrameScheduler()
     self.isV2_ = tonumber(self.config_.schemaVersion or 1) >= 2
     self.fontFiles_ = {}
     for _, family in ipairs(self.config_.fonts or {}) do
@@ -878,15 +1037,52 @@ function Runtime:Init()
     end
 end
 
+function Runtime:EnsurePreloader()
+    if not self.preloader_ then self.preloader_ = require("LUI.Preloader").New(self) end
+    return self.preloader_
+end
+function Runtime:RequireRegistered(name) return self:EnsurePreloader():RequireRegistered(name) end
+function Runtime:PromoteRegistered(name, priority) return self:EnsurePreloader():PromoteRegistered(name, priority) end
+function Runtime:PreloadRegistered(name)
+    if name then return self:RequireRegistered(name) end
+    self:EnsurePreloader():QueueRemaining()
+    return true
+end
+
 function Runtime:LoadDocument(path)
-    if self.documents_[path] then return self.documents_[path], nil end
-    local document, err = Parser.Load(path)
-    if not document then return nil, err end
+    local document = self.documents_[path]
+    -- A preview snapshot is its complete input, not an evictable file cache.
+    if self.previewMode_ then
+        if document then return document, nil end
+        return nil, '预览只能读取当前声明快照：'..tostring(path)
+    end
+    if not document then
+        local err
+        document, err = Parser.Load(path, self.config_ and self.config_.schemaVersion or 5)
+        if not document then return nil, err end
+    end
+    local access = self.documentAccess_
+    if not access then
+        access = {}; self.documentAccess_, self.documentCount_, self.documentClock_ = access, 0, 0
+        for key in pairs(self.documents_) do access[key] = 0; self.documentCount_ = self.documentCount_ + 1 end
+    end
+    if access[path] == nil then self.documentCount_ = self.documentCount_ + 1 end
+    self.documentClock_ = self.documentClock_ + 1
+    access[path] = self.documentClock_
     self.documents_[path] = document
+    -- Live widgets retain their own declaration nodes; evicting a dormant
+    -- document cannot invalidate an already mounted page or its bindings.
+    while self.documentCount_ > 256 do
+        local oldest, stamp
+        for key, value in pairs(access) do if not stamp or value < stamp then oldest, stamp = key, value end end
+        access[oldest], self.documents_[oldest] = nil, nil
+        self.documentCount_ = self.documentCount_ - 1
+    end
     return document, nil
 end
 
 function Runtime:LoadCode(path)
+    if self.previewMode_ then return nil, '预览禁止加载业务代码' end
     if self.code_[path] then return self.code_[path], nil end
     local code, err = loadLuaModule(path, self.config_.sourceRoots)
     if not code then return nil, err end
@@ -903,16 +1099,30 @@ function Runtime:CreateMarkupContext(document, declaration, inherited)
     declaration = declaration or {}
     local view = declaration.view or {}
     local context = setmetatable({ view = view }, { __index = inherited or view })
+    context.luiDetachedRoots_=setmetatable({}, {__mode='k'})
+    context.luiDocumentContext_=context
+    context.luiComponentPreview_=declaration.componentPreview==true
+    context.luiPreviewInlineFallback_=declaration.previewInlineFallback
     context.actions = declaration.actions or (inherited and inherited.actions) or {}
     context.refs = declaration.refs or (inherited and inherited.refs) or {}
     context.props = declaration.props or (inherited and inherited.props) or {}
     context.slots = declaration.slots or (inherited and inherited.slots) or {}
     context.imports = imports
     context.componentStack = declaration.componentStack or (inherited and inherited.componentStack) or {}
+    context.luiSlotStack_ = declaration.luiSlotStack_ or (inherited and inherited.luiSlotStack_)
     context.presentation = declaration.presentation or (inherited and inherited.presentation)
     context.owner = declaration.owner
+    self:EnsureFrameScheduler()
+    context.viewport = self.viewport_
+    context.luiRuntime_ = self
+    context.luiPreview_ = self.previewMode_ or (inherited and inherited.luiPreview_)
+    local notify=declaration.changeTracking
+    if notify==nil then notify=self.config_.changeTracking or (inherited and Dirty.Enabled(inherited)) end
+    Dirty.Configure(context,notify)
+    self.contexts_[context] = true
     context.bindings = { pending = {} }
     function context.bindings:Notify(path)
+        Dirty.Notify(context, path)
         if declaration.OnBindingChanged then declaration.OnBindingChanged(path, context)
         elseif context.owner and context.owner.OnBindingChanged then context.owner:OnBindingChanged(path, context) end
     end
@@ -936,6 +1146,7 @@ function Runtime:LoadLegacyComponent(name)
 end
 
 function Runtime:ImportsFor(document)
+    if document.luiPreviewImports_ then return document.luiPreviewImports_ end
     local imports = {}
     for attribute, directory in pairs(document.attrs or {}) do
         local alias = attribute:match("^目录:(.+)$")
@@ -949,22 +1160,27 @@ function Runtime:ImportsFor(document)
 end
 
 function Runtime:LoadDirectoryComponent(directory, name)
+    if self.previewMode_ then
+        local path=self.previewDirectories_ and self.previewDirectories_[directory] and self.previewDirectories_[directory][name]
+        if not path then return nil,'预览组件未登记：'..tostring(name) end
+        return self.documents_[path],nil,path
+    end
     if not isDirectoryPath(directory) then return nil, "LUI 组件目录越界：" .. tostring(directory) end
-    local directories = self.config_.componentDirectories
-    if type(directories) ~= "table" then return nil, "LUI v3 配置缺少 componentDirectories。" end
-    local registered = directories[directory]
-    if type(registered) ~= "table" then return nil, "LUI 未登记导入目录：" .. tostring(directory) end
-    local descriptor = registered[name]
+    local configured = false
+    for _, value in ipairs(self.config_.componentDirectories or {}) do if value == directory then configured = true; break end end
+    if not configured then return nil, "LUI 未登记导入目录：" .. tostring(directory) end
+    local descriptor = self.registry_ and self.registry_.GetDirectoryComponent
+        and self.registry_:GetDirectoryComponent(directory, name) or nil
     if not descriptor then return nil, "LUI 目录 " .. directory .. " 未登记组件：" .. tostring(name) end
-    local path = type(descriptor) == "table" and descriptor.markup or descriptor
+    local path = descriptor.markup
     if type(path) ~= "string" or not inAllowedRoot(path, self.config_.sourceRoots) then return nil, "LUI 组件路径不在白名单内：" .. tostring(path) end
     local document, err = self:LoadDocument(path)
     return document, err, path
 end
 
 function Runtime:HasRegisteredComponentName(name)
-    for _, directory in pairs(self.config_.componentDirectories or {}) do
-        if type(directory) == "table" and directory[name] then return true end
+    for _, directory in ipairs(self.config_.componentDirectories or {}) do
+        if self.registry_ and self.registry_.GetDirectoryComponent and self.registry_:GetDirectoryComponent(directory, name) then return true end
     end
     return false
 end
@@ -994,10 +1210,12 @@ function Runtime:RenderMarkup(markupPath, declaration, inherited)
     if not document then return nil, documentErr end
     local context, contextErr = self:CreateMarkupContext(document, declaration, inherited)
     if not context then return nil, contextErr end
+    context.luiMarkupPath_ = markupPath
     local root = self:BuildNode(document, context)
+    if root then root.luiRootContext_=context end
     -- 页面不再隐式包裹 SafeAreaView。只有显式 <安全区> 才改变布局输入，
     -- 因而 Studio 与 Runtime 看到完全相同的页面矩形。
-    if self.config_.layoutDiagnostics and root and document.tag == "lui:Page" then
+    if self.config_.layoutDiagnostics and root and document.tag == "lui:Scene" then
         local previous = root.CustomRenderChildren
         local frames, runtime, warmMeasurements, warmArrangements = 0, self, 0, 0
         function root:CustomRenderChildren(nvg, renderChild)
@@ -1034,21 +1252,33 @@ end
 -- own markup through RenderMarkup.
 function Runtime:CreateComponent(markupPath, parentContext, properties, slots, rawProperties, propertyExpressions)
     local descriptor = { markup = markupPath, code = markupPath .. ".lua" }
-    local code, codeErr = self:LoadCode(descriptor.code)
+    local code, codeErr
+    if self.previewMode_ then
+        local declaration=self.previewDeclarations_ and self.previewDeclarations_[markupPath]
+        if not declaration then return nil,'缺少预览组件声明：'..tostring(markupPath) end
+        code={Properties=declaration.properties or {}}
+    else code,codeErr=self:LoadCode(descriptor.code) end
     if not code then return nil, codeErr end
     properties = Properties.Apply(code.Properties, code.Properties and (rawProperties or properties) or properties)
     if code.Properties and propertyExpressions then
         local values, bindings = properties, {}
         local defaults = Properties.Apply(code.Properties, {})
-        for propertyName in pairs(code.Properties) do
+        local forwarded={}
+        for name in pairs(code.Properties) do forwarded[name]=true end
+        for name in pairs(propertyExpressions) do if Properties.IsLayout(name) then forwarded[name]=true end end
+        for propertyName in pairs(forwarded) do
             local binding = bindingSpec(propertyExpressions[propertyName])
-            if binding and binding.mode ~= "单次" then bindings[propertyName] = binding end
+            local expression = Expressions.Parse(propertyExpressions[propertyName])
+            if expression then bindings[propertyName]={expression=expression}
+            elseif binding and binding.mode ~= "单次" then bindings[propertyName] = binding end
         end
         properties = setmetatable({}, {
             __index = function(_, propertyName)
                 local binding = bindings[propertyName]
                 if binding and binding.mode ~= "单向到源" then
-                    local value = resolvePath(parentContext, binding.path)
+                    local value
+                    if binding.expression then value=Expressions.Evaluate(binding.expression,parentContext)
+                    else value=resolve(propertyExpressions[propertyName],parentContext) end
                     -- 绑定源从有值变为 nil 时必须回到声明默认值（或 nil），
                     -- 不能重新露出构建时快照。false、0、空字符串仍是有效值。
                     if value == nil then return defaults[propertyName] end
@@ -1065,6 +1295,13 @@ function Runtime:CreateComponent(markupPath, parentContext, properties, slots, r
             end,
             __pairs = function() return pairs(values) end,
         })
+        for name,binding in pairs(bindings) do
+            if binding.path then Dirty.Alias(properties,name,parentContext,binding.path) end
+            if binding.expression then Dirty.Alias(properties,name,parentContext,Expressions.Dependencies(binding.expression,parentContext)) end
+        end
+    end
+    if self.previewMode_ then
+        return self:RenderMarkup(markupPath,{view={},props=properties,slots=slots,actions={},refs={},changeTracking='notify',componentPreview=true},parentContext)
     end
     if type(code.New) == "function" then return code.New(parentContext, self, descriptor, properties, slots) end
     -- Compatibility for an external pre-2.1 component. It is intentionally
@@ -1074,143 +1311,361 @@ function Runtime:CreateComponent(markupPath, parentContext, properties, slots, r
     return self:RenderMarkup(markupPath, declaration, parentContext)
 end
 
+-- Studio and the production renderer share the declaration builder. Only the
+-- supplied immutable documents and data enter this mode; no paired Lua runs.
+function Runtime:BuildPreview(snapshot)
+    assert(type(snapshot)=='table' and type(snapshot.node)=='table','缺少预览声明树')
+    self.previewMode_=true
+    self.documents_,self.code_,self.previewDirectories_,self.previewDeclarations_={},{},{},{}
+    self.config_=self.config_ or {};self.config_.sourceRoots={};self.config_.componentDirectories={};self.config_.changeTracking='notify'
+    self.isV2_=true
+    self:EnsureFrameScheduler()
+    self.previewViewport_={width=tonumber(snapshot.width) or 390,height=tonumber(snapshot.height) or 844}
+    -- Editing a preview can rebuild it inside an existing physical frame.
+    -- Reuse its token so another runtime does not receive a second slice.
+    self:BeginFrame(schedulerFrame)
+    local function copyNode(node)
+        local copy={kind=node.kind,tag=node.tag,text=node.text,sourcePath=node.sourcePath,nodePath=node.nodePath,attrs={},children={}}
+        if node.rawAttrs then copy.rawAttrs={};for name,value in pairs(node.rawAttrs) do copy.rawAttrs[name]=value end end
+        for name,value in pairs(node.attrs or {}) do copy.attrs[name]=value end
+        for _,child in ipairs(node.children or {}) do copy.children[#copy.children+1]=copyNode(child) end
+        return copy
+    end
+    local rootPath=snapshot.node.sourcePath or 'Preview/Root.lui'
+    for path,declaration in pairs(snapshot.documents or {}) do
+        local node=copyNode(assert(declaration.node,'预览文档缺少节点'))
+        node.luiPreviewImports_={}
+        for alias,components in pairs(declaration.imports or {}) do
+            local directory=path..'#'..alias
+            node.luiPreviewImports_[alias]=directory;self.previewDirectories_[directory]=components
+        end
+        self.documents_[path]=node;self.previewDeclarations_[path]=declaration
+    end
+    local original=self.documents_[rootPath]
+    local rootNode=copyNode(snapshot.node)
+    rootNode.luiPreviewImports_=original and original.luiPreviewImports_ or {}
+    self.documents_[rootPath]=rootNode
+    local data=snapshot.data or {}
+    local declaration={view=data.view or {},props=data.props or {},actions={},refs={},changeTracking='notify',previewInlineFallback=snapshot.data==nil}
+    local schema=self.previewDeclarations_[rootPath] and self.previewDeclarations_[rootPath].properties
+    if schema then declaration.props=Properties.Apply(schema,declaration.props) end
+    return self:RenderMarkup(rootPath,declaration)
+end
+
 -- Grid/Canvas own their children's placement. This keeps the layout declaration in
 -- .lui while preserving the regular builder for controls and imported components.
 function Runtime:BuildLayoutEntries(nodes, context)
-    local entries = {}
-    local function appendNode(node, activeContext)
-        if not node or node.kind == "Text" then return end
-        local attrs, visualChildren = resolvedNodeParts(node)
-        if node.tag == "lui:If" then
-            local test = resolve(attrs.Test, activeContext)
-            if test ~= nil and test ~= false then
-                for _, child in ipairs(visualChildren) do appendNode(child, activeContext) end
-            end
-            return
-        end
-        if node.tag == "lui:For" then
-            local path = bindingPath(attrs.In) or ""
-            local values = resolvePath(activeContext, path) or {}
-            local name = attrs.Items or attrs.Each or "item"
-            for index, value in ipairs(values) do
-                local nextContext = setmetatable({ [name] = value, item = value, index = index }, { __index = activeContext })
-                for _, child in ipairs(visualChildren) do appendNode(child, nextContext) end
-            end
-            return
-        end
-        if node.tag == "lui:Slot" then
-            local content = (activeContext.slots or {})[attrs.Name or "Content"] or {}
-            for _, child in ipairs(content) do appendNode(child, content.luiCallerContext_ or activeContext) end
-            return
-        end
-        local built = self:BuildNode(node, activeContext)
-        local function add(widget)
-            if not widget then return end
-            if type(widget) == "table" and widget.__luiList then
-                for _, item in ipairs(widget.items or {}) do add(item) end
-                return
-            end
-            entries[#entries + 1] = {
-                widget = widget,
-                attrs = attrs,
-                context = activeContext,
-                row = math.max(1, (tonumber(resolve(attrs["Grid.Row"], activeContext)) or 0) + 1),
-                column = math.max(1, (tonumber(resolve(attrs["Grid.Column"], activeContext)) or 0) + 1),
-                rowSpan = math.max(1, tonumber(resolve(attrs["Grid.RowSpan"], activeContext)) or 1),
-                columnSpan = math.max(1, tonumber(resolve(attrs["Grid.ColumnSpan"], activeContext)) or 1),
-            }
-        end
-        add(built)
-    end
-    for _, child in ipairs(nodes or {}) do appendNode(child, context) end
-    return entries
+    return Structure.Entries(self,nodes,context,{parts=resolvedNodeParts,resolve=resolve,binding=bindingSpec})
 end
 
 function Runtime:BuildNode(node, context)
+    context=Expressions.Scope(node.attrs,context)
     local nodePath = node.nodePath or "0"
     local instancePath = (context.instancePath or "") .. "/" .. (node.sourcePath or "") .. "#" .. nodePath
-    if context.index then instancePath = instancePath .. "[" .. tostring(context.index) .. "]" end
+    if context.luiRepeatIdentity_ then instancePath=instancePath..'['..context.luiRepeatIdentity_..']'
+    elseif context.index then instancePath = instancePath .. "[" .. tostring(context.index) .. "]" end
     local scoped = setmetatable({ instancePath = instancePath }, { __index = context })
-    local widget = self:BuildNodeCore(node, scoped)
+    local widget = NativeText.Construct(function() return self:BuildNodeCore(node, scoped) end)
     if widget and not widget.__luiList then
+        -- Native CheckOverflow runs after Yoga, before LUI's own arrangement.
+        -- Its flex bounds do not describe this declaration tree. Use the
+        -- public diagnostic boundary so its permanent warning table cannot
+        -- retain disposed LUI widgets. Clipping and LUI layout checks stay live.
+        widget.props.allowOverflow = true
         widget.luiSourcePath_, widget.luiNodePath_, widget.luiInstancePath_ = node.sourcePath, nodePath, instancePath
         Measure.Observe(widget)
         local attrs = resolvedNodeParts(node)
         local visibilityBinding = bindingSpec(attrs.Visibility)
-        local layoutBindings, previous = {}, {}
+        local layoutBindings, previous, dependencies = {}, {}, {}
         for key, value in pairs(attrs) do
             local spec = bindingSpec(value)
-            if spec and spec.mode ~= "单次" then layoutBindings[key] = value; previous[key] = resolve(value, scoped) end
+            local expression = Expressions.Parse(value)
+            if spec and spec.mode ~= "单次" then
+                layoutBindings[key] = value; previous[key] = resolve(value, scoped);dependencies[#dependencies+1]=spec.path
+            elseif expression and not key:match('^布局:') then
+                layoutBindings[key]=value;previous[key]=resolve(value,scoped)
+                for _,path in ipairs(Expressions.Dependencies(expression,scoped)) do dependencies[#dependencies+1]=path end
+            end
         end
+        local structuralRefresh = widget.luiRefreshLayout_
+        for _,path in ipairs(widget.luiStructureDependencies_ or {}) do dependencies[#dependencies+1]=path end
         function widget:luiRefreshLayout_()
+            if structuralRefresh then structuralRefresh(self) end
             local changed, changes = false, {}
             for key, value in pairs(layoutBindings) do
                 local nextValue = resolve(value, scoped)
-                if previous[key] ~= nextValue then
-                    previous[key] = nextValue; changed = true
-                    changes[key] = {value=nextValue}
+                if previous[key] ~= nextValue or (type(nextValue)=='table' and Dirty.Enabled(scoped) and self.luiDirtySelf_) then
+                    local relativePaths
+                    if key == 'Items' and self.luiVirtualList_ and previous[key] == nextValue and type(nextValue)=='table' then
+                        local binding = bindingSpec(value)
+                        if binding then relativePaths = Dirty.RelativeChanges(self, scoped, binding.path) end
+                    end
+                    previous[key] = nextValue
+                    if not relativePaths or #relativePaths > 0 then
+                        changed = true
+                        changes[key] = {value=nextValue, relativePaths=relativePaths}
+                    end
                 end
             end
             if changed then LiveProps.Apply(self,node.tag,changes,propsFor(attrs,scoped)) end
-            if visibilityBinding and visibilityBinding.mode ~= "单次" then
+            if (visibilityBinding and visibilityBinding.mode ~= "单次") or Expressions.Parse(attrs.Visibility) then
                 local value = resolve(attrs.Visibility, scoped)
                 local visible, hidden = value ~= nil and not isCollapsed(value), value == "隐藏"
                 if self.props.visible ~= visible then self:SetVisible(visible) end
                 local state = hidden and "hidden" or "visible"
                 if self.props.visibility ~= state then self:SetStyle({visibility=state}) end
             end
-            if changed then Measure.Invalidate(self) end
         end
-        if node.tag == "lui:Page" or node.tag == "lui:Component" then
+        widget.luiContext_=scoped
+        Dirty.Track(widget,scoped,dependencies)
+        if node.tag == "lui:Scene" or node.tag == "lui:Page" or node.tag == "lui:Component" or node.tag == "Modal" then
             -- Resolve caption text before the root consults cached desired sizes.
             -- The live tree is used so a RefreshComponent replacement is included.
             local baseRender = widget.Render
             function widget:Render(nvg)
-                local function refresh(current)
-                    if current.luiRefreshLayout_ then current:luiRefreshLayout_() end
-                    if current.luiRefreshCaption_ then current.luiRefreshCaption_(current) end
-                    for _, child in ipairs(Overlays.Children(current)) do refresh(child) end
-                end
-                refresh(self)
-                return baseRender(self, nvg)
+                return Refresh.Render(self, baseRender, nvg)
             end
         end
+        -- Virtual templates keep this hook in their inherited context, so
+        -- children created later by If/For/slots share the same render budget.
+        RenderBudget.AttachTree(widget, self)
+        if scoped.luiRenderGuard_ then scoped.luiRenderGuard_(widget) end
     end
     return widget
 end
 
--- 显式局部刷新：refs 仍指向组件内部根，外层布局宿主和兄弟滚动控件不变。
-function Runtime:RefreshComponent(root)
+local function transitionSubtreeReady(root)
+    local visited = {}
+    local function visit(widget)
+        if not widget or visited[widget] then return true end
+        visited[widget] = true
+        if widget.luiRenderDeferredFrame_ ~= nil then return false end
+        local list = widget.luiVirtualList_
+        if list and list.model_ and #(list.model_.items_ or {}) > 0
+            and #(list.renderChildren_ or {}) == 0 then return false end
+        for _, child in ipairs(widget.GetChildren and widget:GetChildren() or {}) do
+            if not visit(child) then return false end
+        end
+        for _, child in ipairs(widget.bodyChildren_ or {}) do
+            if not visit(child) then return false end
+        end
+        if not visit(widget.contentContainer_) then return false end
+        if not visit(widget.luiNativeWidget_) then return false end
+        return true
+    end
+    return visit(root)
+end
+
+-- Build a normally opaque candidate underneath the current root. The old tree
+-- remains visible and interactive while the candidate reaches its first
+-- meaningful paint. Publishing is an atomic z-order/input swap; no transparent
+-- warm-up or empty-root frame is used.
+function Runtime:StageComponentReplacement(root, overrideContext)
     local host = root and root.luiComponentHost_
     if not host or not host.luiComponentNode_ then return nil, "引用不是可刷新的组件" end
     local context = host.luiComponentContext_
     local stack = {}
     for key, value in pairs(context.componentStack or {}) do stack[key] = value end
     local isolated = setmetatable({ refs = {}, componentStack = stack }, { __index = context })
+    -- Build the candidate against its requested state without mutating the
+    -- still-visible component context. This is essential for condition-based
+    -- tab bodies: changing the live view first would collapse the old body and
+    -- expose the canvas while the replacement is still warming.
+    for key, value in pairs(overrideContext or {}) do
+        if key ~= "refs" and key ~= "componentStack" then isolated[key] = value end
+    end
     local ok, candidate = pcall(self.BuildNodeCore, self, host.luiComponentNode_, isolated)
     if not ok then return nil, tostring(candidate) end
     if not candidate or not candidate.luiEntries_ or not candidate.luiEntries_[1] then
         return nil, "组件刷新未生成有效根节点"
     end
     local nextRoot = candidate.luiEntries_[1].widget
+    local nextEntry = candidate.luiEntries_[1]
+    local oldEntry = host.luiEntries_ and host.luiEntries_[1]
     local oldOwner = host.luiComponentInstance_
     candidate:RemoveChild(nextRoot)
-    host:RemoveChild(root)
+    root:SetStyle({ position = "absolute", left = 0, top = 0, width = "100%", height = "100%", zIndex = 1, pointerEvents = "box-none" })
+    local background = host.props and host.props.backgroundColor
+        or host.parent and host.parent.props and host.parent.props.backgroundColor
+        or root.props and root.props.backgroundColor or "#0B0712"
+    nextRoot:SetStyle({ position = "absolute", left = 0, top = 0, width = "100%", height = "100%",
+        zIndex = 0, pointerEvents = "none", backgroundColor = background })
     host:AddChild(nextRoot)
-    host.luiEntries_[1] = candidate.luiEntries_[1]
-    host.luiComponentInstance_ = candidate.luiComponentInstance_
+    -- Component hosts render from luiEntries_, not merely their native child
+    -- collection. Keep both entries during warm-up or the transparent candidate
+    -- would replace the old entry with a black/empty frame.
+    host.luiEntries_ = { oldEntry, nextEntry }
+    local nextOwner = candidate.luiComponentInstance_
+    host.luiComponentInstance_ = nextOwner
     candidate.luiComponentInstance_ = nil
     nextRoot.luiComponentHost_ = host
     local ref = host.luiComponentNode_.attrs["x:Ref"]
     if ref and context.refs then context.refs[ref] = nextRoot end
-    Measure.Invalidate(host)
-    if oldOwner and oldOwner.Dispose then oldOwner:Dispose() end
-    root:Destroy()
     candidate:Destroy()
+    Measure.Invalidate(host)
+    nextRoot.luiTransitionPhase_ = "warming"
+    nextRoot.luiTransitionWarmReady_ = false
+    nextRoot.luiTransitionVisibleRendered_ = false
+    local stagedRender = nextRoot.Render
+    function nextRoot:Render(nvg)
+        local result
+        if stagedRender then result = stagedRender(self, nvg) end
+        if self.luiTransitionPhase_ == "warming" then
+            self.luiTransitionWarmReady_ = transitionSubtreeReady(self)
+        elseif self.luiTransitionPhase_ == "visible" and transitionSubtreeReady(self) then
+            self.luiTransitionVisibleRendered_ = true
+        end
+        return result
+    end
+    function nextRoot:luiAdvanceTransition_()
+        if self.luiTransitionPhase_ == "warming" then
+            if not self.luiTransitionWarmReady_ then return false end
+            self.luiTransitionPhase_ = "visible"
+            root:SetStyle({ pointerEvents = "none" })
+            self:SetStyle({ zIndex = 2, pointerEvents = "box-none" })
+            return false
+        end
+        return self.luiTransitionVisibleRendered_ == true
+    end
+    local finished = false
+    local function commit()
+        if finished then return end
+        finished = true
+        nextRoot.luiAdvanceTransition_ = nil
+        if oldOwner and oldOwner.Dispose then oldOwner:Dispose() end
+        if root.parent == host then host:RemoveChild(root) end
+        root:Destroy()
+        host.luiEntries_ = { nextEntry }
+        Measure.Invalidate(host)
+    end
+    local function cancel()
+        if finished then return end
+        finished = true
+        nextRoot.luiAdvanceTransition_ = nil
+        if nextOwner and nextOwner.Dispose then nextOwner:Dispose() end
+        if nextRoot.parent == host then host:RemoveChild(nextRoot) end
+        nextRoot:Destroy()
+        host.luiEntries_ = { oldEntry }
+        host.luiComponentInstance_ = oldOwner
+        if ref and context.refs then context.refs[ref] = root end
+        root:SetStyle({ zIndex = 0, pointerEvents = "box-none" })
+        Measure.Invalidate(host)
+    end
+    return nextRoot, commit, cancel
+end
+
+local function disposePageInstance(instance, root)
+    if instance and instance.Dispose then instance:Dispose() end
+    if root and root.parent then root.parent:RemoveChild(root) end
+    if root and root.Destroy then root:Destroy() end
+end
+
+local function removePagePresenterEntry(presenter, root)
+    local entries = presenter and presenter.luiEntries_
+    if not entries or not root then return end
+    for index = #entries, 1, -1 do
+        if entries[index].widget == root then table.remove(entries, index) end
+    end
+end
+
+local function addPagePresenterEntry(presenter, root)
+    local entries = presenter.luiEntries_ or {}
+    presenter.luiEntries_ = entries
+    entries[#entries + 1] = {
+        widget = root,
+        attrs = { Width = "100%", Height = "100%", MinWidth = "0", MinHeight = "0" },
+        context = root.luiContext_ or presenter.luiPageParentContext_,
+    }
+end
+
+-- A page presenter is a hard layout boundary. It owns exactly one committed
+-- page plus at most one normally opaque candidate, so switching a page never
+-- invalidates or reconstructs the surrounding scene.
+function Runtime:CancelPageReplacement(presenter)
+    local transitions = self.pageTransitions_
+    local transition = presenter and transitions and transitions[presenter]
+    if not transition then return false end
+    transitions[presenter] = nil
+    removePagePresenterEntry(presenter, transition.nextRoot)
+    disposePageInstance(transition.nextInstance, transition.nextRoot)
+    if transition.oldRoot then transition.oldRoot:SetStyle({ zIndex = 1, pointerEvents = "box-none" }) end
+    return true
+end
+
+function Runtime:StagePageReplacement(presenter, pageName, parameters)
+    if not presenter or not presenter.luiPagePresenter_ then return nil, "目标不是 <页面呈现器>。" end
+    if not self.pageTransitions_ then self.pageTransitions_ = setmetatable({}, { __mode = "k" }) end
+    self:CancelPageReplacement(presenter)
+    local instance, err = self:CreatePage(pageName, presenter.luiPageParentContext_, parameters or {})
+    if not instance then return nil, err end
+    local nextRoot = instance.GetRoot and instance:GetRoot() or instance.root_
+    if not nextRoot then disposePageInstance(instance); return nil, "页面未生成有效根节点：" .. tostring(pageName) end
+    local oldRoot, oldInstance = presenter.luiPageRoot_, presenter.luiPageInstance_
+    local serial = (presenter.luiPageSerial_ or 0) + 1
+    presenter.luiPageSerial_ = serial
+    nextRoot:SetStyle({ position = "absolute", left = 0, top = 0, width = "100%", height = "100%",
+        zIndex = oldRoot and 0 or 2, pointerEvents = oldRoot and "none" or "box-none",
+        backgroundColor = presenter.props and presenter.props.backgroundColor or "#0B0712" })
+    if oldRoot then oldRoot:SetStyle({ zIndex = 1, pointerEvents = "box-none" }) end
+    if nextRoot.parent and nextRoot.parent ~= presenter then nextRoot.parent:RemoveChild(nextRoot) end
+    if nextRoot.parent ~= presenter then presenter:AddChild(nextRoot) end
+    addPagePresenterEntry(presenter, nextRoot)
+    local baseRender = nextRoot.Render
+    nextRoot.luiPageTransitionPhase_ = oldRoot and "warming" or "visible"
+    nextRoot.luiPageTransitionReady_, nextRoot.luiPageTransitionVisible_ = false, false
+    function nextRoot:Render(nvg)
+        local result
+        if baseRender then result = baseRender(self, nvg) end
+        if self.luiPageTransitionPhase_ == "warming" then
+            self.luiPageTransitionReady_ = transitionSubtreeReady(self)
+        elseif self.luiPageTransitionPhase_ == "visible" and transitionSubtreeReady(self) then
+            self.luiPageTransitionVisible_ = true
+        end
+        return result
+    end
+    self.pageTransitions_[presenter] = {
+        serial = serial, oldRoot = oldRoot, oldInstance = oldInstance,
+        nextRoot = nextRoot, nextInstance = instance, phase = nextRoot.luiPageTransitionPhase_,
+    }
+    Measure.Invalidate(presenter)
+    return nextRoot, nil
+end
+
+function Runtime:UpdatePageTransitions()
+    if not self.pageTransitions_ then return end
+    for presenter, transition in pairs(self.pageTransitions_) do
+        if presenter.luiPageSerial_ ~= transition.serial then
+            self:CancelPageReplacement(presenter)
+        elseif transition.phase == "warming" and transition.nextRoot.luiPageTransitionReady_ then
+            transition.phase, transition.nextRoot.luiPageTransitionPhase_ = "visible", "visible"
+            if transition.oldRoot then transition.oldRoot:SetStyle({ pointerEvents = "none" }) end
+            transition.nextRoot:SetStyle({ zIndex = 2, pointerEvents = "box-none" })
+        elseif transition.phase == "visible" and transition.nextRoot.luiPageTransitionVisible_ then
+            self.pageTransitions_[presenter] = nil
+            removePagePresenterEntry(presenter, transition.oldRoot)
+            disposePageInstance(transition.oldInstance, transition.oldRoot)
+            transition.nextRoot.luiPageTransitionPhase_ = nil
+            presenter.luiPageRoot_, presenter.luiPageInstance_ = transition.nextRoot, transition.nextInstance
+            Measure.Invalidate(presenter)
+        end
+    end
+end
+
+function Runtime:AdvanceStagedReplacement(root)
+    if not root or type(root.luiAdvanceTransition_) ~= "function" then return true end
+    return root:luiAdvanceTransition_()
+end
+
+-- 显式局部刷新：refs 仍指向组件内部根，外层布局宿主和兄弟滚动控件不变。
+function Runtime:RefreshComponent(root)
+    local nextRoot, commitOrError = self:StageComponentReplacement(root)
+    if not nextRoot then return nil, commitOrError end
+    commitOrError()
     return nextRoot
 end
 
 function Runtime:BuildNodeCore(node, context)
+    if node.kind == 'Comment' then return nil end
     if node.kind == "Text" then
         if not node.text or not node.text:match("%S") then return nil end
         return UI.Label { text = node.text, fontSize = 14 }
@@ -1218,14 +1673,16 @@ function Runtime:BuildNodeCore(node, context)
     local tag, attrs, visualChildren = node.tag, resolvedNodeParts(node)
     local visibility = resolve(attrs.Visibility, context)
     local visibilityBinding = bindingSpec(attrs.Visibility)
-    if not visibilityBinding and isCollapsed(visibility) then return nil end
+    if not visibilityBinding and not Expressions.Parse(attrs.Visibility) and isCollapsed(visibility) then return nil end
+    if tag == 'VirtualList' and #visualChildren > 0 then
+        return require('LUI.VirtualList').Create(self,node,context,{parts=resolvedNodeParts,resolve=resolve,desiredSize=desiredSize,bindingSpec=bindingSpec})
+    end
     if tag == "lui:If" then
         local test = resolve(attrs.Test, context)
         return test ~= nil and test ~= false and { __luiList = true, items = self:BuildChildren(visualChildren, context) } or nil
     end
     if tag == "lui:For" then
-        local path = bindingPath(attrs.In) or ""
-        local values = resolvePath(context, path) or {}
+        local values = resolve(attrs.In, context) or {}
         local name = attrs.Items or attrs.Each or "item"
         local items = {}
         for index, value in ipairs(values) do
@@ -1237,13 +1694,38 @@ function Runtime:BuildNodeCore(node, context)
     if tag == "lui:Preview" or tag == "lui:Action" or tag == "lui:Resource" then return nil end
     if tag == "lui:Slot" then
         local content = (context.slots or {})[attrs.Name or "Content"] or {}
-        return { __luiList = true, items = self:BuildChildren(content, content.luiCallerContext_ or context) }
+        local caller = content.luiCallerContext_ or context
+        local slotStack = {}
+        for key, value in pairs(content.luiCallerComponentStack_ or caller.componentStack or {}) do
+            local directory, displayName = key:match("^(.*):([^:]+)$")
+            local descriptor = directory and self.registry_ and self.registry_.GetDirectoryComponent
+                and self.registry_:GetDirectoryComponent(directory, displayName) or nil
+            if not descriptor or descriptor.markup ~= context.luiMarkupPath_ then slotStack[key] = value end
+        end
+        local isolated = setmetatable({ componentStack = slotStack, luiSlotStack_ = slotStack }, { __index = caller })
+        return { __luiList = true, items = self:BuildChildren(content, isolated) }
+    end
+    if tag == "lui:Scene" then
+        return sceneSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
     end
     if tag == "lui:Page" then
-        return pageSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
+        return controlSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
     end
     if tag == "lui:Component" then
         return controlSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
+    end
+    if tag == "lui:PagePresenter" then
+        local presenter = controlSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
+        presenter.luiPagePresenter_, presenter.luiLayoutInvalidationBoundary_ = true, true
+        presenter.luiPageParentContext_, presenter.luiPageRuntime_ = context, self
+        function presenter:SetPage(name, parameters) return self.luiPageRuntime_:StagePageReplacement(self, name, parameters) end
+        function presenter:CancelPending() return self.luiPageRuntime_:CancelPageReplacement(self) end
+        local ref = attrs["x:Ref"]
+        if ref and context.refs then
+            if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end
+            context.refs[ref], presenter.luiReference_ = presenter, ref
+        end
+        return presenter
     end
     local component, componentErr, componentKey, componentPath = nil, nil, nil, nil
     local alias, componentName = tag:match("^([^:]+):(.+)$")
@@ -1261,26 +1743,35 @@ function Runtime:BuildNodeCore(node, context)
     if componentErr then error(componentErr) end
     if component then
         if not componentKey then error("LUI 组件缺少稳定加载键：" .. tostring(tag)) end
-        local componentStack = context.componentStack or {}
-        if componentStack[componentKey] then error("LUI 组件循环依赖：" .. componentKey) end
+        local componentStack = context.luiSlotStack_ or context.componentStack or {}
+        local nestedComposition = componentStack[componentKey] and context.luiMarkupPath_ ~= componentPath
+        if componentStack[componentKey] and not nestedComposition then
+            local active={};for key in pairs(componentStack) do active[#active+1]=key end;table.sort(active)
+            error("LUI 组件循环依赖：" .. componentKey .. "；活动链=" .. table.concat(active, " -> "))
+        end
+        local previousComponent = componentStack[componentKey]
         componentStack[componentKey] = true
         if #visualChildren > 0 and not hasContentPresenter(component) then
-            componentStack[componentKey] = nil
+            componentStack[componentKey] = previousComponent
             error("LUI 控件 <" .. tostring(tag) .. "> 未声明 <内容呈现器 />，不能传入子内容。")
         end
         local propertyValues = {}
-        for attributeName, attributeValue in pairs(attrs) do propertyValues[attributeName] = resolve(attributeValue, context) end
+        for attributeName, attributeValue in pairs(attrs) do if not attributeName:match('^布局:') then propertyValues[attributeName] = resolve(attributeValue, context) end end
         -- Slot syntax belongs to its author, including props, imports, repeat
         -- aliases, refs and actions. Copy the array per instance; annotating
         -- shared document children would let the last repeated caller win.
         local content = { luiCallerContext_ = context }
+        content.luiCallerComponentStack_ = {}
+        for key, value in pairs(context.componentStack or {}) do
+            if key ~= componentKey then content.luiCallerComponentStack_[key] = value end
+        end
         for index, child in ipairs(visualChildren) do content[index] = child end
         local slots = { Content = content }
         local componentContext = setmetatable({ props = propertyValues, slots = slots, componentStack = componentStack }, { __index = context })
         local instance, instanceErr
         if componentPath then
             local rawValues = {}
-            for name, value in pairs(node.rawAttrs or attrs) do rawValues[name] = resolve(value, context) end
+            for name, value in pairs(node.rawAttrs or attrs) do if not name:match('^布局:') then rawValues[name] = resolve(value, context) end end
             instance, instanceErr = self:CreateComponent(componentPath, context, propertyValues, slots, rawValues, node.rawAttrs or attrs)
         else
             -- Legacy document descriptors do not provide a paired class.
@@ -1289,7 +1780,7 @@ function Runtime:BuildNodeCore(node, context)
             componentContext.imports = componentImports
             instance = self:BuildNode(component, componentContext)
         end
-        componentStack[componentKey] = nil
+        componentStack[componentKey] = previousComponent
         if not instance then error(instanceErr or ("LUI 组件实例化失败：" .. tostring(tag))) end
         local rendered = instance
         if type(instance) == "table" and type(instance.GetRoot) == "function" then rendered = instance:GetRoot() end
@@ -1362,9 +1853,6 @@ function Runtime:BuildNodeCore(node, context)
         -- UI.Button 主题默认高度为 44。LUI 自闭合按钮的契约高度是 36；复合按钮
         -- 仍由其子项内容测量，不强行覆盖作者的自动高度。
         if #children == 0 and attrs.Height == nil then props.height = Defaults.button.minHeight end
-        local secondary = props.variant == "secondary"
-        props.backgroundColor = props.backgroundColor or color(secondary and "#382452" or "#7851c9")
-        props.borderColor = props.borderColor or color(secondary and "#7855aa" or "#af8cff")
         -- 显式 LUI 背景是完整的常态声明。底层 Button 会自动派生状态色，
         -- 但这会使 Runtime 与静态预览不一致；只有作者显式声明状态背景才变化。
         if attrs.Background ~= nil then
@@ -1377,23 +1865,23 @@ function Runtime:BuildNodeCore(node, context)
             for _, nested in ipairs(child:GetChildren() or {}) do inheritButtonWeight(nested) end
         end
         for _, entry in ipairs(entries) do inheritButtonWeight(entry.widget) end
-        if not secondary and not attrs.Background then
-            props.backgroundGradient = { direction = "to-bottom-right", from = color("#7851c9"), to = color("#4d2a91") }
-        end
-        local click = resolve(attrs.Click, context)
-        local action = actionName(click)
-        if type(click) == "function" then
-            props.onClick = function(_, event) return click(context.item, event) end
-        elseif action then
+        local variantStyle = ButtonVariant.Prepare(props, attrs, {
+            component = context.luiMarkupPath_ or node.sourcePath,
+            binding = attrs.Variant or "Variant",
+        })
+        if attrs.Click ~= nil then
             props.onClick = function(_, event)
+                local click = resolve(attrs.Click, context)
+                if type(click) == 'function' then return click(context.item,event) end
+                local action = actionName(click)
                 local callback = context.actions and context.actions[action]
-                if callback then callback(context.item, event) end
+                if callback then return callback(context.item, event) end
+                local command = commandSpec(click)
+                if command then return invokeCommand(context,command) end
             end
-        else
-            local command = commandSpec(resolve(attrs.Click, context))
-            if command then props.onClick = function() return invokeCommand(context, command) end end
         end
         widget = UI.Button(props)
+        ButtonVariant.Attach(widget, variantStyle)
         local Caption = require("LUI.ButtonCaption")
         local captionInitialized = false
         local function refreshCaption(button)
@@ -1514,19 +2002,21 @@ function Runtime:BuildNodeCore(node, context)
         innerProps.backgroundColor = wrapperProps.backgroundColor or innerProps.backgroundColor
         innerProps.contentPadding = wrapperProps.padding or innerProps.contentPadding
         innerProps.children = children; widget = UI.Modal(innerProps)
+        if context.luiDetachedRoots_ then context.luiDetachedRoots_[widget]=true end
+        widget.luiRootContext_=context.luiDocumentContext_
     elseif tag == "Card" then
         props.padding, props.borderWidth, props.borderRadius = props.padding or Defaults.card.padding, props.borderWidth or Defaults.card.borderWidth, props.borderRadius or Defaults.card.borderRadius
         props.backgroundColor, props.borderColor = props.backgroundColor or color("#211535"), props.borderColor or color("#8064a8")
         props.children = children
         widget = UI.Panel(props)
     elseif tag == "Section" then
-        widget = Components.Section(tostring(text or attrs.Title or ""), children, resolve(attrs.Subtitle, context))
+        widget = legacyComponents().Section(tostring(text or attrs.Title or ""), children, resolve(attrs.Subtitle, context))
     elseif tag == "Notice" then
-        widget = Components.Notice(text, resolve(attrs.Error, context) == true)
+        widget = legacyComponents().Notice(text, resolve(attrs.Error, context) == true)
     elseif tag == "Screen" then
-        widget = Components.Screen(nil, children, props)
+        widget = legacyComponents().Screen(nil, children, props)
     elseif tag == "FixedScreen" then
-        widget = Components.FixedScreen(nil, UI.Panel { width = "100%", height = "100%", children = children }, props)
+        widget = legacyComponents().FixedScreen(nil, UI.Panel { width = "100%", height = "100%", children = children }, props)
     else
         local descriptor = controlDescriptor(tag)
         if descriptor then
@@ -1546,8 +2036,11 @@ function Runtime:BuildNodeCore(node, context)
             local constructors = UI --[[@as table<string, any>]]
             local constructor = constructors[descriptor.ui]
             if not constructor then error("LUI 控件 <" .. tostring(tag) .. "> 的 UI." .. tostring(descriptor.ui) .. " 构造器不可用；请升级 urhox-libs/UI。") end
+            local autoMenuWidth = descriptor.ui == "Menu" and props.width == nil
             widget = constructor(props)
+            if descriptor.ui == "Menu" then NativeText.AttachMenu(widget, autoMenuWidth, self) end
             NativeControls.Attach(widget, tag)
+            NativeDeferred.Attach(widget, tag, self)
             widget.luiTextRasterMode_ = Fidelity.typography.nativeControlRaster
         end
     end
@@ -1555,7 +2048,7 @@ function Runtime:BuildNodeCore(node, context)
             props.flexDirection = props.flexDirection or "column"; props.children = children
             widget = UI.Panel(props)
         end
-        if #entries > 0 and (tag == "Button" or tag == "Card" or tag == "Scroll" or tag == "Border" or tag == "ContentControl") then
+        if (#entries > 0 or entries.luiReconcile_) and (tag == "Button" or tag == "Card" or tag == "Scroll" or tag == "Border" or tag == "ContentControl") then
             layoutPanel(widget.props, entries, childMode == "自由" and "Free" or childMode, attrs, context, widget)
         end
     end
@@ -1733,7 +2226,7 @@ function Runtime:AfterLayout(root, callback)
                     local ok, err = xpcall(listener,debug.traceback,self,vg)
                     if not ok then print("[LUI.AfterLayout] "..tostring(err)) end
                 end
-                Overlays.SyncInput(self)
+                Overlays.SyncInput()
             end,nvg)
         end
     end
@@ -1764,21 +2257,43 @@ function Runtime:Render(markupPath, codePath, presentation)
     return self:RenderMarkup(markupPath, result)
 end
 
+local function createRegisteredDocument(runtime, descriptor, parent, parameters)
+    local code, codeErr = runtime:LoadCode(descriptor.code)
+    if not code then return nil, codeErr end
+    if type(code.New) == "function" then
+        local presentation = type(parent) == "table" and (parent.presentation or parent.presentation_) or nil
+        return code.New(presentation or parent, runtime, descriptor, parameters or {}, parent)
+    end
+    local root, err = runtime:Render(descriptor.markup, descriptor.code, parent)
+    if not root then return nil, err end
+    local fallbackRoot = root
+    return { root_ = fallbackRoot, GetRoot = function() return fallbackRoot end, Dispose = function() end }, nil
+end
+
+function Runtime:CreateScene(name, presentation)
+    local registry = require("LUI.Registry")
+    local descriptor = registry.scenes and registry.scenes[name]
+    if not descriptor then return nil, "LUI 未登记场景：" .. tostring(name) end
+    return createRegisteredDocument(self, descriptor, presentation)
+end
+
+function Runtime:CreatePage(name, parentContext, parameters)
+    local registry = require("LUI.Registry")
+    local descriptor = registry.pages and registry.pages[name]
+    if not descriptor then return nil, "LUI 未登记页面：" .. tostring(name) end
+    return createRegisteredDocument(self, descriptor, parentContext, parameters)
+end
+
 -- New WPF-style discovery surface.  A registered module owns its constructor
 -- and InitializeComponent call; Runtime only supplies an already validated
 -- descriptor and the pure markup renderer.
 function Runtime:CreateRegistered(name, presentation, properties, slots)
     local registry = require("LUI.Registry")
     local item = registry:Get(name)
-    if not item then return nil, "LUI 未登记页面或控件：" .. tostring(name) end
+    if not item then return nil, "LUI 未登记场景、页面或控件：" .. tostring(name) end
     if registry.controls and registry.controls[name] then return self:CreateComponent(item.markup, presentation, properties or {}, slots or {}) end
-    local code, codeErr = self:LoadCode(item.code)
-    if not code then return nil, codeErr end
-    if type(code.New) == "function" then return code.New(presentation, self, item) end
-    local root, err = self:Render(item.markup, item.code, presentation)
-    if not root then return nil, err end
-    local fallbackRoot = root
-    return { root_ = fallbackRoot, GetRoot = function() return fallbackRoot end, Dispose = function() end }, nil
+    if registry.scenes and registry.scenes[name] then return self:CreateScene(name, presentation) end
+    return self:CreatePage(name, presentation, properties or {})
 end
 
 -- Compatibility return shape used by existing callers outside the project.

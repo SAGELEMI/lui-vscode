@@ -159,7 +159,7 @@ test("production extension deploy delivers the same bundle via workspace.fs and 
   assert.equal(await readFile(join(target, "scripts/LUI/Runtime.lua.meta"), "utf8"), '{"uuid":"keep-extension"}');
   const expected = h.Uri.file(join(root, "runtime/urhox-lua/runtime-manifest.json"));
   const status = await h.api.runtimeStatus(h.Uri.file(target), expected);
-  assert.match(status.message, /已部署且版本匹配/);
+  assert.match(status.message, /版本与实际文件哈希匹配/);
   await io.write(join(target, "scripts/LUI/runtime-manifest.json"), Buffer.from("invalid json"));
   assert.match((await h.api.runtimeStatus(h.Uri.file(target), expected)).message, /无法解析/);
 });

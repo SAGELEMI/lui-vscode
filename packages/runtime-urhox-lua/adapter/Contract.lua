@@ -1,6 +1,6 @@
 -- 由 packages/spec/layout-contract.json 生成；不要在部署副本中手改。
 return {
-    ["version"] = "xaml-initialize-v1-unified-layout-hy-vx-v4-fidelity",
+    ["version"] = "xaml-initialize-v1-unified-layout-hy-vx-v6-source-components-progressive-paint",
     ["boxSizing"] = "border-box",
     ["renderFidelity"] = {
         ["colorSpace"] = "srgb",
