@@ -50,7 +50,7 @@ export async function deployGuidance(sourceRoot, targetRoot, io) {
   const agentsBytes = await io.read(agentsPath);
   const agents = agentsBytes ? text(agentsBytes) : "";
   const eol = agents.includes("\r\n") ? "\r\n" : "\n";
-  const block = [BEGIN, "## LUI 使用入口", "", "仅在创建、修改或排查 LUI 页面、组件、绑定与部署时读取：", "- 文档：[LUI 使用文档](docs/lui/README.md)。", "- 编写：[lui-authoring](skills/lui-authoring/SKILL.md)。", "- 排错：[lui-troubleshooting](skills/lui-troubleshooting/SKILL.md)。", "", "先读对应 skill，再按任务阅读手册；遵循当前项目其他规则。资料由 LUI 部署维护，版本与保护状态见 docs/lui/.delivery.json。", END].join(eol);
+  const block = [BEGIN, "## LUI 使用入口", "", "仅在创建、修改或排查 LUI 页面、组件、绑定与部署时读取：", "- 文档：[LUI 使用文档](docs/lui/README.md)。", "- 编写：[lui-authoring](skills/lui-authoring/SKILL.md)。", "- 排错：[lui-troubleshooting](skills/lui-troubleshooting/SKILL.md)。", "", "多个原生 Modal 共存时，业务宿主必须用集中式弹窗管理器同步视觉 zIndex 与原生 overlay 输入栈；不要逐页填写固定层级，也不要为单个业务修改通用 Runtime。", "", "先读对应 skill，再按任务阅读手册；遵循当前项目其他规则。资料由 LUI 部署维护，版本与保护状态见 docs/lui/.delivery.json。", END].join(eol);
   const start = agents.indexOf(BEGIN), end = agents.indexOf(END);
   let next = agents;
   let agentsBlockHash = previous.agentsBlockHash;

@@ -36,6 +36,7 @@ local ButtonVariant = require("LUI.ButtonVariant")
 local Typography = require("LUI.Typography")
 local PageFrame = require("LUI.PageFrame")
 local Project = require("LUI.Project")
+local Navigator = require("LUI.Navigator")
 
 -- LUI.Runtime 将纯声明式节点映射到 UrhoX UI。所有业务代码必须留在同名 .lui.lua。
 ---@class LuiRuntime
@@ -1025,7 +1026,7 @@ function Runtime:Init()
     self.preloader_ = require("LUI.Preloader").New(self)
     self.documents_ = {}
     self.code_ = {}
-    self.pageTransitions_ = setmetatable({}, { __mode = "k" })
+    self.navigators_ = setmetatable({}, { __mode = "k" })
     self:EnsureFrameScheduler()
     self.isV2_ = tonumber(self.config_.schemaVersion or 1) >= 2
     self.fontFiles_ = {}
@@ -1035,6 +1036,20 @@ function Runtime:Init()
             if type(resource) == "string" then self.fontFiles_[tostring(family.family) .. ":" .. tostring(weight)] = resource end
         end
     end
+end
+
+function Runtime:_RegisterNavigator(navigator)
+    self.navigators_ = self.navigators_ or setmetatable({}, { __mode = "k" })
+    self.navigators_[navigator] = true
+    self:EnsureFrameScheduler()
+end
+
+function Runtime:_UnregisterNavigator(navigator)
+    if self.navigators_ then self.navigators_[navigator] = nil end
+end
+
+function Runtime:CreateNavigator(options)
+    return Navigator.New(self, options or {})
 end
 
 function Runtime:EnsurePreloader()
@@ -1439,10 +1454,15 @@ local function transitionSubtreeReady(root)
     local function visit(widget)
         if not widget or visited[widget] then return true end
         visited[widget] = true
-        if widget.luiRenderDeferredFrame_ ~= nil then return false end
+        -- Hidden branches are not paintable. Their virtual lists deliberately
+        -- do not render rows, so waiting for those rows would deadlock an
+        -- atomic component replacement.
+        local props = widget.props or {}
+        if props.visible == false or props.visibility == "hidden"
+            or (widget.RenderModalContent and widget.isOpen_ == false) then return true end
         local list = widget.luiVirtualList_
         if list and list.model_ and #(list.model_.items_ or {}) > 0
-            and #(list.renderChildren_ or {}) == 0 then return false end
+            and (list.renderPending_ == true or #(list.renderChildren_ or {}) == 0) then return false end
         for _, child in ipairs(widget.GetChildren and widget:GetChildren() or {}) do
             if not visit(child) then return false end
         end
@@ -1554,101 +1574,30 @@ function Runtime:StageComponentReplacement(root, overrideContext)
     return nextRoot, commit, cancel
 end
 
-local function disposePageInstance(instance, root)
-    if instance and instance.Dispose then instance:Dispose() end
-    if root and root.parent then root.parent:RemoveChild(root) end
-    if root and root.Destroy then root:Destroy() end
-end
-
-local function removePagePresenterEntry(presenter, root)
-    local entries = presenter and presenter.luiEntries_
-    if not entries or not root then return end
-    for index = #entries, 1, -1 do
-        if entries[index].widget == root then table.remove(entries, index) end
-    end
-end
-
-local function addPagePresenterEntry(presenter, root)
-    local entries = presenter.luiEntries_ or {}
-    presenter.luiEntries_ = entries
-    entries[#entries + 1] = {
-        widget = root,
-        attrs = { Width = "100%", Height = "100%", MinWidth = "0", MinHeight = "0" },
-        context = root.luiContext_ or presenter.luiPageParentContext_,
-    }
-end
-
 -- A page presenter is a hard layout boundary. It owns exactly one committed
 -- page plus at most one normally opaque candidate, so switching a page never
 -- invalidates or reconstructs the surrounding scene.
 function Runtime:CancelPageReplacement(presenter)
-    local transitions = self.pageTransitions_
-    local transition = presenter and transitions and transitions[presenter]
-    if not transition then return false end
-    transitions[presenter] = nil
-    removePagePresenterEntry(presenter, transition.nextRoot)
-    disposePageInstance(transition.nextInstance, transition.nextRoot)
-    if transition.oldRoot then transition.oldRoot:SetStyle({ zIndex = 1, pointerEvents = "box-none" }) end
-    return true
+    local navigator = presenter and presenter.luiNavigator_
+    return navigator and navigator:CancelPending() or false
 end
 
 function Runtime:StagePageReplacement(presenter, pageName, parameters)
     if not presenter or not presenter.luiPagePresenter_ then return nil, "目标不是 <页面呈现器>。" end
-    if not self.pageTransitions_ then self.pageTransitions_ = setmetatable({}, { __mode = "k" }) end
-    self:CancelPageReplacement(presenter)
-    local instance, err = self:CreatePage(pageName, presenter.luiPageParentContext_, parameters or {})
-    if not instance then return nil, err end
-    local nextRoot = instance.GetRoot and instance:GetRoot() or instance.root_
-    if not nextRoot then disposePageInstance(instance); return nil, "页面未生成有效根节点：" .. tostring(pageName) end
-    local oldRoot, oldInstance = presenter.luiPageRoot_, presenter.luiPageInstance_
-    local serial = (presenter.luiPageSerial_ or 0) + 1
-    presenter.luiPageSerial_ = serial
-    nextRoot:SetStyle({ position = "absolute", left = 0, top = 0, width = "100%", height = "100%",
-        zIndex = oldRoot and 0 or 2, pointerEvents = oldRoot and "none" or "box-none",
-        backgroundColor = presenter.props and presenter.props.backgroundColor or "#0B0712" })
-    if oldRoot then oldRoot:SetStyle({ zIndex = 1, pointerEvents = "box-none" }) end
-    if nextRoot.parent and nextRoot.parent ~= presenter then nextRoot.parent:RemoveChild(nextRoot) end
-    if nextRoot.parent ~= presenter then presenter:AddChild(nextRoot) end
-    addPagePresenterEntry(presenter, nextRoot)
-    local baseRender = nextRoot.Render
-    nextRoot.luiPageTransitionPhase_ = oldRoot and "warming" or "visible"
-    nextRoot.luiPageTransitionReady_, nextRoot.luiPageTransitionVisible_ = false, false
-    function nextRoot:Render(nvg)
-        local result
-        if baseRender then result = baseRender(self, nvg) end
-        if self.luiPageTransitionPhase_ == "warming" then
-            self.luiPageTransitionReady_ = transitionSubtreeReady(self)
-        elseif self.luiPageTransitionPhase_ == "visible" and transitionSubtreeReady(self) then
-            self.luiPageTransitionVisible_ = true
-        end
-        return result
+    local navigator = presenter.luiNavigator_
+    if not navigator then
+        navigator = self:CreateNavigator({ kind = "page", host = presenter,
+            parentContext = presenter.luiPageParentContext_,
+            background = presenter.props and presenter.props.backgroundColor })
+        presenter.luiNavigator_ = navigator
     end
-    self.pageTransitions_[presenter] = {
-        serial = serial, oldRoot = oldRoot, oldInstance = oldInstance,
-        nextRoot = nextRoot, nextInstance = instance, phase = nextRoot.luiPageTransitionPhase_,
-    }
-    Measure.Invalidate(presenter)
-    return nextRoot, nil
+    local instance, err = navigator:Navigate(pageName, parameters or {})
+    if not instance then return nil, err end
+    return instance.GetRoot and instance:GetRoot() or instance.root_, nil
 end
 
 function Runtime:UpdatePageTransitions()
-    if not self.pageTransitions_ then return end
-    for presenter, transition in pairs(self.pageTransitions_) do
-        if presenter.luiPageSerial_ ~= transition.serial then
-            self:CancelPageReplacement(presenter)
-        elseif transition.phase == "warming" and transition.nextRoot.luiPageTransitionReady_ then
-            transition.phase, transition.nextRoot.luiPageTransitionPhase_ = "visible", "visible"
-            if transition.oldRoot then transition.oldRoot:SetStyle({ pointerEvents = "none" }) end
-            transition.nextRoot:SetStyle({ zIndex = 2, pointerEvents = "box-none" })
-        elseif transition.phase == "visible" and transition.nextRoot.luiPageTransitionVisible_ then
-            self.pageTransitions_[presenter] = nil
-            removePagePresenterEntry(presenter, transition.oldRoot)
-            disposePageInstance(transition.oldInstance, transition.oldRoot)
-            transition.nextRoot.luiPageTransitionPhase_ = nil
-            presenter.luiPageRoot_, presenter.luiPageInstance_ = transition.nextRoot, transition.nextInstance
-            Measure.Invalidate(presenter)
-        end
-    end
+    for navigator in pairs(self.navigators_ or {}) do navigator:Update() end
 end
 
 function Runtime:AdvanceStagedReplacement(root)
@@ -1718,8 +1667,17 @@ function Runtime:BuildNodeCore(node, context)
         local presenter = controlSurface(self:BuildLayoutEntries(visualChildren, context), attrs, context)
         presenter.luiPagePresenter_, presenter.luiLayoutInvalidationBoundary_ = true, true
         presenter.luiPageParentContext_, presenter.luiPageRuntime_ = context, self
+        presenter.luiNavigator_ = self:CreateNavigator({ kind = "page", host = presenter,
+            parentContext = context, background = presenter.props and presenter.props.backgroundColor })
         function presenter:SetPage(name, parameters) return self.luiPageRuntime_:StagePageReplacement(self, name, parameters) end
         function presenter:CancelPending() return self.luiPageRuntime_:CancelPageReplacement(self) end
+        function presenter:GetCurrentPage() return self.luiNavigator_:GetCurrent() end
+        function presenter:IsCurrentPageReady() return self.luiNavigator_:IsCurrentReady() end
+        local destroy = presenter.Destroy
+        function presenter:Destroy(...)
+            if self.luiNavigator_ then self.luiNavigator_:Dispose(); self.luiNavigator_ = nil end
+            return destroy(self, ...)
+        end
         local ref = attrs["x:Ref"]
         if ref and context.refs then
             if context.refs[ref] then error("LUI x:Ref 重复：" .. ref) end

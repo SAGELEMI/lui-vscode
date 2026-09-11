@@ -1,6 +1,6 @@
 # UrhoX Lua 运行时接入
 
-[返回文档入口](README.md)。适用版本：3.0.0。
+[返回文档入口](README.md)。适用版本：3.0.1。
 
 ## 部署与路径
 
@@ -16,11 +16,15 @@ LUI Studio 从配置的 sourceRoots 扫描配对文件维护 Registry.lua；手�
 
 `<弹窗 引用="Dialog">` 的引用始终是实际 `UI.Modal`，不以普通 Panel 包装代替；页面根仍是布局宿主。需要由宿主显式取出 `context.refs.Dialog`，从未挂载设计根分离，再调用原生 `Open()` 自动挂到当前 UI 根。不要对页面 `GetRoot()` 调用弹窗方法。
 
+LUI 不替业务决定多个同时打开 Modal 的先后关系。原生 `PushOverlay/PopOverlay` 维护输入优先级，而兄弟节点的 `层级/ZIndex` 决定 Modal 延迟绘制回调的收集顺序，两者不会自动同步。允许父弹窗继续显示并在其上打开详情时，宿主必须使用一个集中式弹窗管理器：只在真实的关闭→打开或恢复转换后扫描实际挂载父节点，将新 Modal 的 `zIndex` 设置为当前兄弟最大值加一；重复打开已打开实例保持幂等。不要在各业务页面分散填写固定层级。
+
+`MountGlobalOverlay` 使用独立的覆盖层绘制与输入排序，不与 Modal 的兄弟 `zIndex` 混排。教程、通知、保存阻断等设备级覆盖层继续走该接口，不要通过提高业务 Modal 层级替代它。
+
 复合按钮的显式背景会同步到未声明的悬停/按下状态；`悬停背景`和`按下背景`则直接映射为底层按钮状态色。文字按共享契约的 1.45 逻辑行高测量，先扣除边框和内边距再排列子项；自闭合按钮的缺省高度明确为 36px，不允许 UrhoX 主题重新注入 44px。
 
 Modal 使用响应式 fullscreen 预设（屏幕的90%），保留关闭事件、背景、内容内边距与交互。禁止遮罩关闭时同步禁止 Escape，不能把奖励的关闭当作放弃。UI 根整体销毁前先分离仍存活的弹窗，弹窗释放时解除 overlay、销毁其独立 contentContainer 及设计宿主。弹窗内容高度有界，内部滚动，确认按钮固定。
 
-回归必须运行原生 Modal 的 Open/Close/IsOpen 生命周期；普通 Panel 不得伪造这些方法。无 Yoga/绘制环境的生命周期测试不能作为视觉验收。
+回归必须运行原生 Modal 的 Open/Close/IsOpen 生命周期；嵌套流程还要同时断言新弹窗的 `zIndex` 更高、`UI.GetTopOverlay()` 指向新弹窗，并在关闭后恢复父弹窗。普通 Panel 不得伪造这些方法。无 Yoga/绘制环境的生命周期测试不能作为视觉验收。
 
 Runtime 顶层依赖 `urhox-libs/UI` 和引擎的 cjson/资源读取。通用控件和纯数据预览不依赖项目 Lua；仅使用下方旧宿主标签时才延迟加载 `Presentation.Components`。
 
@@ -44,6 +48,7 @@ Runtime 顶层依赖 `urhox-libs/UI` 和引擎的 cjson/资源读取。通用控
 | LUI.New() | Runtime 实例，读取当前项目配置；失败状态保存在 configError_ |
 | runtime:CreateScene(name, presentation) | 创建拥有设备设计画布的顶层场景实例 |
 | runtime:CreatePage(name, parentContext, parameters) | 创建宿主尺寸的受控页面实例及独立生命周期 |
+| runtime:CreateNavigator(options) | 创建 Runtime 调度的导航对象；scene/page 候选完整绘制后原子提交 |
 | runtime:StagePageReplacement(presenter, pageName, parameters) | 将候选页面完成关键布局和首帧后提升，下一帧释放旧页 |
 | runtime:CreateRegistered(name, presentation, properties, slots) | 兼容创建已登记的场景、页面或控件；新代码优先使用分类入口 |
 | runtime:CreateComponent(markupPath, parentContext, props, slots) | 加载同名后端并建立组件实例 |
@@ -64,7 +69,9 @@ Runtime 顶层依赖 `urhox-libs/UI` 和引擎的 cjson/资源读取。通用控
 
 ## 宿主管理
 
-宿主负责 UI.Init、挂载根、导航、旧页面 Dispose 及必要的子实例清理。示例 [Start.lua](../examples/tutorial/Start.lua) 给出最小 Navigate/Dispose 实现，避免覆盖既有游戏 UI 初始化逻辑。
+`LuiNavigator` 提供 `GetRoot`、`Navigate`、`GetCurrent`、`IsCurrentReady`、`CancelPending` 与 `Dispose`。Runtime 帧调度器自动推进候选页；旧页在候选页完成布局和首个完整绘制前持续显示并接收输入，候选页完成一个可见帧后再释放旧实例。失败、取消和快速连续导航保留已提交页，重复导航到当前目标是幂等操作。`<页面呈现器>` 与兼容的 `StagePageReplacement` 复用同一实现。
+
+宿主负责 UI.Init，并把 Navigator 根挂载一次；页面切换与旧页面 Dispose 由 Navigator 管理。示例 [Start.lua](../examples/tutorial/Start.lua) 给出最小接入结构，避免覆盖既有游戏 UI 初始化逻辑。
 
 运行端尺寸分为声明、内容测量、最终排列：Measure.lua 使用 NanoVG 文本测量和原生叶控件测量；排列只更新引擎的 render offset/size，不向 props 写回宽高。页面内容、控件根及成对视觉控件共用布局宿主。GetLayout 保持父级相对坐标，供 ScrollView 计算内容范围与命中。LUI 字号是逻辑 px，适配器转换到 UI 接收的 pt，不改变全局主题。
 

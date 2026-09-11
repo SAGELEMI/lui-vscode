@@ -89,6 +89,16 @@ assert(cache.baseFontSize==17 and cache.fontVersion==fontVersion and cache.conte
 cost=0;Budget.BeginFrame(rt,4);b.calls=64
 local paused=Budget.Guard(b,function()nvgSave(ctx);nvgTextBounds(ctx,0,0,'direct');nvgRestore(ctx)end,{})
 assert(not paused and depth==0 and Native.stats.restoredOnError==1,'raw native render state is restored after cancellation')
+local admitted,committed=b.calls,b.committedCalls or 0
+assert(Budget.GuardCommitted(b,function()nvgTextBounds(ctx,0,0,'committed-visible')end,{}))
+assert(b.calls==admitted and b.committedCalls==committed+1 and depth==0,
+ 'committed visible native work remains guarded but does not consume or yield to the cold quota')
+committed=b.committedCalls
+assert(Budget.GuardCommitted(b,function()
+ assert(Budget.Guard(b,function()nvgTextBounds(ctx,0,0,'nested-committed-visible')end,{}))
+end,{}))
+assert(b.calls==admitted and b.committedCalls==committed+1,
+ 'an ordinary nested guard inherits the outer committed scope and cannot hide visible descendants')
 -- Nested guards restore only their own pushes, preserving caller state.
 Budget.BeginFrame(rt,5)
 assert(Budget.Guard(b,function()

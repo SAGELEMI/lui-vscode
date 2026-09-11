@@ -14,7 +14,8 @@ description: 排查 LUI Studio 与 UrhoX LUI Runtime 的语法、组件注册、
 3. 数据/动作错误查 [绑定](../../docs/bindings.md)。区分预览 JSON 与真实模型；检查 Notify 回调、输入 Commit、重复项原始数据及每实例 refs。不要把 Notify 当成自动渲染，也不要承诺通用失焦提交已经实现。
 4. 布局查 [布局](../../docs/layout.md)：水平对齐是 Y，垂直对齐是 X；检查父槽位、显式尺寸、边距、滚动高度及禁用轴。需要像素证据时按项目允许方式比较 Studio 与运行时。
 5. 构造/部署查 [运行时](../../docs/runtime.md)：核对 Presentation.Components 依赖、InitializeComponent 是否递归、OnLoaded 调用时机以及插件携带清单和目标版本/契约/哈希。重新部署修复包差异，不能手填版本或哈希伪造匹配。
-6. 保存冲突查 [Studio](../../docs/studio.md)，先保留草稿并比较外部修改，不强行磁盘覆盖。旧语法迁移查 [迁移](../../docs/migration.md)，不批量格式化无关文件。
+6. 嵌套弹窗错层时同时检查兄弟 `zIndex` 和 `UI.GetTopOverlay()`。若输入栈顶正确但详情画在父弹窗下方，应修复业务宿主的集中式打开器，让真实打开/恢复的 Modal 动态置顶；不要给单个页面写固定层级，也不要把业务排序并入通用 Runtime。
+7. 保存冲突查 [Studio](../../docs/studio.md)，先保留草稿并比较外部修改，不强行磁盘覆盖。旧语法迁移查 [迁移](../../docs/migration.md)，不批量格式化无关文件。
 
 ## 修复与闭环
 

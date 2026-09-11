@@ -48,8 +48,10 @@ local function installTooltip()
         if not tooltipOwned then return render(self, nvg) end
         local owner = tooltipOwner[1]
         if not owner or owner.luiNativeDeferredDisposed_ then expireTooltip(); return end
-        local ok, result = Budget.Guard(tooltipBudget, function() return render(self, nvg) end, tooltipCache)
-        if not ok and owner.luiBudgetOnDeferred_ then owner.luiBudgetOnDeferred_() end
+        -- The global tooltip is already visible and therefore committed even
+        -- though it is rendered outside its ChatWindow owner's normal tree.
+        local ok, result = Budget.GuardCommitted(tooltipBudget, function() return render(self, nvg) end, tooltipCache)
+        if not ok then error("committed tooltip render was interrupted", 0) end
         return result
     end
 end
@@ -90,7 +92,7 @@ function Deferred.Attach(widget, tag, runtime)
             self.messages_ = { message }
             local result = table.pack(pcall(NativeText.WithOwner, message, recalculate, self))
             self.messages_, self.contentHeight_ = messages, height
-            if message.richText then RenderBudget.AttachTree(message.richText, bridge, self.luiBudgetOnDeferred_) end
+            if message.richText then RenderBudget.AttachTree(message.richText, bridge) end
             if not result[1] then error(result[2], 0) end
             message.y = job.y
             job.y = job.y + message.height + self.props.messageGap

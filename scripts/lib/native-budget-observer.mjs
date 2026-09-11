@@ -4,16 +4,18 @@ NativeProbe={frames={},enabled=false,depth=0,maximumDepth=0,referenceWidth=UI.Me
 local function record()
  if not NativeProbe.enabled then return end
  local budget=NativeProbe.budget;local key=tostring(budget.frame)
- local row=NativeProbe.frames[key];if not row then row={token=budget.frame,calls=0,outside=0,lateStarts=0,rejectedStartChecks=0,maximumObserverLagMilliseconds=0,kind={},depth=0};NativeProbe.frames[key]=row end
+ local row=NativeProbe.frames[key];if not row then row={token=budget.frame,calls=0,committedStarts=0,outside=0,lateStarts=0,rejectedStartChecks=0,maximumObserverLagMilliseconds=0,kind={},depth=0};NativeProbe.frames[key]=row end
  return row
 end
 for _,name in ipairs({'nvgTextBounds','nvgTextBoxBounds','nvgTextMetrics'})do
  local original=assert(_G[name]);_G[name]=function(...)
   local row=record();if row then
    row.calls=row.calls+1;row.kind[name]=(row.kind[name]or 0)+1
+   local committed=NativeProbe.Budget.IsCommitted and NativeProbe.Budget.IsCommitted()
+   if committed then row.committedStarts=row.committedStarts+1 end
    if not NativeProbe.Budget.Active()then row.outside=row.outside+1 end
-   if NativeProbe.budget.deadline and NativeProbe.budget.clock()>=NativeProbe.budget.deadline then row.lateStarts=row.lateStarts+1 end
-   if NativeProbe.budget.lastNativeStart then
+   if not committed and NativeProbe.budget.deadline and NativeProbe.budget.clock()>=NativeProbe.budget.deadline then row.lateStarts=row.lateStarts+1 end
+   if not committed and NativeProbe.budget.lastNativeStart then
     row.maximumObserverLagMilliseconds=math.max(row.maximumObserverLagMilliseconds,(NativeProbe.budget.clock()-NativeProbe.budget.lastNativeStart)*1000)
     if NativeProbe.budget.lastNativeStart>=NativeProbe.budget.deadline then row.rejectedStartChecks=row.rejectedStartChecks+1 end
    end
@@ -26,7 +28,7 @@ nvgSave=function(...)NativeProbe.depth=NativeProbe.depth+1;NativeProbe.maximumDe
 nvgRestore=function(...)NativeProbe.depth=NativeProbe.depth-1;assert(NativeProbe.depth>=0,'unbalanced raw nvgRestore');return restore(...)end
 nvgBeginFrame=function(...)NativeProbe.depth=0;return beginFrame(...)end
 function NativeProbe.FinalizeFrame()
- local row=record();if row then row.depth=NativeProbe.depth;row.budgetCalls=NativeProbe.budget.calls;row.overrun=NativeProbe.budget.overrunMilliseconds end
+ local row=record();if row then row.depth=NativeProbe.depth;row.budgetCalls=NativeProbe.budget.calls;row.budgetCommittedCalls=NativeProbe.budget.committedCalls or 0;row.overrun=NativeProbe.budget.overrunMilliseconds end
  return row
 end
 nvgEndFrame=function(...)NativeProbe.FinalizeFrame();return endFrame(...)end

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 test("templates and runtime use same-name InitializeComponent classes and pure markup rendering", async () => {
   const host = await readFile("src/extension.ts", "utf8");
   const runtime = await readFile("packages/runtime-urhox-lua/adapter/Runtime.lua", "utf8");
+  const navigator = await readFile("packages/runtime-urhox-lua/adapter/Navigator.lua", "utf8");
   const vocabulary = await readFile("packages/spec/src/vocabulary.ts", "utf8");
   const spec = await readFile("packages/spec/src/index.ts", "utf8");
   const designer = await readFile("src/webview/designer.ts", "utf8");
@@ -18,9 +19,15 @@ test("templates and runtime use same-name InitializeComponent classes and pure m
   assert.match(runtime, /function Runtime:CreateScene/);
   assert.match(runtime, /function Runtime:CreatePage/);
   assert.match(runtime, /function Runtime:StagePageReplacement/);
-  assert.match(runtime, /addPagePresenterEntry\(presenter, nextRoot\)/);
-  assert.match(runtime, /removePagePresenterEntry\(presenter, transition\.oldRoot\)[\s\S]*disposePageInstance\(transition\.oldInstance, transition\.oldRoot\)/);
-  assert.match(runtime, /transition\.nextRoot:SetStyle\(\{ zIndex = 2, pointerEvents = "box-none" \}\)/);
+  assert.match(runtime, /function Runtime:CreateNavigator/);
+  assert.match(runtime, /presenter\.luiNavigator_ = self:CreateNavigator/);
+  assert.match(runtime, /for navigator in pairs\(self\.navigators_ or \{\}\) do navigator:Update\(\) end/);
+  for (const method of ["GetRoot", "Navigate", "GetCurrent", "IsCurrentReady", "CancelPending", "Dispose"]) {
+    assert.match(navigator, new RegExp(`function Navigator:${method}\\(`));
+  }
+  assert.match(navigator, /pending\.phase = "visible"[\s\S]*pointerEvents = "none"[\s\S]*pointerEvents = "box-none"/);
+  assert.match(navigator, /removeEntry\(self\.host_, oldRoot\)[\s\S]*disposeInstance\(oldInstance, oldRoot\)/);
+  assert.doesNotMatch(navigator, /luiRenderDeferredFrame_/);
   assert.match(runtime, /luiLayoutInvalidationBoundary_ = true/);
   assert.match(runtime, /local alias, componentName/);
   assert.match(runtime, /for attributeName, attributeValue in pairs\(attrs\)/);

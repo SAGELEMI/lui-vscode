@@ -69,7 +69,7 @@ async function step(name,action,expected={}){
   ${action}
   local p=FixturePresentation;assert(p and p.root_,'production root required')
   local count=0;local before=FixtureRenderCount;local cancel
-  cancel=p.lui_:AfterLayout(p.root_,function(_,vg)
+  cancel=p.lui_:AfterLayout(p.shellRoot_ or p.root_,function(_,vg)
    count=count+1;if count<30 then return end;cancel()
    local vm=FixtureApp:GetTowerView();local bounds=p.root_:GetAbsoluteLayout()
    local result={name=${long(name)},page=p:GetCurrentPage(),step=FixtureApp:GetOnboarding().step,
@@ -112,18 +112,21 @@ try{
    if not root then return end;if predicate(root) then return root end
    local children=root:GetRenderChildren() or {}
    for i=last and #children or 1,last and 1 or #children,last and -1 or 1 do local found=FixtureFind(children[i],predicate,last);if found then return found end end
+   for _,child in ipairs(root.bodyChildren_ or {})do local found=FixtureFind(child,predicate,last);if found then return found end end
+   local found=FixtureFind(root.contentContainer_,predicate,last);if found then return found end
+   return FixtureFind(root.luiNativeWidget_,predicate,last)
   end
   function FixtureProbes(name)
    local p=FixturePresentation;local checks={}
    local function text(root,label) return FixtureFind(root,function(w) return w.props.text==label and w.props.onClick~=nil end) end
-   local function check(label,target,scrollRow)
+   local function check(label,target,scrollRow,allowDisabled)
     local rect,reason=p.lui_:GetScreenRect(target)
     local full=target and require('LUI.Overlays').VisualRect(target)
     local hit=rect and UI.FindWidgetAt(rect.x+rect.w/2,rect.y+rect.h/2)
     local current=hit;local matched=false
     while current do if current==target then matched=true;break end;current=current.parent end
     local visible=rect and full and rect.w>=full.w-0.5 and (scrollRow and rect.h>=24 or not scrollRow and rect.h>=full.h-0.5) and rect.h>=15 and rect.x>=0 and rect.y>=0 and rect.x+rect.w<=UI.GetWidth()+0.5 and rect.y+rect.h<=UI.GetHeight()+0.5
-    checks[#checks+1]={label=label,rect=rect or false,full=full or false,reason=reason or '',hit=matched,hitText=hit and hit.props.text or '',passed=visible and matched and target.props.disabled~=true or false}
+    checks[#checks+1]={label=label,rect=rect or false,full=full or false,reason=reason or '',hit=matched,hitText=hit and hit.props.text or '',passed=visible and matched and (allowDisabled or target.props.disabled~=true) or false}
    end
    if p.tutorialView_ then check('name-confirm',p.tutorialView_.context_.refs.ConfirmButton);check('name-input',p.tutorialView_.context_.refs.NameInput) end
    if p.tutorialCoach_ then
@@ -131,12 +134,20 @@ try{
     if refs.PrimaryButton.props.visible~=false then check('tutorial-next',refs.PrimaryButton) end
     check('tutorial-skip',text(p.tutorialCoach_:GetRoot(),'跳过教程'))
    end
+   if p.confirmationView_ then check('confirmation-primary',p.confirmationView_.context_.refs.ConfirmButton) end
+   if name=='empty-talents-confirm' then check('enter-without-talents',p.resultView_.context_.refs.EnterWithoutTalentsButton) end
+   if name=='update-log' then check('update-log-close',p.updateLogView_.context_.refs.CloseButton) end
    if name=='loadout-ready' then check('start-run',p.currentView_.context_.refs.StartRunButton) end
    if name=='reward' or name=='reward-selected' then
     local refs=p.resultView_.context_.refs
-    check('reward-abandon',refs.AbandonRewardButton)
-    check(name=='reward' and 'reward-first-row' or 'reward-last-row-after-scroll',FixtureFind(refs.RewardList,function(w) return w.props.onClick~=nil end,name=='reward-selected'),true)
-    if name=='reward-selected' then check('reward-claim',text(refs.DetailPanel,'领取奖励')) end
+    if name=='reward' then
+     check('reward-abandon',refs.AbandonRewardButton,false,true)
+     check('reward-first-row',FixtureFind(refs.RewardList,function(w) return w.props.onClick~=nil end),true)
+    else
+     -- The item-detail modal is now topmost. Underlying reward controls must
+     -- not win hit testing while its claim action is visible.
+     check('reward-claim',text(p.itemDetailView_.context_.refs.Dialog,'领取奖励'))
+    end
    end
    if name=='reward-claimed' then check('exit-tower',p.currentView_.context_.refs.ExitTowerButton) end
    if name=='settlement' then check('settlement-close',p.resultView_.context_.refs.HomeButton) end
@@ -172,20 +183,33 @@ try{
  await step('home',`assert(FixturePresentation:ConfirmTutorialModal('隔离验收'));`,{page:'cover',step:'home_intro'});
  await step('talent-route',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'cover',step:'talent_intro'});
  await step('talents',`FixturePresentation.currentView_.context_.actions.OpenTalents()`,{page:'talents',step:'talent_intro'});
- await step('warehouse',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover');FixturePresentation.currentView_.context_.actions.OpenWarehouse()`,{page:'warehouse',step:'warehouse_intro'});
- await step('loadout',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover');FixturePresentation.currentView_.context_.actions.OpenTower()`,{page:'loadout',step:'loadout_intro'});
+ await step('cover-after-talents',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover')`,{page:'cover',step:'warehouse_intro'});
+ await step('warehouse',`FixturePresentation.currentView_.context_.actions.OpenWarehouse()`,{page:'warehouse',step:'warehouse_intro'});
+ await step('cover-after-warehouse',`assert(FixturePresentation:AdvanceTutorialCoach());FixturePresentation:Navigate('cover')`,{page:'cover',step:'loadout_intro'});
+ await step('loadout',`FixturePresentation.currentView_.context_.actions.OpenTower()`,{page:'loadout',step:'loadout_intro'});
  await step('loadout-ready',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'loadout',step:'loadout_select'});
- await step('empty-talents-confirm',`FixturePresentation.currentView_.context_.actions.StartRun();assert(FixturePresentation.resultKind_=='loadout_confirm')`,{page:'loadout',step:'loadout_select',result:'loadout_confirm'});
- await step('battle-paused',`FixturePresentation.resultView_.context_.actions.EnterWithoutTalents();assert(FixtureApp:HasRun())`,{page:'tower',step:'battle_intro',phase:'battle'});
+ await step('empty-talents-confirm',`FixtureOriginalTime=os.time;os.time=function()return 17 end;FixturePresentation.currentView_.context_.actions.StartRun();assert(FixturePresentation.resultKind_=='loadout_confirm')`,{page:'loadout',step:'loadout_select',result:'loadout_confirm',coach:true});
+ await step('floor-zero',`FixturePresentation.resultView_.context_.actions.EnterWithoutTalents();os.time=FixtureOriginalTime;assert(FixtureApp:HasRun())`,{page:'tower',step:'floor_zero_intro',phase:'between'});
+ await step('battle-paused',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'tower',step:'battle_intro',phase:'battle'});
  await step('battle-resumed-save',`assert(FixtureApp:SaveNow());FixturePresentation:CloseTutorialCoach();FixturePresentation:CloseTutorial();
   FixtureApp=require('App').New();local ready,reason=FixtureApp:Initialize();assert(ready,reason);FixturePresentation=require('Presentation').New(FixtureApp);FixtureApp:SetPresentation(FixturePresentation);FixturePresentation:Render()`,{page:'tower',step:'battle_intro',phase:'battle'});
  await step('battle-active',`assert(FixturePresentation:AdvanceTutorialCoach());FixtureApp:Update(0.2);FixturePresentation:RefreshTower();FixturePresentation:Update(0.2)`,{page:'tower',step:'reward',phase:'battle'});
- await step('reward',`for i=1,300 do FixtureApp:Update(0.2);FixturePresentation:RefreshTower();FixturePresentation:Update(0.2);if FixturePresentation.resultKind_=='reward' then break end end;assert(FixturePresentation.resultKind_=='reward','tutorial victory/reward required')`,{page:'tower',step:'reward',phase:'reward',result:'reward'});
+ await step('reward',`for i=1,300 do FixtureApp:Update(0.2);FixturePresentation:RefreshTower();FixturePresentation:Update(0.2);if FixturePresentation.resultKind_=='reward' then break end end;local vm=FixtureApp:GetTowerView();assert(FixturePresentation.resultKind_=='reward','tutorial victory/reward required: phase='..tostring(vm and vm.phase)..' pending='..tostring(FixturePresentation.pendingOutcome_)..' refs='..tostring(FixturePresentation.towerRefs_ and FixturePresentation.towerRefs_.phase)..' ready='..tostring(FixturePresentation.navigator_ and FixturePresentation.navigator_:IsCurrentReady()))`,{page:'tower',step:'reward',phase:'reward',result:'reward'});
  await step('reward-selected',`local view=FixturePresentation.resultView_;local scroll=FixtureFind(view.context_.refs.RewardList,function(w) return w.ScrollToBottom~=nil end);assert(scroll,'native reward scroll');scroll:ScrollToBottom();view.context_.actions.SelectReward(view.context_.view.rows[#view.context_.view.rows])`,{page:'tower',step:'reward',phase:'reward',result:'reward'});
- await step('reward-claimed',`FixturePresentation.resultView_.context_.actions.ClaimReward();FixturePresentation:Update(0.6)`,{page:'tower',step:'exit_intro',phase:'between'});
- await step('settlement',`FixturePresentation.currentView_.context_.actions.ExitTower();FixturePresentation:Update(0.6)`,{page:'tower',step:'records_intro'});
- await step('records',`FixturePresentation.resultView_.context_.actions.Confirm();FixturePresentation.currentView_.context_.actions.OpenRecords()`,{page:'records',step:'records_intro',records:1});
- await step('completed',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'records',step:'complete'});
+ await step('reward-claimed',`FixturePresentation.itemDetailView_.context_.actions.Action1();FixturePresentation:Update(0.6);local page=FixturePresentation.currentView_;local refs=page.context_.refs;assert(page.context_.view.exitVisible==true and page.panelContext_.view.exitVisible==true,'between projection missing: outer='..tostring(page.context_.view.exitVisible)..' inner='..tostring(page.panelContext_.view.exitVisible)..' button='..tostring(refs.ExitTowerButton and refs.ExitTowerButton.props.visible))`,{page:'tower',step:'exit_intro',phase:'between'});
+ await step('exit-confirmation',`FixturePresentation.currentView_.context_.actions.ExitTower();FixturePresentation:Update(0.6);assert(FixturePresentation.confirmationView_)`,{page:'tower',step:'exit_intro'});
+ await step('settlement',`FixturePresentation.confirmationView_.context_.actions.Confirm();FixturePresentation:Update(0.6)`,{page:'tower',step:'records_intro'});
+ await step('settlement-closed',`FixturePresentation.resultView_.context_.actions.Confirm()`,{page:'cover',step:'records_intro',records:1});
+ await step('records',`FixturePresentation.currentView_.context_.actions.OpenRecords()`,{page:'records',step:'records_intro',records:1});
+ await step('records-complete',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'records',step:'shop_intro'});
+ await step('cover-for-shop',`FixturePresentation:Navigate('cover')`,{page:'cover',step:'shop_intro'});
+ await step('shop',`FixturePresentation.currentView_.context_.actions.OpenShop()`,{page:'shop',step:'shop_intro'});
+ await step('shop-refresh',`FixturePresentation:RefreshShop();FixturePresentation.currentView_:RefreshStatus()`,{page:'shop',step:'shop_intro'});
+ await step('cover-after-shop',`FixturePresentation:Navigate('cover')`,{page:'cover',step:'shop_intro'});
+ await step('abyss-intro',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'cover',step:'abyss_intro'});
+ await step('completed',`assert(FixturePresentation:AdvanceTutorialCoach())`,{page:'cover',step:'complete'});
+ await step('update-log',`FixturePresentation:Update(0.6);assert(FixturePresentation.updateLogView_,'completed tutorial should open the unread update log')`,{page:'cover',step:'complete'});
+ await step('update-log-closed',`FixturePresentation.updateLogView_.context_.actions.Close();FixturePresentation:Update(0.1);assert(not FixturePresentation.updateLogView_)`,{page:'cover',step:'complete'});
  await step('replay-skipped',`assert(FixtureApp:StartTutorialReplay());FixturePresentation:Navigate('cover');assert(FixturePresentation:SkipTutorial())`,{page:'cover',step:'complete'});
  await step('skip-restored',`FixtureApp=require('App').New();assert(FixtureApp:Initialize());FixturePresentation=require('Presentation').New(FixtureApp);FixtureApp:SetPresentation(FixturePresentation);FixturePresentation:Render()`,{page:'cover',step:'complete',records:1});
  await step('focus-before-save-fault',`FixturePresentation:OpenSettings();FixtureSettings=FixturePresentation.settingsView_;FixtureSettings.context_.actions.BeginRename();FixtureField=FixtureSettings.context_.refs.PlayerName;require('urhox-libs/UI').SetFocus(FixtureField);assert(require('urhox-libs/UI').GetFocus()==FixtureField)`,{page:'cover',step:'complete',records:1});

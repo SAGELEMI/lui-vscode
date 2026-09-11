@@ -6,64 +6,43 @@ local empty = {}
 
 function RenderBudget.Attach(widget, runtime, onDeferred)
     if not widget then return end
-    if onDeferred then widget.luiBudgetOnDeferred_ = onDeferred end
     if widget.luiBudgetGuard_ then return end
     widget.luiBudgetGuard_ = true
     local budget = Budget.Get(runtime)
     widget.luiNativeMeasureBudget_ = budget
-    local render, children, hit, custom = widget.Render, widget.GetRenderChildren, widget.GetHitTestChildren, widget.CustomRenderChildren
-    -- Input may arrive before the next Render. Keep incomplete geometry hidden
-    -- until that node actually retries, rather than merely advancing a token.
-    local function deferred(self) return self.luiRenderDeferredFrame_ ~= nil end
-    local function wrapRender(method)
+    local render, children, hit = widget.Render, widget.GetRenderChildren, widget.GetHitTestChildren
+    -- Visible rendering is never cancelled by the progressive measurement
+    -- quota. Cold pages, dynamic rows and first-open overlays all finish their
+    -- current draw; background/preload measurement remains budgeted.
+    local function wrapRender(method, phase)
         return function(self, nvg)
-            self.luiRenderDeferredFrame_ = nil
-            local fontVersion = self.fontVersion_
-            local ok, result = Budget.Guard(budget, function() return method(self, nvg) end, self)
-            if not ok then
-                -- Retry incomplete arrangement next frame and hide its partial
-                -- geometry from drawing and hit testing in this frame.
-                self.luiArrangedStamp_ = nil
-                self.fontVersion_ = fontVersion
-                self.luiRenderDeferredFrame_ = budget.frame
-                if self.luiBudgetOnDeferred_ then self.luiBudgetOnDeferred_() end
-                return
-            end
+            self.luiRenderDeferredFrame_, self.luiDeferredRenderPhases_ = nil, nil
+            local ok, result = Budget.GuardCommitted(budget, function() return method(self, nvg) end, self)
+            if not ok then error("uninterruptible render unexpectedly exhausted its measurement budget", 0) end
+            self.luiCommittedRenderPhases_ = self.luiCommittedRenderPhases_ or {}
+            self.luiCommittedRenderPhases_[phase] = true
             return result
         end
     end
-    if render then widget.Render = wrapRender(render) end
+    if render then widget.Render = wrapRender(render, "Render") end
     -- Native overlays queue these passes after their ordinary Render returns.
     for _, name in ipairs({ "RenderModalContent", "RenderTooltip", "RenderDropdownPanel",
         "RenderPopoverContent", "RenderCalendar", "RenderPopup", "RenderDrawerContent" }) do
-        if widget[name] then widget[name] = wrapRender(widget[name]) end
+        if widget[name] then widget[name] = wrapRender(widget[name], name) end
     end
     function widget:GetRenderChildren()
-        if deferred(self) then return empty end
         if children then return children(self) end
         return self.GetChildren and self:GetChildren() or empty
     end
     function widget:GetHitTestChildren()
-        if deferred(self) then return empty end
         if hit then return hit(self) end
         return self.GetChildren and self:GetChildren() or empty
-    end
-    if custom then
-        function widget:CustomRenderChildren(nvg, renderChild)
-            if not deferred(self) then return custom(self, nvg, renderChild) end
-        end
-    end
-    local hitTest = widget.HitTest
-    if hitTest then
-        function widget:HitTest(...)
-            if deferred(self) then return false end
-            return hitTest(self, ...)
-        end
     end
     local destroy = widget.Destroy
     if destroy then
         function widget:Destroy(...)
             self.luiBudgetOnDeferred_, self.luiRenderDeferredFrame_, self.luiNativeMeasureBudget_ = nil, nil, nil
+            self.luiDeferredRenderPhases_, self.luiCommittedRenderPhases_ = nil, nil
             return destroy(self, ...)
         end
     end

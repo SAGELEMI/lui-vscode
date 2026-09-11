@@ -1,7 +1,7 @@
 {
   "schemaVersion": 5,
   "adapter": "urhox-lua",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "layoutContract": "xaml-initialize-v1-unified-layout-hy-vx-v6-source-components-progressive-paint",
   "sourceRoots": [
     "Presentation"

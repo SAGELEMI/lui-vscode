@@ -1,6 +1,6 @@
-# LUI Studio 3.0.0
+# LUI Studio 3.0.1
 
-3.0.0 将界面分为场景、页面、控件：场景拥有设备级设计画布，页面由页面呈现器受控切换，控件可被多处复用。Studio 只从 `.lui` 根 `副名称`发现控件，并把原始声明交给正式 Lua Runtime，统一执行布局表达式、条件、重复项、模板虚拟列表和渐进式预加载。单文件 Studio 的数据来自绑定内联 `预览内容`；“运行”会校验并按需部署 Runtime，然后在独立浏览器运行整个 Maker 项目。接口见 [运行时](docs/runtime.md) 与 [绑定和列表](docs/bindings.md)。
+3.0.1 将界面分为场景、页面、控件：场景拥有设备级设计画布，页面由页面呈现器受控切换，控件可被多处复用。Studio 只从 `.lui` 根 `副名称`发现控件，并把原始声明交给正式 Lua Runtime，统一执行布局表达式、条件、重复项、模板虚拟列表和渐进式预加载。单文件 Studio 的数据来自绑定内联 `预览内容`；“运行”会校验并按需部署 Runtime，然后在独立浏览器运行整个 Maker 项目。接口见 [运行时](docs/runtime.md) 与 [绑定和列表](docs/bindings.md)。
 
 LUI 是面向 UrhoX 游戏 UI 的中文声明式语言。小写 `.lui` 描述布局、外观和绑定，同名 `.lui.lua` 负责数据、动作与生命周期。Studio 在一个 VS Code 标签中提供结构树、画板、属性栏和源码编辑；设计预览不执行游戏 Lua。
 
@@ -17,7 +17,7 @@ LUI 是面向 UrhoX 游戏 UI 的中文声明式语言。小写 `.lui` 描述布
 
 ## 安装与使用
 
-安装 `dist/lui-vscode-3.0.0.vsix` 并打开游戏项目。在任意 LUI Studio 中点击 **运行**，或执行 **LUI: 运行项目预览**；Studio 会校验运行时，必要时自动部署并保留项目配置及一份 `.backup-last`，随后在独立浏览器运行 `.project/project.json` 的入口。
+安装 `dist/lui-vscode-3.0.1.vsix` 并打开游戏项目。在任意 LUI Studio 中点击 **运行**，或执行 **LUI: 运行项目预览**；Studio 会校验运行时，必要时自动部署并保留项目配置及一份 `.backup-last`，随后在独立浏览器运行 `.project/project.json` 的入口。
 
 运行 **LUI: 新建场景、页面或控件（MVVM）** 创建配对文件，双击 .lui 打开 Studio。运行时需要 UrhoX 的 urhox-libs/UI 与项目宿主适配，见 [运行时接入](docs/runtime.md)。Studio 预览成功不代表游戏已完成接入。
 

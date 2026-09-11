@@ -77,7 +77,7 @@ local function mountingState()
   rootRect=current.root:GetAbsoluteLayout(),scrollRect=list.scroll_:GetAbsoluteLayout(),
   mounted=current.root.luiOverlayMounted_,global=current.root.luiGlobalOverlay_,
   queued=queueContains(list),nativeStarts=NativeText.stats.starts,renderPending=list.renderPending_ or false,
-  pendingGeometry=list.pendingGeometry_,rootDeferred=current.root.luiRenderDeferredFrame_}
+  pendingGeometry=list.pendingGeometry_,currentReady=not list.renderPending_}
 end
 local weak={};for _,name in ipairs({'page','context','component','controller','model','rows','firstRow','slotWidget'})do weak[name]=setmetatable({},{__mode='v'})end
 local function nativeWarnings()

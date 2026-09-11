@@ -13,7 +13,7 @@ const generated = new Set(vocab.UI_CONTROL_DEFINITIONS.map((c) => c.tag));
 for (const [tag, name] of Object.entries(vocab.CANONICAL_TO_TAG)) {
   if (!special.has(tag) && !generated.has(tag)) lines.push(`| ${cell(name)} | ${cell(tag)} |`);
 }
-lines.push("", "基础文本使用文本属性；按钮点击动作收到当前重复项（若无则 nil）和事件；进度条使用值/最大值。开关与滑块当前走专用变更动作桥，不承诺与下表通用输入控件相同的自动双向写回。卡片、分区、提示、屏幕和固定屏幕依赖 Presentation.Components，见 [宿主约定](runtime.md)。", "", "## 目录登记的通用 UI 控件", "", "| 中文标签 | 底层 UI | 类别 | 数据绑定属性 | 事件 | 原生内容容器 |", "| --- | --- | --- | --- | --- | --- |");
+lines.push("", "基础文本使用文本属性；按钮点击动作收到当前重复项（若无则 nil）和事件；进度条使用值/最大值。开关与滑块当前走专用变更动作桥，不承诺与下表通用输入控件相同的自动双向写回。卡片、分区、提示、屏幕和固定屏幕依赖 Presentation.Components，见 [宿主约定](runtime.md)。", "", "弹窗引用是实际 UI.Modal。LUI 不决定多个业务弹窗的打开顺序：层级/ZIndex 只影响树与绘制顺序，不会同步原生 overlay 输入栈。允许嵌套弹窗时，宿主应在集中式打开器中按真实打开/恢复顺序动态置顶；不要在每个页面分散填写固定层级。通知、教程和阻断操作使用 MountGlobalOverlay。", "", "## 目录登记的通用 UI 控件", "", "| 中文标签 | 底层 UI | 类别 | 数据绑定属性 | 事件 | 原生内容容器 |", "| --- | --- | --- | --- | --- | --- |");
 for (const c of vocab.UI_CONTROL_DEFINITIONS) {
   if (c.tag === "Widget") continue; // 控件 is reserved for the document root.
   lines.push(`| ${cell(vocab.sourceTag(c.tag))} | ${c.ui} | ${c.category} | ${c.bindable ? vocab.sourceAttribute(c.bindable) : "—"} | ${(c.events ?? []).map(vocab.sourceAttribute).join("、") || "—"} | ${c.children ? "是" : "否"} |`);

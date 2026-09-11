@@ -18,7 +18,7 @@ const files=[];for(const family of config.fonts)for(const font of Object.values(
 await mkdir(output,{recursive:true});
 const host=new EnginePreviewHost();await host.start(resolve('artifacts/engine-cache'),runtimeDirectory,files);
 const browser=await chromium.launch({channel:process.env.LUI_BROWSER_CHANNEL||'msedge',headless:true});
-const report={passed:false,scope:'Actual cold native constructors, delayed overlay passes and canvas input; a zero-call slice deliberately forces retry in a few bounded cases. The 60-frame fixture limit is a regression timeout, not a device FPS claim.',cases:[],errors:[]};
+const report={passed:false,scope:'Actual cold native constructors, committed overlay passes and canvas input; a zero-call background slice verifies that already-visible overlays remain complete and interactive. The 60-frame fixture limit is a regression timeout, not a device FPS claim.',cases:[],errors:[]};
 const fixture=visibleLayoutProbe+String.raw`
 local UI=require('urhox-libs/UI')
 local Runtime=require('LUI.Runtime')
@@ -56,10 +56,9 @@ end
 local function deferredAncestor(widget)
  while widget do if widget.luiRenderDeferredFrame_~=nil then return widget end;widget=widget.parent end
 end
-local function blocked(widget)
- widget=assert(deferredAncestor(widget),'fixture did not exercise a real deferred render')
- assert(widget:HitTest(position.x,position.y)==false,'deferred native geometry must not hit')
- assert(#(widget:GetHitTestChildren()or{})==0,'deferred native descendants must not hit')
+local function committed(widget)
+ assert(not deferredAncestor(widget),'visible native geometry must never be marked deferred')
+ if current.input then assert(widget:HitTest(position.x,position.y)~=false,'interactive visible native geometry must remain hittable')end
 end
 local function tracked(widget,method)
  assert(type(widget[method])=='function','missing actual native method '..current.name..'.'..method)
@@ -101,7 +100,7 @@ local function beginCase()
   EditMenu.Show({owner=control,anchorX=160,anchorY=150,anchorH=48,items={{label='全选测试文字',action=function()clicks=clicks+1 end},{label='第二项',action=function()end}}})
   assert(callCount()==prior,'EditMenu.Show must defer native width measurement')
   target=assert(UI.GetTopOverlay());evidence.initiallyDeferred=target.luiRenderDeferredFrame_~=nil
-  assert(evidence.initiallyDeferred,'EditMenu cannot expose temporary constructor geometry')
+  assert(not evidence.initiallyDeferred,'EditMenu visibility must not be represented by a deferred-frame marker')
  else if control.Open then control:Open()end end
  tracked(current.edit and target or control,current.method)
 end
@@ -117,7 +116,12 @@ function HandleOverlayProbeEnd()
  if OverlayProbe.stopped or not current then return end
  local ok,err=xpcall(function()
   local row=NativeProbe.FinalizeFrame()
-  if row then assert(row.calls<=64 and row.outside==0 and row.calls==row.budgetCalls,'raw C quota/guard/accounting violation');assert(row.depth==0,'unbalanced native save stack')end
+  if row then
+   local background=row.calls-(row.committedStarts or 0)
+   assert(background<=64 and row.outside==0 and background==row.budgetCalls
+    and (row.committedStarts or 0)==(row.budgetCommittedCalls or 0),'raw C quota/guard/accounting violation')
+   assert(row.depth==0,'unbalanced native save stack')
+  end
   phaseFrame=phaseFrame+1;caseFrame=caseFrame+1
   assert(phaseFrame<=60,current.name..' '..phase..' did not converge within 60 real frames')
   local box=rect(target)
@@ -132,19 +136,12 @@ function HandleOverlayProbeEnd()
    end
    evidence.firstReadyFrame=caseFrame;evidence.rect=box;position={x=box.x+box.w/2,y=box.y+box.h/2}
    if current.pause then
-    phase,phaseFrame='forced-defer',0;budget.limit=0
+    phase,phaseFrame='forced-committed',0;budget.limit=0
     if current.name=='Tooltip' then control:SetContent(string.rep('未缓存的新提示 ',13))else target:SetText('未缓存的提交按钮')end
    elseif current.input then phase,phaseFrame='ready-input',0;OverlayProbe.inputSent=false;emit({input='ready',name=current.name,point=position})
    else finishCase()end
-  elseif phase=='forced-defer' then
-   blocked(target);evidence.blockedAfterRender=true
-   phase,phaseFrame='blocked-input',0;OverlayProbe.inputSent=false
-   emit({input='blocked',name=current.name,point=position})
-  elseif phase=='blocked-input' then
-   blocked(target)
-   if OverlayProbe.inputSent then assert(clicks==0,'deferred canvas click reached an incomplete control');evidence.blockedCanvasClick=true;budget.limit=64;phase,phaseFrame='recover',0 end
-  elseif phase=='recover' and box and not deferredAncestor(target) then
-   evidence.recoveredFrame=caseFrame
+  elseif phase=='forced-committed' and box then
+   committed(target);evidence.committedAfterQuota=true;budget.limit=64
    if current.input then phase,phaseFrame='ready-input',0;OverlayProbe.inputSent=false;position={x=box.x+box.w/2,y=box.y+box.h/2};emit({input='ready',name=current.name,point=position})else finishCase()end
   elseif phase=='ready-input' and OverlayProbe.inputSent then
    assert(clicks==1,'ready native canvas click must dispatch exactly once');finishCase()
@@ -157,9 +154,7 @@ end
 -- Preserve Runtime's original event subscriptions.
 local previousBegin=runtime.BeginFrame
 function runtime:BeginFrame(token)
- local result=previousBegin(self,token)
- if phase=='blocked-input' then blocked(target);evidence.blockedBeforeRetry=true end
- return result
+ return previousBegin(self,token)
 end
 local Queue=require('LUI.MeasureQueue')
 local previousDrain=Queue.Drain
@@ -204,7 +199,9 @@ try {
    report.frames=message.frames;report.coldConstructorCalls=message.coldConstructorCalls;
    assert.equal(report.cases.length,10);assert.equal(message.coldConstructorCalls,0);
    const frames=Object.values(message.frames);assert.ok(frames.length>=10);
-   assert.ok(frames.every(frame=>frame.calls<=64&&frame.outside===0&&frame.calls===frame.budgetCalls&&frame.depth===0&&frame.rejectedStartChecks===0));
+   assert.ok(frames.every(frame=>frame.calls-(frame.committedStarts||0)<=64&&frame.outside===0
+    &&frame.calls-(frame.committedStarts||0)===frame.budgetCalls
+    &&(frame.committedStarts||0)===(frame.budgetCommittedCalls||0)&&frame.depth===0&&frame.rejectedStartChecks===0));
    report.maximumCalls=Math.max(...frames.map(frame=>frame.calls));break;
   }
  }

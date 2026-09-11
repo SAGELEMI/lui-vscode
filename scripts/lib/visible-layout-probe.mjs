@@ -18,7 +18,7 @@ local function verifyVisibleLayout(runtime,root,width,height)
   local rect=runtime:GetScreenRect(widget)
   if inViewport(rect) then
    result.visibleNodes=result.visibleNodes+1
-   if widget.luiRenderDeferredFrame_~=nil then issues[#issues+1]=identity(widget)..' has deferred visible geometry' end
+   if widget.luiRenderDeferredFrame_~=nil then issues[#issues+1]=identity(widget)..' retained obsolete deferred visible state' end
    local list=widget.luiVirtualList_
    if list then
     result.visibleLists=result.visibleLists+1

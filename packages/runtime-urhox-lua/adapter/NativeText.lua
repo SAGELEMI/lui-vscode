@@ -194,7 +194,6 @@ local function installEditMenu()
             end
         end
         require('LUI.RenderBudget').AttachTree(widget,{luiMeasureBudget_=budget})
-        widget.luiRenderDeferredFrame_=budget.frame
     end
 end
 

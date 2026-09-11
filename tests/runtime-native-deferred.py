@@ -106,17 +106,11 @@ local originalRender=chat.Render;Deferred.Attach(chat,'ChatWindow',runtime)
 assert(chat.Render==originalRender,'bridge attaches once')
 local originalMessages=chat.messages_
 budget.limit=0;Budget.BeginFrame(runtime,1);chat:Render(context)
-assert(chat.messages_==originalMessages and chat.luiRenderDeferredFrame_~=nil and draws==0,
- 'budget pause restores public message collection and draws no partial chat geometry')
-budget.limit=3
-for frame=2,250 do
- Budget.BeginFrame(runtime,frame);local before=starts;chat:Render(context)
- assert(starts-before==budget.calls and budget.calls<=3 and depth==0,'exact C calls share the render quota')
- assert(chat.messages_==originalMessages and #chat.messages_==100)
- if not chat.luiChatNeedsLayout_ and not chat.luiRenderDeferredFrame_ then break end
-end
+assert(chat.messages_==originalMessages and chat.luiRenderDeferredFrame_==nil and draws>0
+ and not chat.luiChatNeedsLayout_ and (budget.committedCalls or 0)>0,
+ 'a visible chat commits its complete geometry and draw even after the background quota is exhausted')
 assert(not chat.luiChatNeedsLayout_ and chat.contentHeight_>coldHeight and draws>0,
- 'constructor-zero geometry is remeasured and a hundred messages converge across short slices')
+ 'constructor-zero geometry is remeasured without publishing a partial visible collection')
 assert(chat.messages_[1].bubbleWidth>80 and chat.messages_[100].richText.luiBudgetGuard_,
  'native rich-text widths are restored and non-AddChild descendants have their own guard')
 assert(chat.scrollOffset_==chat.contentHeight_-chat:GetLayout().h,'auto-scroll follows committed geometry')
@@ -143,17 +137,11 @@ chat:ShowItemTooltip(item,chat.messages_[1],{x=8,y=8,w=30,h=20})
 assert(global==Tooltip and Tooltip.GetItem()==item);Tooltip:Update(1)
 budget.limit=0;Budget.BeginFrame(runtime,303);before=starts;local drawn=draws
 global:Render(context)
-assert(starts==before and draws==drawn and depth==0,'LUI global tooltip cannot bypass an exhausted quota')
-budget.limit=2
-for frame=304,320 do
- Budget.BeginFrame(runtime,frame);before=starts;global:Render(context)
- assert(starts-before==budget.calls and budget.calls<=2 and depth==0)
- if draws>drawn then break end
-end
-assert(draws>drawn,'global tooltip phase cache makes progress across frames')
+assert(starts>before and draws>drawn and depth==0 and budget.calls==0 and (budget.committedCalls or 0)>0,
+ 'a visible global tooltip is committed and remains drawable after the background quota is exhausted')
 -- Non-LUI Show replaces the current ownership and preserves native behavior.
 local external={name='External'};Tooltip.Show(external,nil);Tooltip:Update(1)
-budget.limit=0;Budget.BeginFrame(runtime,321);before=starts;global:Render(context)
+budget.limit=0;Budget.BeginFrame(runtime,304);before=starts;global:Render(context)
 assert(starts>before and budget.calls==0,'non-LUI global tooltip is a native passthrough')
 local finalRichText=chat.messages_[1].richText
 chat:Destroy();chat:Destroy()

@@ -269,7 +269,7 @@ local guardedChild=node({}, {},guarded,nil,{})
 function guarded:HitTest()return true end
 function guarded:CustomRenderChildren()paintedChildren=paintedChildren+1 end
 function guarded:Render()
- if not self.firstPhase then Budget.Native(function()end);self.firstPhase=true end
+ Budget.Native(function()end)
  Budget.Native(function()end);self.finished=true
 end
 budget.limit=1;Budget.BeginFrame(runtime,6)
@@ -277,13 +277,40 @@ RenderBudget.AttachTree(guarded,runtime,function()deferredCount=deferredCount+1 
 local originalGuard=guarded.Render
 RenderBudget.AttachTree(guarded,runtime)
 assert(guarded.Render==originalGuard,'tree attachment is idempotent and preserves a registered deferred callback')
+budget.calls=budget.limit
 guarded:Render();guarded:CustomRenderChildren()
-assert(not guarded.finished and #guarded:GetRenderChildren()==0 and #guarded:GetHitTestChildren()==0 and not guarded:HitTest(),'incomplete layout is hidden from both drawing and direct hit testing')
-assert(deferredCount==1 and paintedChildren==0,'deferred subtree never renders its children')
-Budget.BeginFrame(runtime,7)
-assert(not guarded:HitTest() and #guarded:GetRenderChildren()==0,'input before the next render must not expose yesterday\'s incomplete geometry')
-guarded:Render();guarded:CustomRenderChildren()
-assert(guarded.finished and guarded:HitTest() and guarded:GetRenderChildren()[1]==guardedChild and paintedChildren==1,'a completed retry restores the original children and hit testing')
+assert(guarded.finished and guarded.luiRenderDeferredFrame_==nil and guarded:HitTest()
+ and guarded:GetRenderChildren()[1]==guardedChild and paintedChildren==1 and deferredCount==0,
+ 'cold visible rendering never hides its subtree or disables input when the measurement quota is exhausted')
+assert(budget.calls==budget.limit and budget.committedCalls==2,
+ 'all visible render calls are accounted separately from the background cold-load quota')
+local modal=node({}, {},nil,nil,{})
+function modal:Render()self.shell=true end
+function modal:RenderModalContent()
+ Budget.Native(function()end)
+ Budget.Native(function()end);self.modalFinished=true
+end
+budget.limit=1;Budget.BeginFrame(runtime,7);budget.calls=budget.limit;RenderBudget.AttachTree(modal,runtime)
+modal:Render();modal:RenderModalContent()
+assert(modal.shell and modal.modalFinished and modal.luiRenderDeferredFrame_==nil
+ and modal.luiCommittedRenderPhases_.Render and modal.luiCommittedRenderPhases_.RenderModalContent,
+ 'first-open modal content also renders completely after the ordinary quota is exhausted')
+assert(budget.calls==budget.limit and budget.committedCalls==2,
+ 'modal render work uses the same separately accounted uninterruptible channel')
+local dynamic=node({}, {},nil,nil,{})
+local dynamicChild=node({}, {},dynamic,nil,{})
+function dynamic:Render()Budget.Native(function()end);self.finished=true end
+function dynamic:HitTest()return true end
+Budget.BeginFrame(runtime,8);budget.calls=budget.limit;RenderBudget.AttachTree(dynamic,runtime)
+dynamic:Render()
+assert(dynamic.finished and dynamic.luiRenderDeferredFrame_==nil and dynamic:HitTest()
+ and dynamic:GetRenderChildren()[1]==dynamicChild and budget.committedCalls==1,
+ 'a newly-created dynamic row renders completely on its first draw without explicit promotion')
+guarded:Destroy();modal:Destroy();dynamic:Destroy()
+assert(guarded.luiCommittedRenderPhases_==nil and guarded.luiDeferredRenderPhases_==nil
+ and modal.luiCommittedRenderPhases_==nil and modal.luiDeferredRenderPhases_==nil
+ and dynamic.luiCommittedRenderPhases_==nil and dynamic.luiDeferredRenderPhases_==nil,
+ 'destroy clears committed and deferred render-phase state')
 print('Dirty refresh PASS: zero warm visits/captions, selective paths, scope/shadow/props aliases, hidden/collapsed restoration, legacy scan, disposal and exception cleanup.')
 print('Measure performance PASS: paint-only zero measurement, prewrite/nil geometry invalidation, shared ancestors once, VM-wide multi-runtime Update/Render budget, frame deduplication and finite multi-frame phase progress. Work counts only, not phone FPS.')
 ''')

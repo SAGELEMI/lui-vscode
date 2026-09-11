@@ -18,6 +18,7 @@
 - Studio 入口 src/extension.ts；设计器 src/webview/designer.ts；源码同步 src/webview/sourceSync.ts。
 - 资料交付共用实现 scripts/lib/guidance.mjs，扩展与 scripts/deploy-runtime.mjs 都调用它。新增资料时同步 guidanceEntries 与 docs/README.md。
 - 语言和公共接口变化必须同步对应手册及示例；不要将某个游戏的业务组件当作 LUI 内置功能。
+- 多个原生 Modal 的业务先后关系由目标项目的集中式弹窗管理器维护；视觉 zIndex 必须与原生 overlay 输入栈同步。不要为单个游戏把弹窗排序写入通用 Runtime，也不要在各页面散落固定层级。
 - 验证：npm run check、npm run check:types、npm run check:docs；打包 npm run package:vsix。游戏运行遵循目标项目流程；本仓库 Git 推送不触发 Maker 构建。
 
 索引维护：没有独立代码图鉴；本文件是代码入口，docs/README.md 是资料入口。2026-09-04：新增 2.4.3 文档、skills、示例与受管理资料交付。
